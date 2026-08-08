@@ -20,6 +20,11 @@
 //      cadence-scaled render-delay ceiling that keeps a mid-band body
 //      interpolating instead of dead-reckoning, and testSyncTuning pins the
 //      arithmetic tying the mid band's width to both.
+//   4. The pure DECISION ARITHMETIC the sync layer runs on: the change gate every
+//      sampled channel routes its send through (ChangeGate.h - genuinely CRT-only,
+//      so those checks run the real code), and the drive's convergence ladder,
+//      which is not (ReplicatorUtil.h pulls in ENet and the engine facade, so
+//      testDriveBands/testDriveConvergence MIRROR it - read their preambles).
 //
 // Zero game dependencies. Exit code = number of failed checks (0 = PASS).
 //
@@ -1698,6 +1703,390 @@ static void testSuppressionCaps() {
     CHECK("...and the runtime image is still usable", capCoreOk(avail));
 }
 
+// ---- 5h. Drive decision arithmetic: the combat drift bands (a MIRROR) -----------
+// READ THIS BEFORE TRUSTING IT, same caveat as testHealDebounce and for the same
+// reason. The constants live in src/plugin/sync/ReplicatorUtil.h, which includes
+// Replicator.h -> NetLink.h (ENet) and EngineSync.h (the engine facade), so this
+// CRT-only binary cannot see them at all. DriveTuning and driveDecide below are a
+// hand-written MIRROR of those constants and of the band block in
+// ReplicatorDrive.cpp (applyTargets, the combat `if (haveActual)` arm). They
+// exercise NONE of the production code. If you retune the real constants, retune
+// these in the same commit.
+//
+// What this locks is the RELATIONSHIPS, because those are what a tuning pass
+// silently breaks and the constants themselves are meant to move. The ladder has
+// been reverted once already: the pre-2026-07-16 gate teleported the instant a copy
+// passed COMBAT_SNAP_DIST, which was the visible warp during dense fights, and the
+// convergence-first correction replaced it with a fast slide plus a much narrower
+// definition of a genuine "leave". This decides whether a driven body warps in
+// front of the other player, and nothing else in the tree tests it.
+struct DriveTuning {
+    float         catchupK;      // CATCHUP_K
+    float         snapDist;      // SNAP_DIST          (locomotion distance floor)
+    float         snapSeconds;   // SNAP_SECONDS       (locomotion time allowance)
+    float         combatWait;    // COMBAT_WAIT_DIST
+    float         combatSoft;    // COMBAT_SOFT_DIST
+    float         combatSnap;    // COMBAT_SNAP_DIST   (the churn ceiling)
+    float         combatBigSnap; // COMBAT_BIG_SNAP_DIST (the true-leave distance)
+    float         combatSlideMax;// COMBAT_SLIDE_MAX
+    float         combatSnapVel; // COMBAT_SNAP_VEL
+    unsigned long combatConvergeMs; // COMBAT_CONVERGE_MS
+    DriveTuning()
+        : catchupK(2.0f), snapDist(8.0f), snapSeconds(0.75f),
+          combatWait(3.0f), combatSoft(6.0f), combatSnap(20.0f),
+          combatBigSnap(60.0f), combatSlideMax(60.0f), combatSnapVel(8.0f),
+          combatConvergeMs(400) {}
+};
+
+// Ordered on purpose: the response may only get MORE aggressive as the drift
+// grows, and the monotonicity check below compares these as integers.
+enum DriveAction { DA_HOLD = 0, DA_SLIDE = 1, DA_WARP = 2 };
+
+// MIRROR of the combat band decision. overBandMs is how long the drift has SAT
+// above the churn ceiling (the real code's `now - d.combatOverTick`, armed the
+// first frame drift exceeds combatSnapDist_ and cleared whenever it does not);
+// snapCooled is COMBAT_SNAP_COOL_MS having elapsed since this body's last warp.
+static DriveAction driveDecide(const DriveTuning& t, float drift, float srcVel,
+                               bool localFighting, bool wrongLocalTgt,
+                               bool hostWaiting, bool srcTeleport,
+                               unsigned long overBandMs, bool snapCooled) {
+    const bool correctFight = localFighting && !wrongLocalTgt;
+    const float softBand  = hostWaiting ? t.combatWait : t.combatSoft;
+    const float leaveBand = correctFight ? t.combatSnap : softBand;
+    const bool sustained  = (drift > t.combatSnap) &&
+                            overBandMs >= t.combatConvergeMs;
+    const bool trueLeave  = !hostWaiting &&
+                            (drift > t.combatBigSnap || srcTeleport ||
+                             (sustained && srcVel >= t.combatSnapVel));
+    if (trueLeave && snapCooled) return DA_WARP;
+    if (drift > leaveBand)       return DA_SLIDE;
+    return DA_HOLD;
+}
+
+// MIRROR of the fast catch-up slide speed the converge branch commands.
+static float driveSlideSpeed(const DriveTuning& t, float srcSpeed, float drift) {
+    const float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+    float spd = base + drift;
+    float cap = base * 2.5f;
+    if (cap < t.combatSlideMax) cap = t.combatSlideMax;
+    if (spd > cap) spd = cap;
+    return spd;
+}
+
+static void testDriveBands() {
+    std::printf("== drive combat bands (MIRRORS ReplicatorUtil/ReplicatorDrive) ==\n");
+    DriveTuning t;
+    const bool FIGHTING = true,  IDLE      = false;
+    const bool WRONGTGT = true,  RIGHTTGT  = false;
+    const bool WAITING  = true,  ENGAGED   = false;
+    const bool WARPED   = true,  NOWARP    = false;
+    const bool COOLED   = true,  COOLING   = false;
+
+    // (1) The ordering the whole ladder rests on. Each band must be strictly wider
+    // than the last or a drift falls into two of them at once and which branch runs
+    // depends on the order they happen to be tested in.
+    CHECK("drift bands strictly ordered: wait < soft < churn ceiling < true leave",
+          t.combatWait < t.combatSoft &&
+          t.combatSoft < t.combatSnap &&
+          t.combatSnap < t.combatBigSnap);
+
+    // (2) Inside the soft band nothing happens at all - not a walk, not a warp. A
+    // fight legitimately moves the body; correcting inside this band is what made
+    // the waiting crowd twitch.
+    {
+        bool quiet = true;
+        for (float d = 0.0f; d <= t.combatSoft; d += 0.25f)
+            if (driveDecide(t, d, 50.0f, IDLE, RIGHTTGT, ENGAGED, NOWARP,
+                            10000, COOLED) != DA_HOLD) quiet = false;
+        CHECK("a body inside the soft band is left alone", quiet);
+    }
+    // ...with exactly one exception, pinned so it is a decision and not a surprise:
+    // a source that TELEPORTED is a leave at any drift, because the copy is being
+    // placed rather than corrected.
+    CHECK("a source teleport is a leave even inside the soft band",
+          driveDecide(t, 0.5f, 0.0f, IDLE, RIGHTTGT, ENGAGED, WARPED, 0, COOLED)
+              == DA_WARP);
+
+    // (3) Past the true-leave distance a warp is unconditional, whatever the copy
+    // is doing and however slowly the source is moving.
+    {
+        bool warps = true;
+        for (float d = t.combatBigSnap + 0.5f; d <= 200.0f; d += 0.5f) {
+            if (driveDecide(t, d, 0.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                            0, COOLED) != DA_WARP) warps = false;
+            if (driveDecide(t, d, 0.0f, IDLE, WRONGTGT, ENGAGED, NOWARP,
+                            0, COOLED) != DA_WARP) warps = false;
+        }
+        CHECK("a body past the true-leave distance always warps", warps);
+    }
+
+    // (4) The middle band is the whole point of the 2026-07-16 pass: a correctly
+    // engaged fight owns its own footwork up to the churn ceiling (measured: a
+    // driven brawl legitimately churns 12-18 u), and every other copy - arming,
+    // idle, queued, or swinging at the wrong body - converges above the soft band.
+    CHECK("a correct fight owns its footwork up to the churn ceiling",
+          driveDecide(t, 18.0f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_HOLD);
+    CHECK("an arming/idle copy at the same drift converges instead",
+          driveDecide(t, 18.0f, 0.0f, IDLE, RIGHTTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_SLIDE);
+    CHECK("a copy fighting the WRONG body converges too",
+          driveDecide(t, 18.0f, 0.0f, FIGHTING, WRONGTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_SLIDE);
+
+    // (5) Over the ceiling the copy SLIDES; an instant warp needs the drift to have
+    // sat there for the converge window AND the source to be genuinely moving. A
+    // big drift on a near-stationary source is melee churn or a wrong-place body -
+    // converge, never warp.
+    CHECK("over the churn ceiling a fight slides rather than warping",
+          driveDecide(t, 30.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      t.combatConvergeMs - 1, COOLED) == DA_SLIDE);
+    CHECK("...and warps only once the drift has SAT there for the converge window",
+          driveDecide(t, 30.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      t.combatConvergeMs, COOLED) == DA_WARP);
+    CHECK("a sustained drift on a near-stationary source is churn, not a chase",
+          driveDecide(t, 30.0f, t.combatSnapVel - 0.1f, FIGHTING, RIGHTTGT,
+                      ENGAGED, NOWARP, 10000, COOLED) == DA_SLIDE);
+    CHECK("...and on a source genuinely moving it is a leave",
+          driveDecide(t, 30.0f, t.combatSnapVel, FIGHTING, RIGHTTGT,
+                      ENGAGED, NOWARP, 10000, COOLED) == DA_WARP);
+
+    // (6) A WAITING (slot-queued) stance has no chase to justify a warp, at any
+    // drift, however fast the source or however long the drift has persisted.
+    {
+        bool everWarps = false;
+        for (float d = 0.0f; d <= 200.0f; d += 1.0f)
+            if (driveDecide(t, d, 50.0f, IDLE, RIGHTTGT, WAITING, WARPED,
+                            10000, COOLED) == DA_WARP) everWarps = true;
+        CHECK("a WAITING stance never warps, at any drift", !everWarps);
+    }
+    CHECK("a waiting copy converges at the tighter wait band",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, IDLE, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_SLIDE &&
+          driveDecide(t, t.combatWait - 0.5f, 0.0f, IDLE, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_HOLD);
+    // ...but only while it is not ALSO fighting locally. leaveBand takes the
+    // correct-fight branch first, so the tighter wait band is unreachable for a
+    // copy that has independently engaged while the host copy is still queued.
+    // Pinned as the CODE reads, which is not what the comment above
+    // COMBAT_WAIT_DIST reads ("a queued body should not wander") - see the report.
+    CHECK("the wait band does not apply to a copy that is itself fighting",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, FIGHTING, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_HOLD);
+
+    // (7) The per-body snap cooldown. A warp that cannot stick - stale interp, a
+    // staggered body - must not re-fire every frame; while it is cooling the copy
+    // converges instead, which is the strictly gentler answer.
+    CHECK("a body still inside the snap cooldown converges instead of re-warping",
+          driveDecide(t, 100.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      10000, COOLING) == DA_SLIDE);
+
+    // (8) Monotonicity across every stance. The response may only escalate as the
+    // drift grows: hold -> converge -> warp, never back. A band ordering slip shows
+    // up here as a body that converges at 10 u and is left alone at 25.
+    {
+        bool monotone = true;
+        for (int f = 0; f < 2; ++f)
+            for (int w = 0; w < 2; ++w) {
+                int prev = -1;
+                for (float d = 0.0f; d <= 120.0f; d += 0.5f) {
+                    int a = (int)driveDecide(t, d, 50.0f, f != 0, RIGHTTGT,
+                                             w != 0, NOWARP, 10000, COOLED);
+                    if (a < prev) monotone = false;
+                    prev = a;
+                }
+            }
+        CHECK("the response never softens as the drift grows", monotone);
+    }
+
+    // (9) The converge SPEED. A correction that does not exceed the source's own
+    // pace never closes: the copy trails at a fixed gap, stays over the band and
+    // eventually teleports anyway, which is the driver this cap was added for.
+    {
+        bool closes = true, capped = true;
+        for (float src = 0.0f; src <= 60.0f; src += 0.5f)
+            for (float d = t.combatSoft; d <= t.combatBigSnap; d += 0.5f) {
+                const float spd = driveSlideSpeed(t, src, d);
+                if (spd <= src) closes = false;
+                const float base = (src > 1.0f) ? src : 12.0f;
+                float cap = base * 2.5f;
+                if (cap < t.combatSlideMax) cap = t.combatSlideMax;
+                if (spd > cap + 0.001f) capped = false;
+            }
+        CHECK("a converge always commands more than the source's own pace", closes);
+        CHECK("...and never more than the slide cap", capped);
+    }
+    // And the cap has to be able to CLOSE the widest drift that is not allowed to
+    // teleport, or a legitimately drifted body crawls back in plain sight for
+    // seconds. At the cap that is roughly a second of travel.
+    CHECK("the slide cap closes the widest non-teleporting drift in about a second",
+          t.combatSlideMax >= t.combatBigSnap);
+}
+
+// ---- 5i. Drive convergence: snap distance vs cadence, and the catch-up gain -----
+// The other half of the drive's pure arithmetic, and the half that is coupled to
+// something this binary CAN see: the mid band's send interval, derived from
+// SyncTuning exactly as testSyncTuning derives it, so a retune of the band moves
+// this test with it. Still a MIRROR of ReplicatorUtil.h / ReplicatorDrive.cpp for
+// the drive side - see testDriveBands.
+static float driveSnapGate(const DriveTuning& t, float velPeak,
+                           unsigned long segMs, float speedMult) {
+    const float mult = (speedMult > 1.0f) ? speedMult : 1.0f;
+    float gate = t.snapDist * mult;
+    float gateSec = t.snapSeconds + (float)segMs / 1000.0f;
+    if (gateSec > 2.5f) gateSec = 2.5f;
+    if (velPeak * gateSec > gate) gate = velPeak * gateSec;
+    return gate;
+}
+
+// MIRROR of the walk-drive catch-up speed: source pace plus a gap-proportional
+// boost, capped at 2.5x the source's own pace (12 u/s standing in for a body whose
+// streamed speed is unusable).
+static float driveCatchupSpeed(float srcSpeed, float gap, float k) {
+    float spd = srcSpeed + gap * k;
+    const float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+    const float cap  = base * 2.5f;
+    if (spd > cap) spd = cap;
+    return spd;
+}
+
+// One correction interval: the copy runs at the commanded speed while the source
+// runs at its own, so the gap closes at (commanded - source) for dt seconds.
+static float driveCatchupStep(float srcSpeed, float gap, float k, float dt) {
+    return gap - (driveCatchupSpeed(srcSpeed, gap, k) - srcSpeed) * dt;
+}
+
+static void testDriveConvergence() {
+    std::printf("== drive convergence: snap distance vs cadence, catch-up gain ==\n");
+    DriveTuning t;
+    SyncTuning tun;
+
+    unsigned int quota = (tun.midBandMax + 9) / 10;
+    if (quota > tun.midSliceMax) quota = tun.midSliceMax;
+    const unsigned long midIntervalMs =
+        (unsigned long)((tun.midBandMax + quota - 1) / quota) * 50;
+    const float midIntervalSec = (float)midIntervalMs / 1000.0f;
+    CHECK_EQ("mid-band send interval this test is sized against (ms)",
+             midIntervalMs, 500);
+
+    // ASSUMPTION, stated rather than measured: an ordinary NPC on foot covers no
+    // more than ~12 u/s. That number is not invented here - it is the drive's OWN
+    // stand-in for a body whose streamed speed is unusable (`base = (out.cSpeed >
+    // 1.0f) ? out.cSpeed : 12.0f`, in both the locomotion and the combat slide), so
+    // it is the codebase's own idea of a walking pace. A sprinter is ~50 u/s and is
+    // covered by the velocity-aware half of the gate below, not by this floor.
+    // If that assumption is ever measured and comes back higher than
+    // SNAP_DIST / 0.5 s = 16 u/s, this check is the thing that should fail.
+    const float WALK_U_PER_S = 12.0f;
+    CHECK("the snap floor covers an ordinary walk between two mid-band sends",
+          t.snapDist >= WALK_U_PER_S * midIntervalSec);
+
+    // The velocity-aware half. gateSec is the base allowance PLUS one stream
+    // segment, and the gate is the larger of the distance floor and velPeak*gateSec.
+    // A driven body legitimately trails its source by a whole segment of travel -
+    // the lead point it is walking toward was computed a segment ago - so a gate
+    // that did not cover one hard-snapped mid-band walkers chronically (4,259
+    // teleports in 30 s, bodies at gap 20-40 u against a gate of 18-25).
+    {
+        const unsigned long cad[4] = { 50, 100, 250, 500 };
+        bool coversSegment = true, neverBelowFloor = true;
+        for (int c = 0; c < 4; ++c) {
+            const float segSec = (float)cad[c] / 1000.0f;
+            for (float vel = 0.0f; vel <= 60.0f; vel += 1.0f) {
+                const float g = driveSnapGate(t, vel, cad[c], 1.0f);
+                if (g < t.snapDist)      neverBelowFloor = false;
+                if (g < vel * segSec)    coversSegment = false;
+            }
+        }
+        CHECK("the snap gate never drops below its distance floor", neverBelowFloor);
+        CHECK("...and always covers a full send segment of source travel",
+              coversSegment);
+    }
+    // That guarantee survives only while the 2.5 s clamp does not bite: past it the
+    // allowance stops growing with the cadence, so a band widened until its interval
+    // exceeded (2.5 s - SNAP_SECONDS) would start teleporting bodies for merely
+    // being one send behind. The mid band has to stay inside that.
+    CHECK("the mid-band interval leaves the base allowance intact under the clamp",
+          midIntervalSec + t.snapSeconds <= 2.5f);
+    CHECK("...and the clamp really is the edge: a 3 s cadence loses the guarantee",
+          driveSnapGate(t, 40.0f, 3000, 1.0f) < 40.0f * 3.0f);
+    // The distance floor scales with the consensus game speed, because at 5x every
+    // trailing distance is 5x in world units for the same time lag.
+    CHECK("the distance floor scales with the consensus game speed",
+          driveSnapGate(t, 0.0f, 50, 5.0f) == t.snapDist * 5.0f);
+
+    // ---- the catch-up gain -----------------------------------------------------
+    // (a) The 2.5x cap must never command LESS than the source's own pace. A chase
+    // that merely matches the source never closes; the copy sits at a fixed trail,
+    // stays over the snap gate, and gets teleported instead of converging.
+    {
+        bool alwaysGains = true;
+        for (float src = 0.0f; src <= 80.0f; src += 0.5f)
+            for (float gap = 0.0f; gap <= 100.0f; gap += 1.0f)
+                if (driveCatchupSpeed(src, gap, t.catchupK) < src)
+                    alwaysGains = false;
+        CHECK("the 2.5x cap never commands less than the source's own pace",
+              alwaysGains);
+    }
+
+    // (b) Convergence proper. Applying the gain repeatedly must shrink the gap on
+    // every step, never cross to the far side of the target, and actually finish.
+    // Modelled at the near band's cadence: a fresh sample, and so a fresh commanded
+    // speed, every 50 ms.
+    {
+        float gap = t.snapDist;
+        bool mono = true, signKept = true;
+        int steps = 0;
+        while (gap > 1.0f && steps < 200) {
+            const float next = driveCatchupStep(12.0f, gap, t.catchupK, 0.05f);
+            if (next >= gap) mono = false;
+            if (next < 0.0f) signKept = false;
+            gap = next; ++steps;
+        }
+        CHECK("the gap shrinks on every catch-up tick", mono);
+        CHECK("...without ever crossing to the far side of the target", signKept);
+        CHECK("...and closes a full snap distance inside 1.5 s of near-band ticks",
+              gap <= 1.0f && steps <= 30);
+    }
+
+    // (c) The stability bound, which is the part a retune has to notice. The step is
+    // gap * K * dt, so the correction is stable only while K * dt <= 1: at exactly 1
+    // the body lands on the target, past it the correction is larger than the error
+    // and the copy walks through the source and back. dt is the SLOWEST cadence at
+    // which the speed is recomputed - the mid band's send interval, since the walk
+    // is re-issued only when the lead point moves and the lead point moves only when
+    // a sample lands. CATCHUP_K = 2 against a 500 ms mid band sits exactly on that
+    // boundary: widening the band slows dt, and slowing dt is what turns the gain
+    // unstable. There is no headroom left in this one.
+    CHECK("the catch-up gain is stable at the slowest re-issue cadence",
+          t.catchupK * midIntervalSec <= 1.0f);
+    {
+        bool noOvershoot = true;
+        for (float gap = 0.5f; gap <= 60.0f; gap += 0.5f)
+            if (driveCatchupStep(12.0f, gap, t.catchupK, midIntervalSec) < -0.001f)
+                noOvershoot = false;
+        CHECK("...so a mid-band correction never overshoots the target", noOvershoot);
+    }
+    // The counterexample, kept for the same reason testHealDebounce keeps its
+    // fire-on-sight heal: at twice this gain the same arithmetic inverts the error
+    // every tick and the body oscillates across the source instead of converging.
+    // The speed cap bounds the amplitude but does not damp it.
+    {
+        const float bigK = t.catchupK * 2.0f;
+        float g = 8.0f, amp = 0.0f;
+        int flips = 0;
+        for (int i = 0; i < 20; ++i) {
+            const float next = driveCatchupStep(12.0f, g, bigK, midIntervalSec);
+            if ((next < 0.0f) != (g < 0.0f)) ++flips;
+            g = next;
+            if (i >= 10) { const float a = (g < 0.0f) ? -g : g; if (a > amp) amp = a; }
+        }
+        CHECK("double the gain flips the error across the target every tick",
+              flips == 20);
+        CHECK("...and the oscillation never decays away", amp >= 0.9f);
+    }
+}
+
 // ---- 6. Ownership rank resolution (OwnRanks.h) ----------------------------------
 // Guards the squad-tab ownership partition, especially the F2-panel role switch
 // regression (2026-07-14): a session launched as HOST resolves ranks to {0};
@@ -2410,6 +2799,163 @@ static void testChangeGate() {
           gateShouldSend(true, 80001, 80000, 0, 10000, false));
 }
 
+// The same header, walked as a PREDICATE rather than as two shipped flavours.
+// testChangeGate above pins money and doors at the values they run with, which
+// catches a drift in those two channels; this walks the decision itself - each
+// factor isolated, both sides of every boundary, and the unsigned tick wrap.
+//
+// Worth the checks because of the blast radius: money, factions, baked doors,
+// placed buildings, placed-building doors, production, research and deeds all
+// route their send decision through this ONE function, and unlike a wire-format
+// slip a fault here is silent. Nothing fails; a channel simply stops transmitting,
+// or transmits at a cadence nobody chose, and the first symptom is a peer whose
+// doors are wrong an hour into a session.
+//
+// Unlike ReplicatorUtil.h this header is genuinely CRT-only (that is a stated goal
+// in its own preamble), so every check below runs the PRODUCTION code.
+static void testChangeGateTable() {
+    std::printf("\n== change-gate truth table + tick wraparound (ChangeGate.h) ==\n");
+    using namespace coop::sync;
+
+    const unsigned long NOW_MS = 100000;          // "now"
+    const unsigned long MIN_MS = 1000, RES_MS = 5000;
+    // Last representable tick. nowMs() is QueryPerformanceCounter floored to ms in
+    // an unsigned long, which on this toolset is 32 bits - so the clock wraps after
+    // ~49.7 days of uptime, and every window here is an unsigned SUBTRACTION
+    // precisely so that it keeps meaning the same thing across that wrap.
+    const unsigned long WRAP_MS = (unsigned long)~0UL;
+
+    // --- resendUnsent: what it decides, and what it must not touch --------------
+    // The whole reason the parameter exists. Money has no silent seed step, so a
+    // never-sent row must stream once; doors and factions seed their baseline
+    // silently first, so a never-sent row must hold. That is the ONLY case it may
+    // speak to.
+    CHECK("a never-sent unchanged row is exactly what resendUnsent decides",
+          gateShouldSend(false, NOW_MS, 0, MIN_MS, RES_MS, true) &&
+          !gateShouldSend(false, NOW_MS, 0, MIN_MS, RES_MS, false));
+    CHECK("a never-sent CHANGED row sends either way",
+          gateShouldSend(true, NOW_MS, 0, MIN_MS, RES_MS, true) &&
+          gateShouldSend(true, NOW_MS, 0, MIN_MS, RES_MS, false));
+    {
+        bool sentRowUnaffected = true;
+        for (unsigned long age = 1; age <= 20000; age += 250)
+            if (gateShouldSend(false, NOW_MS, NOW_MS - age, MIN_MS, RES_MS, true) !=
+                gateShouldSend(false, NOW_MS, NOW_MS - age, MIN_MS, RES_MS, false))
+                sentRowUnaffected = false;
+        CHECK("...and it changes nothing at all for a row that HAS been sent",
+              sentRowUnaffected);
+    }
+
+    // A never-sent row is never THROTTLED either: lastSendMs == 0 is the
+    // never-sent sentinel, not a timestamp, so minSendMs has nothing to measure
+    // against. That is what lets a channel seed its first row in the first tick of
+    // a session instead of waiting out a window that never started.
+    {
+        bool neverThrottled = true;
+        for (unsigned long m = 0; m <= 10000; m += 500)
+            if (!gateShouldSend(true, 1, 0, m, RES_MS, false)) neverThrottled = false;
+        CHECK("a never-sent row is never throttled, whatever minSendMs says",
+              neverThrottled);
+    }
+
+    // --- both boundaries, both sides -------------------------------------------
+    // The throttle is strict-less-than and the resend is greater-or-equal, so the
+    // boundary tick itself lands on the SEND side of both. An off-by-one either way
+    // costs a whole window on a channel nobody would think to look at.
+    CHECK("throttle: one ms under minSendMs holds a change",
+          !gateShouldSend(true, NOW_MS, NOW_MS - (MIN_MS - 1), MIN_MS, RES_MS, true));
+    CHECK("throttle: exactly minSendMs releases it",
+          gateShouldSend(true, NOW_MS, NOW_MS - MIN_MS, MIN_MS, RES_MS, true));
+    CHECK("throttle: one ms over releases it",
+          gateShouldSend(true, NOW_MS, NOW_MS - (MIN_MS + 1), MIN_MS, RES_MS, true));
+    CHECK("throttle: a row sent this very millisecond is held",
+          !gateShouldSend(true, NOW_MS, NOW_MS, MIN_MS, RES_MS, true));
+    CHECK("throttle: minSendMs == 0 never throttles anything",
+          gateShouldSend(true, NOW_MS, NOW_MS - 1, 0, RES_MS, false));
+    CHECK("resend: one ms under resendMs holds an unchanged row",
+          !gateShouldSend(false, NOW_MS, NOW_MS - (RES_MS - 1), MIN_MS, RES_MS, true));
+    CHECK("resend: exactly resendMs fires",
+          gateShouldSend(false, NOW_MS, NOW_MS - RES_MS, MIN_MS, RES_MS, true));
+    CHECK("resend: one ms over fires",
+          gateShouldSend(false, NOW_MS, NOW_MS - (RES_MS + 1), MIN_MS, RES_MS, true));
+
+    // A change caught by the throttle is HELD, not dropped: the caller advances its
+    // baseline only when the gate says send, so the same change is re-offered every
+    // pass and crosses the moment the window expires. Dropping it would be a
+    // permanent divergence on a channel whose only other corrective is the resend.
+    {
+        unsigned long crossed = 0;
+        for (unsigned long age = 0; age <= 3000; age += 10)
+            if (gateShouldSend(true, NOW_MS + age, NOW_MS, MIN_MS, RES_MS, true)) { crossed = age; break; }
+        CHECK_EQ("a change held by the throttle crosses the moment it expires",
+                 crossed, MIN_MS);
+    }
+
+    // The ordering relationship between the two windows, which is the one a retune
+    // can silently break. The throttle is evaluated BEFORE the resend, so a
+    // minSendMs longer than resendMs does not disable the safety resend - it slows
+    // it to the throttle's cadence. The interval a peer actually waits for a lost
+    // row is max(minSendMs, resendMs), never resendMs on its own.
+    {
+        unsigned long firstSend = 0;
+        for (unsigned long age = 1; age <= 40000; ++age)
+            if (gateShouldSend(false, NOW_MS + age, NOW_MS, 12000, 5000, true)) { firstSend = age; break; }
+        CHECK_EQ("a throttle longer than the resend slows the resend to the throttle",
+                 firstSend, 12000);
+    }
+    {
+        SyncTuning tun;
+        CHECK("the shipped money tuning keeps the throttle under the resend",
+              tun.moneyMinSendMs < tun.moneyResendMs);
+    }
+
+    // --- unsigned tick wraparound ----------------------------------------------
+    // A row sent 100 ms before the wrap, judged after it. The unsigned subtraction
+    // has to report the TRUE age (151 ms below), not a 49-day one - a gate that got
+    // this wrong would flush every channel's whole row set in one pass, or hold
+    // every row for another 49 days, depending on which way it broke.
+    CHECK("throttle holds correctly across the tick wrap",
+          !gateShouldSend(true, 50, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("throttle: one ms under the window, measured across the wrap",
+          !gateShouldSend(true, 898, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("throttle: releases exactly at the window across the wrap",
+          gateShouldSend(true, 899, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("resend: one ms under its window across the wrap",
+          !gateShouldSend(false, 4898, WRAP_MS - 100, 0, RES_MS, true));
+    CHECK("resend: fires exactly at its own window past the wrap",
+          gateShouldSend(false, 4899, WRAP_MS - 100, 0, RES_MS, true));
+    // The one place the wrap is NOT transparent: 0 is the never-sent sentinel, so a
+    // row whose send lands on the single millisecond the clock reads 0 reads as
+    // never-sent on the next pass. That is one tick per ~50 days of uptime, per row,
+    // and it fails toward an extra send - the harmless direction. It is pinned
+    // because it is the reason lastSendMs can never be repurposed into a field where
+    // 0 is a legal timestamp.
+    CHECK("a send stamped at tick 0 reads as never-sent (the sentinel's cost)",
+          gateShouldSend(false, 5000, 0, 0, RES_MS, true) &&
+          !gateShouldSend(false, 5000, 0, 0, RES_MS, false));
+
+    // --- gateSampleDue: the same two properties at the pass level ---------------
+    CHECK("sample: one ms under the interval holds", !gateSampleDue(NOW_MS + 999, NOW_MS, 1000));
+    CHECK("sample: exactly at the interval is due",   gateSampleDue(NOW_MS + 1000, NOW_MS, 1000));
+    CHECK("sample: a zero interval samples every pass", gateSampleDue(NOW_MS, NOW_MS, 0));
+    CHECK("sample: the interval is measured correctly across the wrap",
+          !gateSampleDue(898, WRAP_MS - 100, 1000) && gateSampleDue(899, WRAP_MS - 100, 1000));
+    CHECK("sample: lastSampleMs 0 is the never-sampled sentinel, not a timestamp",
+          gateSampleDue(0, 0, 1000) && gateSampleDue(5000, 0, 60000));
+
+    // --- gateSeqAccept: the direction that actually bites -----------------------
+    // seq is u32 on the wire and monotonic per sender, so an arithmetic wrap needs
+    // billions of rows from one sender and is not the exposure. A sender whose
+    // counter RESTARTS is: the receiver's seqSeen lives in the per-channel row map
+    // (facRows_, doorRows_, ...), the outbound counters deliberately do not reset,
+    // and the two only stay compatible because resetSession clears those maps. If a
+    // future member escapes that sweep, the channel goes silent with no error.
+    CHECK("a restarted or wrapped counter reads as stale, not as new",
+          !gateSeqAccept(4000000000u, 1u));
+    CHECK("...and a receiver that cleared its seen state accepts it again",
+          gateSeqAccept(0u, 1u));
+}
+
 int main() {
     std::printf("prototest: KenshiCoop wire/hash/interp unit layer (protocol v%u)\n",
                 (unsigned)PROTOCOL_VERSION);
@@ -2418,6 +2964,7 @@ int main() {
     testEngineFaults();
     testEngineCaps();
     testChangeGate();
+    testChangeGateTable();
     testRoundTrips();
     testFraming();
     testSaveCrc();
@@ -2431,6 +2978,8 @@ int main() {
     testHealDebounce();
     testSyncTuning();
     testSuppressionCaps();
+    testDriveBands();
+    testDriveConvergence();
     testOwnRanks();
     testSteamIdParse();
     testWorkPoseMatch();

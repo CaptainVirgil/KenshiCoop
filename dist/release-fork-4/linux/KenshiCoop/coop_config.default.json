@@ -1,0 +1,26 @@
+{
+  // KenshiCoop config. For a normal Steam game you do NOT need to edit this file:
+  // your friend's Steam ID is entered in-game (press F2).
+  //
+  // LAN / direct-UDP instead: set "transport": "udp" and put the host's address
+  // in "ip". Both are re-read whenever you go ONLINE, so no restart is needed.
+  "transport": "steam",
+  "ip": "127.0.0.1",
+  "port": 27800,
+  "autoConnect": false
+
+  // Optional tuning - delete any line to get the built-in default back.
+  //
+  // "midBandMax": 256    how many distant NPCs get motion updates, and how many
+  // "midSliceMax": 32    go out per tick. Raise if far-off NPCs teleport instead
+  //                      of walking; lower if a busy town costs too much bandwidth.
+  //
+  // "carryHealDebounceMs": 1500   how long this client waits, while the incoming
+  // "furnHealDebounceMs": 1500    stream insists a body is carried or caged,
+  //                      before reproducing that locally. Do NOT set to 0: the
+  //                      stream renders slightly in the past, so a zero wait lets
+  //                      it undo what your friend just did.
+  //
+  // "doorEchoHoldMs": 5000  how long to stay quiet about a door after your friend
+  //                      reports its state.
+}
