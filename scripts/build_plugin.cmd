@@ -26,9 +26,21 @@ pushd "%REPO%" >nul
 set "REPO=%CD%"
 popd >nul
 
-set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+REM Toolchain location. Defaults to a real VS2010 + SDK 7.1 install; set
+REM KC_TOOLCHAIN to use an extracted copy instead (the layout produced by
+REM scripts\linux\setup_toolchain.sh, i.e. %KC_TOOLCHAIN%\VS10\VC and
+REM %KC_TOOLCHAIN%\SDK). That matters on a clean machine: the VC2010 SP1 compiler
+REM update (KB2519277) has been taken offline by Microsoft, so extracting the
+REM compiler from the SDK 7.1 ISO and patching its <deque> is now the only way to
+REM stand this toolchain up from scratch.
+if defined KC_TOOLCHAIN (
+    set "VS10=%KC_TOOLCHAIN%\VS10"
+    set "SDK=%KC_TOOLCHAIN%\SDK"
+) else (
+    set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+    set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
+)
 set "VC=%VS10%\VC"
-set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
 set "KL=%REPO%\third_party\KenshiLib_deps"
 set "ENET=%REPO%\third_party\enet\enet\include"
 

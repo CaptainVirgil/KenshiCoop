@@ -13,9 +13,15 @@ pushd "%REPO%" >nul
 set "REPO=%CD%"
 popd >nul
 
-set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+REM Same KC_TOOLCHAIN override as build_plugin.cmd - see the note there.
+if defined KC_TOOLCHAIN (
+    set "VS10=%KC_TOOLCHAIN%\VS10"
+    set "SDK=%KC_TOOLCHAIN%\SDK"
+) else (
+    set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+    set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
+)
 set "VC=%VS10%\VC"
-set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
 
 set "PATH=%VC%\bin\amd64;%VC%\bin;%VS10%\Common7\IDE;%SDK%\Bin\x64;%SDK%\Bin;%PATH%"
 set "INCLUDE=%VC%\include;%SDK%\Include;%REPO%\third_party\vc10_compat"

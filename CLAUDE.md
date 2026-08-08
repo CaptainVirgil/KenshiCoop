@@ -57,6 +57,29 @@ on Linux that means `pwsh`, and it is skipped rather than failed when absent.
 `Harness` (the default) includes the scenario runner. `Release` is the player build and
 excludes `test/Scenario*.cpp` and `game/EngineProbe.cpp`.
 
+**Windows without a VS2010 install:** set `KC_TOOLCHAIN` to a directory laid out like
+`scripts/linux/setup_toolchain.sh` produces (`%KC_TOOLCHAIN%\VS10\VC`, `%KC_TOOLCHAIN%\SDK`)
+and both `.cmd` scripts use it instead of `C:\Program Files (x86)\Microsoft Visual Studio 10.0`.
+This is not an exotic case: KB2519277, the VC2010 SP1 compiler update, has been taken
+offline, so extracting the compiler from the SDK 7.1 ISO and patching its `<deque>` is now
+the only way to stand this toolchain up on a clean Windows machine.
+
+## Shipping a build
+
+```bash
+scripts/linux/make_kit.sh <label>     # dist/KenshiCoop-kit-<label>.zip
+gh release create <tag> dist/KenshiCoop-kit-<label>.zip --repo CaptainVirgil/KenshiCoop
+```
+
+Players then run `scripts/update-kenshicoop.ps1` (Windows) or
+`scripts/linux/update-kenshicoop.sh`, which pull the latest release, verify it against the
+`kit.json` manifest, back up the existing mod folder to `<Kenshi>/KenshiCoop-backups/`,
+preserve `coop_config.json`, and print the protocol version. `--rollback` restores.
+
+Saves are never touched: they live in `AppData\Local\kenshi\save` (inside the Proton prefix
+on Linux), a different tree from `mods/`. Both updaters assert the path they resolved really
+is `<Kenshi>/mods/KenshiCoop` before deleting anything.
+
 **Deps are pinned to `e75769b`.** KenshiLib **v0.4.0 breaks the plugin**: it moved
 `kenshi/CombatClass.h` under `kenshi/combat/` and added a second, byte-identical
 `enum BuildingDesignation`. Do not bump the pin casually.

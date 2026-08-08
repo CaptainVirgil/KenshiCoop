@@ -76,6 +76,14 @@ re-run.
 | `error LNK2005: ... already defined` on ENet symbols | stale objects from an older naming scheme in `build/*/obj` | `rm -rf build/`; the link list is explicit, not a glob, so this should not recur |
 | Windows and Linux Release DLLs differ in content | the Linux script is not honouring `<ExcludedFromBuild>` | fix the vcxproj parsing, not the symptom |
 
+## Windows without a VS2010 install
+
+Set `KC_TOOLCHAIN` to an extracted toolchain (same layout `setup_toolchain.sh` builds:
+`%KC_TOOLCHAIN%\VS10\VC` and `%KC_TOOLCHAIN%\SDK`) and both `.cmd` scripts use it. The
+extraction itself is the same `msiexec /a` trick as on Linux, and the `<deque>` patch is
+still required — KB2519277 is offline, so a clean Windows box hits the identical
+`C2027 use of undefined type 'CraftingItem'`.
+
 ## Packaging a kit for both players
 
 The two players must run the **same build** — `PROTOCOL_VERSION` mismatch is a hard
