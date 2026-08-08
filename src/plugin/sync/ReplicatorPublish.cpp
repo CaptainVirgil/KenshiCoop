@@ -814,7 +814,50 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     unsigned int m = 0;          // rows that survived the gate
     unsigned int nNotMine = 0;   // omitted because another client authors them
     unsigned int nProxyRow = 0;  // rows published under a bound key, not a local one
-    for (unsigned int i = 0; i < n; ++i) {
+
+    // Walk NEAREST-FIRST when the enumeration hit its cap. A census row's absence
+    // is read as "does not exist" and the peer culls its real copy against it, so
+    // a truncated census is an active falsehood - and the enumeration fills
+    // per-anchor, meaning a dense region around one anchor can consume the whole
+    // budget and silently declare another anchor's neighbourhood empty. We publish
+    // 25% wider than the peer culls against, so ordering by distance puts the
+    // sacrificed rows in that margin, outside the radius the peer actually judges,
+    // instead of wherever the enumeration happened to stop.
+    //
+    // This narrows the lie; it does not end it. If the count inside the peer's own
+    // cull radius exceeds the cap, real bodies are still broadcast as absent, and
+    // no ordering fixes that - the receiver has to be TOLD the list was truncated,
+    // which is a wire change (NpcCensusHeader has no flag) and therefore a protocol
+    // bump. Recorded in docs/PROTOCOL_HISTORY.md as the next one worth spending.
+    static unsigned int order[NPC_CENSUS_MAX]; // main-thread only
+    for (unsigned int i = 0; i < n; ++i) order[i] = i;
+    if (trunc && n > 1) {
+        float rawA[12];
+        unsigned int nA = engine::interestAnchors(gw, rawA);
+        static float dist2[NPC_CENSUS_MAX];
+        for (unsigned int i = 0; i < n; ++i) {
+            float best = 3.4e38f;
+            for (unsigned int a = 0; a < nA; ++a) {
+                const float dx = states[i].x - rawA[a * 3 + 0];
+                const float dz = states[i].z - rawA[a * 3 + 2];
+                const float d2 = dx * dx + dz * dz;
+                if (d2 < best) best = d2;
+            }
+            dist2[i] = (nA > 0) ? best : 0.0f;
+        }
+        // Insertion sort: n is bounded by NPC_CENSUS_MAX and this runs at 1 Hz,
+        // only while truncated. C++03, no lambdas, no std::sort comparator object.
+        for (unsigned int i = 1; i < n; ++i) {
+            const unsigned int key = order[i];
+            const float kd = dist2[key];
+            unsigned int j = i;
+            while (j > 0 && dist2[order[j - 1]] > kd) { order[j] = order[j - 1]; --j; }
+            order[j] = key;
+        }
+    }
+
+    for (unsigned int oi = 0; oi < n; ++oi) {
+        const unsigned int i = order[oi];
         Key k = keyOf(states[i]);
         std::map<Character*, Key>::const_iterator px = proxyKeyOf.find(chars[i]);
         if (px != proxyKeyOf.end()) { k = px->second; ++nProxyRow; }

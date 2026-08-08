@@ -351,3 +351,23 @@ and stop `Wire.h` from promising it — every future bump risks re-creating the 
 this reconstruction just filled. The reconstruction was possible only because
 `Wire.h` and `prototest` are unusually well commented and the git history is
 intact; a repurpose landed without a comment would leave no trace at all.
+
+---
+
+## Next bump worth spending, if one is spent
+
+`NpcCensusHeader` has no truncation flag. A census row's absence is read by the peer
+as "this body does not exist", and it culls its real local copy against that — so when
+the enumeration hits `NPC_CENSUS_MAX` the remainder is broadcast as absent. The publish
+code has always said so in its own comment.
+
+The sender now orders the census nearest-first while truncated, which puts the
+sacrificed rows in the 25% margin the peer does not cull against. That narrows the
+window; it does not close it. If the body count inside the peer's own cull radius
+exceeds the cap, real bodies are still declared absent and no ordering can help.
+
+Closing it needs one bit on the wire — a `truncated` flag in `NpcCensusHeader`, with the
+receiver suppressing culls for that beat. `NpcCensusHeader` is 7 bytes and has been
+byte-identical since v36, so this is an **append**, the cheap kind: an older receiver
+ignores the trailing byte and behaves exactly as it does today. Costs a bump, and every
+player must update the same day, which is the only reason it has not been done.
