@@ -1032,8 +1032,14 @@ private:
     // hiccup doesn't suppress (needs ~1 s unstreamed) and a boundary NPC doesn't
     // flicker back (needs ~2 s streamed dwell to restore). Spike 18: the hard
     // interest edge had no dwell band, so boundary patrollers churned.
-    struct AuthCount { unsigned int unstreamed; unsigned int streamed;
-                       AuthCount() : unstreamed(0), streamed(0) {} };
+    // Dwell accumulators in MILLISECONDS, not frames. They used to count passes,
+    // which made suppression latency depend on frame rate - and once the wide sweep
+    // was throttled to 10 Hz the same 75 "frames" meant 1 s in the near band and
+    // 7.5 s in the wide one. docs/REPLICATION_PITFALLS.md section 1 says stop
+    // writing frame-denominated budgets; this is one of the ones it meant.
+    // lastMs is per-entry because the two passes visit a body on different cadences.
+    struct AuthCount { unsigned long unstreamed; unsigned long streamed; unsigned long lastMs;
+                       AuthCount() : unstreamed(0), streamed(0), lastMs(0) {} };
     std::map<Key, AuthCount>  authCount_;
     unsigned long             authSuppresses_; // churn counters (split_interest metric)
     unsigned long             authRestores_;
@@ -1072,6 +1078,10 @@ private:
     // judged. Without it those bodies are outside every later enumeration and leak
     // permanently, which is what censusStaleEdges_ was counting.
     bool                      censusRejudge_;
+    // When the wide sweep last actually enumerated. The sweep costs a spatial query
+    // per interest anchor out to censusRadius_ and it was running EVERY render
+    // frame to judge a census that only changes at 1 Hz.
+    unsigned long             wideSweepMs_;
     unsigned long             censusFreshChkMs_; // join: when we last sampled it
     unsigned long             censusStaleMs_;    // join: cumulative stale time
     unsigned long             censusStaleEdges_; // join: fresh -> stale transitions

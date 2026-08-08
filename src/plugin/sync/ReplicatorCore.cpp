@@ -50,6 +50,7 @@ Replicator::Replicator()
       authSuppresses_(0), authRestores_(0), authReassertMs_(0), authPruned_(0),
       censusRadius_(0.0f), censusSendMs_(0), censusRecvMs_(0), censusCulls_(0),
       censusPubTrunc_(false), censusFreshPrev_(false), censusRejudge_(false),
+      wideSweepMs_(0),
       censusFreshChkMs_(0),
       censusStaleMs_(0), censusStaleEdges_(0), proxyDriftLogMs_(0),
       camHintSendMs_(0), peerCamMs_(0),

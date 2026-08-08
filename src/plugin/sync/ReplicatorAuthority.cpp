@@ -118,8 +118,14 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // Hysteresis (step 5, spike 18): a hard streamed/unstreamed edge churned
     // boundary NPCs. Suppress only after a sustained unstreamed run (~1 s), and
     // restore only after a sustained streamed dwell (~2 s), counted in frames.
-    const unsigned int SUPPRESS_AFTER_FRAMES = 75;
-    const unsigned int RESTORE_AFTER_FRAMES  = 150;
+    // ~1 s to hide, ~2 s to restore - the same intent the old 75/150 frame counts
+    // had at 75 fps, but now independent of frame rate and of how often each pass
+    // runs. See the AuthCount note in Replicator.h.
+    const unsigned long SUPPRESS_AFTER_MS = 1000;
+    const unsigned long RESTORE_AFTER_MS  = 2000;
+    const unsigned long authNow = nowMs();
+    // Bound a single step so a load hitch cannot bank seconds of dwell in one go.
+    const unsigned long DWELL_STEP_MAX_MS = 250;
     // How much wider the single re-judge sweep reaches after a census dropout. A
     // body only leaves the enumeration by walking, so one census gap can move it a
     // few hundred units at most; 1.25x covers that without paying for it every tick.
@@ -192,7 +198,20 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     bool wideTrunc = false;
     bool censusFresh = censusRadius_ > 0.0f && censusRecvMs_ != 0 &&
                        (nowMs() - censusRecvMs_) <= 5000;
-    if (censusFresh) {
+    // Throttle the sweep to ~10 Hz. Its inputs move at 1 Hz (the peer's census) and
+    // its outputs feed dwell counters measured in seconds, so re-running four
+    // spatial queries out to censusRadius_ on every render frame bought nothing but
+    // the cost. The near pass above stays per-frame - it is the stream bubble.
+    //
+    // `wideRan` gates everything downstream that consumes wStates/wn, because on a
+    // skipped frame wn is 0 and "enumerated nothing" must not be read as "nothing
+    // exists": the authCount_/attention prune below would erase the counters of
+    // every wide-only body, and the 5 s audit would report an empty world.
+    const unsigned long WIDE_SWEEP_MS = 100;
+    bool wideRan = false;
+    if (censusFresh && (wideSweepMs_ == 0 || (nowMs() - wideSweepMs_) >= WIDE_SWEEP_MS)) {
+        wideSweepMs_ = nowMs();
+        wideRan = true;
         // Re-judge sweep on the stale->fresh edge. Nothing is judged while the
         // census is silent, so a body that drifts past censusRadius_ during the gap
         // would otherwise never be judged again - it is simply outside every later
@@ -324,15 +343,20 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // Prune counters for hands the enumeration no longer sees (left interest),
     // preserving suppressed entries (a hidden body may drop out of the query but
     // must keep its counters so the restore dwell works when it returns).
-    std::set<Key> seen;
-    for (unsigned int i = 0; i < n; ++i) seen.insert(keyOf(states[i]));
-    for (unsigned int i = 0; i < wn; ++i) seen.insert(keyOf(wStates[i]));
-    for (std::map<Key, AuthCount>::iterator it = authCount_.begin(); it != authCount_.end(); ) {
-        if (seen.find(it->first) == seen.end() &&
-            suppressed_.find(it->first) == suppressed_.end()) authCount_.erase(it++);
-        else ++it;
+    // Only prune on a frame that actually swept wide. Otherwise `seen` holds just
+    // the near band and every wide-only body looks absent, so its counters - and
+    // its attention latch - would be erased and rebuilt 10x a second.
+    if (wideRan) {
+        std::set<Key> seen;
+        for (unsigned int i = 0; i < n; ++i) seen.insert(keyOf(states[i]));
+        for (unsigned int i = 0; i < wn; ++i) seen.insert(keyOf(wStates[i]));
+        for (std::map<Key, AuthCount>::iterator it = authCount_.begin(); it != authCount_.end(); ) {
+            if (seen.find(it->first) == seen.end() &&
+                suppressed_.find(it->first) == suppressed_.end()) authCount_.erase(it++);
+            else ++it;
+        }
+        pruneAttention(seen);
     }
-    pruneAttention(seen);
 
     for (unsigned int i = 0; i < n; ++i) {
         // Proxy bodies answer to their streamed key's census entry, not their
@@ -373,19 +397,25 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         // Dormant and census-absent: neither client is speaking for this
         // region, so there is nothing to judge. Hold the debounce at zero
         // rather than letting it climb silently - when attention does arrive,
-        // the body gets a full SUPPRESS_AFTER_FRAMES to be corroborated
+        // the body gets a full SUPPRESS_AFTER_MS to be corroborated
         // instead of being hidden on the first frame someone looks at it.
         if (!exists && !observedAt(k, attnAnch, nAttnAnch,
                                    states[i].x, states[i].y, states[i].z)) {
             ac.unstreamed = 0;
             continue;
         }
-        if (exists) { ac.unstreamed = 0; if (ac.streamed < 1000000u) ++ac.streamed; }
-        else        { ac.streamed = 0;   if (ac.unstreamed < 1000000u) ++ac.unstreamed; }
+        {
+            const unsigned long dt = (ac.lastMs == 0) ? 0
+                : ((authNow - ac.lastMs) > DWELL_STEP_MAX_MS ? DWELL_STEP_MAX_MS
+                                                            : (authNow - ac.lastMs));
+            ac.lastMs = authNow;
+            if (exists) { ac.unstreamed = 0; ac.streamed   += dt; }
+            else        { ac.streamed   = 0; ac.unstreamed += dt; }
+        }
         if (exists) {
             // Host owns it again: hand it back once the stream has DWELLED (a
             // boundary NPC that flickers into the set for a frame stays hidden).
-            if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
+            if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_MS) {
                 // Only forget the entry if the un-hide actually happened. Erasing on
                 // a failed restore leaves the body invisible and off the update list
                 // with nothing left that knows to retry it; keeping it means the ~2 s
@@ -439,7 +469,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             // Host neither streams nor lists it (census-absent ghost): after
             // the debounce, hide + freeze so the local AI can't run a divergent
             // copy on top of the host-driven world.
-            if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_FRAMES) {
+            if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_MS) {
                 // Phase 2 hardening: only RECORD the suppression when the engine
                 // call actually landed. A faulted hide used to be booked as done,
                 // leaving the body visible forever with no evidence - the silent
@@ -457,7 +487,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                         states[i].hIndex, states[i].hSerial, nm, (unsigned)keep.size(), n,
                         (unsigned)suppressed_.size(), authSuppresses_, authRestores_);
                       b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
-                } else if (ac.unstreamed == SUPPRESS_AFTER_FRAMES) {
+                } else if (ac.unstreamed >= SUPPRESS_AFTER_MS) {
                     char b[96]; _snprintf(b, sizeof(b) - 1,
                         "[authority] suppress MISS hand=%u,%u (engine call failed; retrying)",
                         states[i].hIndex, states[i].hSerial);
@@ -473,7 +503,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // judged are skipped by pointer (its streamed logic is authoritative
     // inside the bubble), as is anything applyTargets drove this tick. Same
     // hysteresis counters so a census-boundary NPC doesn't churn.
-    if (censusFresh && wn > 0) {
+    if (censusFresh && wideRan && wn > 0) {
         unsigned long nowR = nowMs(); // recently-driven grace reference
         std::set<Character*> nearSet;
         for (unsigned int i = 0; i < n; ++i) nearSet.insert(chars[i]);
@@ -522,10 +552,16 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 ac.unstreamed = 0;
                 continue;
             }
-            if (exists) { ac.unstreamed = 0; if (ac.streamed < 1000000u) ++ac.streamed; }
-            else        { ac.streamed = 0;   if (ac.unstreamed < 1000000u) ++ac.unstreamed; }
+            {
+                const unsigned long dt = (ac.lastMs == 0) ? 0
+                    : ((authNow - ac.lastMs) > DWELL_STEP_MAX_MS ? DWELL_STEP_MAX_MS
+                                                                : (authNow - ac.lastMs));
+                ac.lastMs = authNow;
+                if (exists) { ac.unstreamed = 0; ac.streamed   += dt; }
+                else        { ac.streamed   = 0; ac.unstreamed += dt; }
+            }
             if (exists) {
-                if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
+                if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_MS) {
                     if (!engine::restoreNpc(gw, wChars[i])) {
                         char rb[128]; _snprintf(rb, sizeof(rb) - 1,
                             "[authority] restore MISS hand=%u,%u (engine call failed; retrying)",
@@ -558,7 +594,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                     if (censusFreezeAi_ && drift >= 0.0f)
                         censusFreezeDivergedAi(wChars[i], k, drift);
                 }
-            } else if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_FRAMES) {
+            } else if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_MS) {
                 if (engine::suppressNpc(gw, wChars[i])) {
                     suppressed_[k] = wChars[i];
                     ++authSuppresses_;
@@ -574,7 +610,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                         (unsigned)censusHands_.size(), wn,
                         (unsigned)suppressed_.size(), censusCulls_);
                       b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
-                } else if (ac.unstreamed == SUPPRESS_AFTER_FRAMES) {
+                } else if (ac.unstreamed >= SUPPRESS_AFTER_MS) {
                     char b[96]; _snprintf(b, sizeof(b) - 1,
                         "[census] cull MISS hand=%u,%u (engine call failed; retrying)",
                         wStates[i].hIndex, wStates[i].hSerial);
@@ -662,7 +698,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         // wasn't vouched live this pass (this tick's enumerations, driven and
         // proxy sets, plus the just-validated suppressed bodies). A pruned
         // body that comes back into judgment simply gets a fresh label.
-        if (!debugMarkers_.empty()) {
+        if (wideRan && !debugMarkers_.empty()) {
             std::set<Character*> vouched;
             for (unsigned int i = 0; i < n; ++i)  vouched.insert(chars[i]);
             for (unsigned int i = 0; i < wn; ++i) vouched.insert(wChars[i]);
@@ -691,7 +727,11 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // transient (one debounce, ~1 s). Test-ExistenceParity gates on it.
     // KENSHICOOP_DEBUG_CENSUS=1 additionally dumps a row per ghost.
     static unsigned long auditMs = 0; // main-thread only
-    if ((now - auditMs) >= 5000) {
+    // Only audit on a frame that swept wide: the counts below are built from
+    // wn/wStates, and on a skipped frame that reads as an empty world - the log
+    // would claim wide=0 and ghost=0 every time the 5 s tick happened to land
+    // between sweeps. At 10 Hz the wait is at most another 100 ms.
+    if (wideRan && (now - auditMs) >= 5000) {
         auditMs = now;
         unsigned int cDrv = 0, cCen = 0, cHid = 0, cGhost = 0, cDorm = 0;
         unsigned int cMine = 0;   // bodies in cells WE author (presence authority)
