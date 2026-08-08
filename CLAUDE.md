@@ -53,7 +53,7 @@ embedded PDB path. Both scripts link objects in vcxproj source order — `/OPT:I
 depends on link order, so an alphabetical object list silently changes `.text`. See the
 `kenshicoop-build` skill for the comparison procedure and the Windows VM harness.
 
-The gate builds both configurations and runs `prototest` (517 checks: exact packed
+The gate builds both configurations and runs `prototest` (612 checks: exact packed
 sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp
 buffer, the save-transfer receiver) and `tunneltest` (17 checks: ENet over the Steam
 socket hooks under loss and the 1200 B datagram ceiling), both under Wine on Linux.
@@ -177,6 +177,22 @@ violation.
 - **Frame counts are not time.** `SUPPRESS_AFTER_FRAMES` and friends make behaviour depend
   on frame rate; `docs/REPLICATION_PITFALLS.md` §1 says stop writing them.
 
+## Build loop
+
+Both build scripts are **incremental**: a translation unit is skipped when its object
+is newer than its source, so a no-op rebuild is under a second and a one-file edit is
+about one. Touching **any** header forces a full rebuild — deliberately, because the
+headers here are load-bearing and a source-only check would skip a TU a header change
+invalidated. `KC_REBUILD=1` forces a full rebuild.
+
+The log keeps one previous run as `.prev`, so relaunching after a crash no longer
+destroys the log of the crash. The kit ships `KenshiCoop.map`, so a crash address in a
+player's report resolves to a function.
+
+`[net] bandwidth out=… in=…` appears every 5 s. Nothing measured its own traffic before,
+which means any earlier claim about what a channel costs — including the ~40 KB/s figure
+in `SyncTuning.h` — was arithmetic rather than measurement.
+
 ## Known open work
 
 `docs/PROTOCOL_HISTORY.md` reconstructs the wire versions and marks what is evidenced
@@ -189,9 +205,15 @@ produced a ranked backlog; the significant unfixed items are:
   never drained on the opposite role, and `resetSession` misses six members.
 - **Peer trust**: packets are dispatched before the handshake completes, save receive does
   no size accounting, and fixed-size wire `char[]` fields are read as C strings.
-- **Perf**: the wide authority sweep still runs every frame to judge a 1 Hz census; the
-  20 Hz near band has no change gate.
-- **No bandwidth telemetry anywhere**, so none of the above is measurable in a live session.
+- **The 20 Hz near band has no change gate** — a stationary NPC costs exactly what a
+  sprinting one does. The largest remaining bandwidth win, and deliberately not taken
+  blind: it changes what the peer receives for a body that is not moving, which feeds
+  the interpolator, the drive and the authority dwell at once. Judge it against the
+  bandwidth telemetry from a real session first.
+- **`applyTargets` (~1700 lines) is still one function.** The extraction is safe in
+  principle but needs a test that can see the sync layer, which does not exist yet.
+- **A stub-engine harness** would make most of `sync/` testable headlessly; the audit
+  rated it the largest available coverage win.
 
 ## Diagnosing a live session
 
