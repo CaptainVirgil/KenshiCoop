@@ -210,6 +210,20 @@ public:
     void bumpSessionEpoch();
 
     bool isRunning() const { return running_ != 0; }
+
+    // Why the connection is not happening, for the panel to say out loud. The net
+    // thread knows exactly why a peer was rejected and used to keep it to itself:
+    // it logged the reason and disconnected, while the panel went on rendering
+    // "Connecting..." forever and the join re-dialled every 2 s. A player then has
+    // a mod that does not work and no sentence anywhere telling them what to fix.
+    enum Fault {
+        FAULT_NONE = 0,
+        FAULT_VERSION,      // peer speaks a different PROTOCOL_VERSION
+        FAULT_THIRD_PLAYER  // a third peer tried to join a two-player session
+    };
+    int  lastFault()   const { return (int)faultKind_; }
+    u32  peerVersion() const { return (u32)faultPeerVer_; }
+    void clearFault()  { InterlockedExchange(&faultKind_, (LONG)FAULT_NONE); }
     // host = 0; client = id from WELCOME. myId_ is written by the NET thread when
     // the WELCOME arrives and read here on the MAIN thread, so it is a volatile
     // LONG written via InterlockedExchange; an aligned 32-bit volatile read is
@@ -331,6 +345,10 @@ private:
     HANDLE        thread_;
     volatile LONG running_;
     volatile LONG stopFlag_;
+    // Written by the NET thread at the rejection sites, read on the MAIN thread by
+    // the panel. Volatile LONG + Interlocked for the same reason as myId_.
+    volatile LONG faultKind_;
+    volatile LONG faultPeerVer_;
     // Written by the NET thread on WELCOME (InterlockedExchange) and read on the
     // MAIN thread via localId(); volatile LONG so the read is atomic + uncached.
     volatile LONG myId_;

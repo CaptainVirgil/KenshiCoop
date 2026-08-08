@@ -149,6 +149,30 @@ bool relPathSafe(const char* p, unsigned int len) {
     return true;
 }
 
+// A save NAME arrives off the wire and then selects a directory that gets deleted
+// and recreated (the staging folder, and on commit the final one). relPathSafe
+// guards the per-chunk relative paths but was never applied here, so a name of
+// "..\..\Something" pointed the whole transfer - including its removeTree - at a
+// directory of the sender's choosing. Same rule as relPathSafe, plus the Windows
+// path characters that have no business in a save name at all.
+bool saveNameSafe(const std::string& n) {
+    if (n.empty() || n.size() > 48) return false;
+    for (size_t i = 0; i < n.size(); ++i) {
+        const unsigned char ch = (unsigned char)n[i];
+        if (ch < 0x20) return false;                      // control bytes
+        if (ch == '\\' || ch == '/' || ch == ':') return false;  // separators, drives
+        if (ch == '*' || ch == '?' || ch == '"' ) return false;    // wildcards
+        if (ch == '<' || ch == '>' || ch == '|' ) return false;
+        if (ch == '.' && i + 1 < n.size() && n[i + 1] == '.') return false; // traversal
+    }
+    // Trailing dots and spaces are silently stripped by Windows, so "evil " and
+    // "evil" would name the same directory while comparing unequal here.
+    const char last = n[n.size() - 1];
+    if (last == ' ' || last == '.') return false;
+    if (n[0] == ' ') return false;
+    return true;
+}
+
 // ---- Sender state (host, main thread only) ------------------------------------
 #ifndef KENSHICOOP_PROTOTEST
 
@@ -561,6 +585,15 @@ void onSaveBegin(const SaveBeginPacket& b) {
     char name[sizeof(b.name) + 1];
     memcpy(name, b.name, sizeof(b.name));
     name[sizeof(b.name)] = '\0';
+
+    if (!saveNameSafe(std::string(name))) {
+        char eb[160];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] REJECT begin: peer sent an unusable save name (xfer=%u)", b.xferId);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        g_recvActive = false;
+        return;
+    }
 
     g_recvName       = name;
     g_recvXferId     = b.xferId;

@@ -96,6 +96,12 @@ public:
     // acquired within the last ~16 samples - its first reconciliation snap
     // is a coverage event, not steady-state tracking noise (Phase 2).
     int samples() const { return count_; }
+    // Ring time of the newest snapshot, 0 when empty. A self-heal debounce needs
+    // this: elapsed wall clock alone does not mean the stream said anything, and
+    // sample() keeps re-serving the same snapshot for seconds after the peer goes
+    // quiet. Requiring this to ADVANCE is what makes "the stream must keep
+    // asserting the condition" true rather than merely "time passed".
+    unsigned long newestMs() const { return count_ ? at(count_ - 1).t : 0ul; }
 
 private:
     struct Snap {

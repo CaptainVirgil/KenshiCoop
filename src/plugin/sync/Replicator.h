@@ -822,6 +822,10 @@ private:
         // already ended here. Healing on the first such tick re-lifts a body the
         // peer just put down. See tuning_.carryHealDebounceMs.
         unsigned long carrySeeTick;
+        // Ring time of the newest sample when carrySeeTick was armed. The heal may
+        // only fire once the stream has produced something NEWER that still says
+        // "carried" - wall clock alone would let a frozen stream satisfy the wait.
+        unsigned long carrySeeSample;
         unsigned long carryNoSeeTick; // first tick a locally-carrying copy's stream
                                       //   stopped reporting TASK_CARRY_BODY (the
                                       //   debounced host-side-drop detector)
@@ -834,6 +838,7 @@ private:
         // ended here. Healing on the first such tick re-cages a prisoner the peer
         // just freed. See tuning_.furnHealDebounceMs.
         unsigned long furnSeeTick;
+        unsigned long furnSeeSample;   // as carrySeeSample, for the occupancy heal
         unsigned long furnNoSeeTick;  // first tick a locally-occupying copy's stream
                                       //   stopped reporting the occupancy bit (the
                                       //   debounced owner-side-exit detector)
@@ -861,6 +866,7 @@ private:
         // nothing would ever unlock it again - a permanent divergence where one
         // player sees a freed captive and the other sees a slave.
         unsigned long chainSeeTick;
+        unsigned long chainSeeSample;  // as carrySeeSample, for the shackle relock
         unsigned long chainNoSeeTick;
         // Set when a reliable furniture ENTER is applied: the bed fast-exit must not
         // undo it on the strength of a sample older than the event.
@@ -909,10 +915,11 @@ private:
                    combatOverTick(0), npcSnapTick(0),
                    goalsCleared(false),
                    trusted(false), agreeStreak(0),
-                   carryHealTick(0), carrySeeTick(0), carryNoSeeTick(0),
-                   furnHealTick(0), furnSeeTick(0), furnNoSeeTick(0), furnPeerTick(0),
+                   carryHealTick(0), carrySeeTick(0), carrySeeSample(0), carryNoSeeTick(0),
+                   furnHealTick(0), furnSeeTick(0), furnSeeSample(0), furnNoSeeTick(0),
+                   furnPeerTick(0),
                    haveChainOwner(false), chainHealTick(0),
-                   chainSeeTick(0), chainNoSeeTick(0), furnEnterHoldMs(0),
+                   chainSeeTick(0), chainSeeSample(0), chainNoSeeTick(0), furnEnterHoldMs(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), walkBranchPrev(false),
@@ -1704,7 +1711,13 @@ private:
     // per limb - first aid on a head wound forwards too.
     struct MedRecv {
         float recvBand[12]; float sentBand[12]; unsigned long lastFwdMs; bool have;
-        MedRecv() : lastFwdMs(0), have(false) {
+        // When this entry was last PROBED, as distinct from last forwarded.
+        // lastFwdMs is only written when a treatment actually crosses, so a body
+        // that never gets first aid - which is nearly all of them - has 0 forever
+        // and its engine probe runs on every single tick for the rest of the
+        // session. The throttle has to key off the probe, not the outcome.
+        unsigned long lastProbeMs;
+        MedRecv() : lastFwdMs(0), lastProbeMs(0), have(false) {
             for (int i = 0; i < 12; ++i) { recvBand[i] = -1.0f; sentBand[i] = -1.0f; }
         }
     };

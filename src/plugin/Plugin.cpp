@@ -207,6 +207,9 @@ void (*g_titleUpdate_orig)(TitleScreen*)   = 0;
 // mainLoop_hook can hand their addresses to coopPanelTick.
 void startNetworking();
 void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId);
+// When the current connection attempt started, so the panel can escalate from
+// "connecting" to "here is what to check" instead of waiting silently forever.
+static unsigned long g_connectStartMs = 0;
 void coopUiDisconnect();
 
 // Log to BOTH our dedicated per-line-flushed file (what the test runner reads)
@@ -752,14 +755,50 @@ void coopPanelDrive() {
     ps.peerPresent  = g_peerPresent;
     ps.isHost       = g_cfg.isHost;
     ps.transportSel = (g_cfg.transport == "steam") ? 0 : 1;
+    // A player staring at "Connecting..." has no way to tell a wrong Steam ID from
+    // a version mismatch from a friend who has not gone online yet. The net thread
+    // and the Steam layer both KNOW which it is; everything below is about saying
+    // so. Order matters: report the definite faults before the guesses.
     std::string detail;
     int ostate;
+    char nb[224];
     if (g_peerPresent) {
         detail = g_cfg.isHost ? "Connected - peer joined" : "Connected to host";
         ostate = 2;
+    } else if (g_net.lastFault() == coop::NetLink::FAULT_VERSION) {
+        _snprintf(nb, sizeof(nb) - 1,
+                  "Version mismatch: your friend is on protocol v%u, you are on v%u. "
+                  "Both players must install the same release.",
+                  (unsigned)g_net.peerVersion(), (unsigned)coop::PROTOCOL_VERSION);
+        nb[sizeof(nb) - 1] = '\0';
+        detail = nb; ostate = 0;
+    } else if (g_net.lastFault() == coop::NetLink::FAULT_THIRD_PLAYER) {
+        detail = "A third player tried to join. KenshiCoop supports two players.";
+        ostate = 0;
     } else if (g_net.isRunning()) {
-        detail = g_cfg.isHost ? "Hosting - waiting for peer..." : "Connecting...";
-        ostate = 1;
+        // Escalate on time. The first twenty seconds of "waiting" are normal; after
+        // that it is a misconfiguration, and the two that actually happen are both
+        // players picking HOST, and pasting your own ID instead of your friend's.
+        unsigned long waited = (g_connectStartMs != 0) ? (GetTickCount() - g_connectStartMs) : 0;
+        int steamErr = coop::steamp2p::lastSessionError();
+        if (steamErr == 1) {
+            detail = "Your friend is not in Kenshi with KenshiCoop loaded yet.";
+            ostate = 1;
+        } else if (steamErr == 3) {
+            detail = "Your friend's Steam is offline - they need to be online for this to connect.";
+            ostate = 1;
+        } else if (steamErr == 4) {
+            detail = "Could not reach your friend through Steam. Check the ID you pasted.";
+            ostate = 1;
+        } else if (waited > 20000) {
+            detail = g_cfg.isHost
+                ? "Still waiting. Check: your friend set Role: JOIN, pasted YOUR Steam ID, and went ONLINE."
+                : "Still connecting. Check: your friend set Role: HOST and is ONLINE, and that you pasted THEIR ID.";
+            ostate = 1;
+        } else {
+            detail = g_cfg.isHost ? "Hosting - waiting for peer..." : "Connecting...";
+            ostate = 1;
+        }
     } else {
         detail = "Offline - press F2, then set Connection to ONLINE";
         ostate = 0;
@@ -1791,10 +1830,18 @@ void startNetworking() {
     // UDP loudly when Steam is unavailable so a misconfigured session still
     // behaves like the stock build instead of silently doing nothing.
     if (g_cfg.transport == "steam") {
+        // Both fallbacks below drop to UDP against g_cfg.ip, which defaults to
+        // 127.0.0.1 - so the session dials the player's own loopback and waits
+        // forever, while the panel still reads "over Steam" because transport was
+        // never updated. Say what actually happened, and make the panel agree.
         if (g_cfg.steamPeer == 0) {
-            coopErr("[steam] KENSHICOOP_TRANSPORT=steam requires KENSHICOOP_STEAM_PEER=<partner steamid64>; falling back to UDP");
+            coopErr("[steam] no friend Steam ID set - click 'Paste friend's Steam ID' in the F2 panel. "
+                    "Falling back to direct UDP, which will NOT reach your friend.");
+            g_cfg.transport = "udp";
         } else if (!coop::steamp2p::init()) {
-            coopErr("[steam] init failed (Steam not running / offline?); falling back to UDP");
+            coopErr("[steam] Steam is not running, or is in offline mode. "
+                    "Falling back to direct UDP, which will NOT reach your friend.");
+            g_cfg.transport = "udp";
         } else {
             coop::steamp2p::setPeer(g_cfg.steamPeer);
             g_net.setSteamTransport(g_cfg.steamPeer);
@@ -1819,6 +1866,10 @@ void startNetworking() {
 // the Replicator/Inbound session state is reset for a clean handshake).
 void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId) {
     if (g_net.isRunning()) g_net.stop();
+    // A new attempt is not the old attempt: drop the previous rejection so the
+    // panel does not keep explaining a version mismatch the player just fixed.
+    g_net.clearFault();
+    g_connectStartMs = GetTickCount();
     coop::steamp2p::shutdown();
     // World is live here (reconnect from within a running game): despawn minted
     // proxies before clearing maps so a re-connect leaves no orphaned duplicates.

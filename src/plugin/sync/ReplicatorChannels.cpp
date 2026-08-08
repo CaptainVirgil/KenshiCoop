@@ -311,8 +311,11 @@ void Replicator::applyMedical(GameWorld* gw, Inbound& in, NetLink& net, u32 owne
     for (std::map<Key, MedRecv>::iterator it = medRecv_.begin(); it != medRecv_.end(); ++it) {
         const Key& k = it->first;
         MedRecv&   r = it->second;
-        if (!r.have || (now - r.lastFwdMs) < FWD_THROTTLE_MS) continue;
+        if (!r.have || (now - r.lastProbeMs) < FWD_THROTTLE_MS) continue;
         if (ownHands_.find(k) != ownHands_.end()) continue;
+        // Stamp the probe before doing it: the engine read below is the cost being
+        // throttled, and it happens whether or not anything is forwarded.
+        r.lastProbeMs = now;
         unsigned int hand[5] = { k.t, k.c, k.cs, k.i, k.s };
         engine::MedicalRead mr;
         if (!engine::readMedicalByHand(hand, &mr) || !mr.valid) continue;
@@ -1682,39 +1685,55 @@ void Replicator::onPeerConnected(NetLink& net, u32 ownerId) {
     // phantom drop/KO edges rather than heal state.
     unsigned int nFac = 0, nDoor = 0, nBdoor = 0, nMed = 0, nStats = 0,
                  nMoney = 0, nInv = 0, nWorld = 0, nProd = 0, nDeed = 0;
+    // Stagger the reseed rather than flattening every stamp to 1. Every one of
+    // these caches resends on `now - lastSendMs >= RESEND_MS`, so setting them all
+    // to 1 makes the entire cached world become due in the SAME frame the peer
+    // connects: with storeSync on that is dozens of container snapshots at up to
+    // ~10 KB each, plus medical, stats, doors and production, dumped in one tick
+    // at exactly the moment the join is also loading a world and streaming a save.
+    // Spreading the stamps over RESEED_SPREAD_MS lets the existing per-channel
+    // sample throttles pace it for free, and the peer still has the full picture
+    // within a few seconds.
+    const unsigned long RESEED_SPREAD_MS = 5000;
+    unsigned long reseedN = 0;
+    // 1 means "infinitely old, send immediately". Walking the stamp forward from
+    // there hands out later and later due-times, without ever exceeding now.
+#define KC_RESEED_STAMP (1 + (unsigned long)((reseedN++ * 37) % RESEED_SPREAD_MS))
+
     for (std::map<std::string, FacRow>::iterator it = facRows_.begin();
          it != facRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nFac; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nFac; }
     for (std::map<Key, DoorRow>::iterator it = doorRows_.begin();
          it != doorRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nDoor; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nDoor; }
     for (std::map<std::pair<Key, int>, BdoorRow>::iterator it = bdoorRows_.begin();
          it != bdoorRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nBdoor; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nBdoor; }
     for (std::map<Key, MedPub>::iterator it = medPub_.begin();
          it != medPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nMed; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nMed; }
     for (std::map<Key, StatsPub>::iterator it = statsPub_.begin();
          it != statsPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nStats; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nStats; }
     // The money pool is a single value, not a row cache: age its send stamp so
     // publishMoneyPool re-broadcasts the authoritative total on its next sample.
     if (poolSentMs_ != 0) { poolSentMs_ = 1; nMoney = 1; }
     for (std::map<Key, InvPub>::iterator it = invPub_.begin();
          it != invPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nInv; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nInv; }
     for (std::map<Key, WorldTrack>::iterator it = worldTrack_.begin();
          it != worldTrack_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nWorld; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nWorld; }
     for (std::map<std::pair<int, Key>, ProdRow>::iterator it = prodRows_.begin();
          it != prodRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nProd; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nProd; }
     // Deeds send with resendUnsent, so a fresh peer would learn the owned set
     // on the next 1 Hz sample regardless; ageing the stamps just means it does
     // not wait out the 15 s resend window for deeds already published.
     for (std::map<Key, DeedRow>::iterator it = deedRows_.begin();
          it != deedRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nDeed; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nDeed; }
+#undef KC_RESEED_STAMP
 
     char b[240];
     _snprintf(b, sizeof(b) - 1,

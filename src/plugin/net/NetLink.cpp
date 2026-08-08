@@ -81,7 +81,7 @@ NetLink::NetLink()
     : isHost_(false), port_(0),
       enetHost_(0), serverPeer_(0), inbound_(0),
       outOwner_(0), outStampMs_(0), haveOut_(false),
-      thread_(0), running_(0), stopFlag_(0), myId_(0),
+      thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0), myId_(0),
       sendEpoch_(0),
       steamPeer_(0),
       simDelayMs_(0), simJitterMs_(0), simLossPct_(0) {
@@ -399,6 +399,9 @@ void NetLink::threadLoop() {
 
     u32   nextId = 1;
     DWORD lastConnectAttempt = GetTickCount();
+    // Entity-batch de-duplication state (see the send block below).
+    u32   lastSentStamp    = 0;
+    DWORD lastKeepaliveMs  = GetTickCount();
 
     // Wall-clock time-sync state (client only). The join pings every ~2 s; each
     // pong yields an (rtt, offset) sample; the minimum-RTT sample wins (NTP
@@ -425,7 +428,12 @@ void NetLink::threadLoop() {
                 (serverPeer_->state == ENET_PEER_STATE_DISCONNECTED) ||
                 (serverPeer_->state == ENET_PEER_STATE_ZOMBIE);
             DWORD now = GetTickCount();
-            if (disconnected && (now - lastConnectAttempt) >= 2000) {
+            // Re-dialling a host that rejected us on version can never succeed, and
+            // at 2 s it fills BOTH logs with the same rejection until someone gives
+            // up. Keep a slow retry so a genuine reinstall still reconnects on its
+            // own, but stop pretending progress is being made.
+            const DWORD retryMs = (faultKind_ == (LONG)FAULT_VERSION) ? 30000u : 2000u;
+            if (disconnected && (now - lastConnectAttempt) >= retryMs) {
                 lastConnectAttempt = now;
                 if (serverPeer_) { enet_peer_reset(serverPeer_); serverPeer_ = 0; }
                 ENetAddress addr;
@@ -473,6 +481,8 @@ void NetLink::threadLoop() {
                                           (unsigned)h.version, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netErr(b);
+                                InterlockedExchange(&faultPeerVer_, (LONG)h.version);
+                                InterlockedExchange(&faultKind_, (LONG)FAULT_VERSION);
                                 enet_peer_disconnect(ev.peer, 0);
                             } else {
                                 u32 id = nextId++;
@@ -490,6 +500,7 @@ void NetLink::threadLoop() {
                                     // a clean rejection is something they can act on.
                                     netErr("3+ players unsupported: join-authored state is "
                                            "not relayed peer-to-peer; rejecting");
+                                    InterlockedExchange(&faultKind_, (LONG)FAULT_THIRD_PLAYER);
                                     enet_peer_disconnect(ev.peer, 0);
                                     enet_packet_destroy(ev.packet);
                                     break;
@@ -519,6 +530,8 @@ void NetLink::threadLoop() {
                                           (unsigned)w.version, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netErr(b);
+                                InterlockedExchange(&faultPeerVer_, (LONG)w.version);
+                                InterlockedExchange(&faultKind_, (LONG)FAULT_VERSION);
                                 // Tear down here too. The host's own gate normally
                                 // disconnects first, but relying on that leaves this
                                 // side half-open whenever it does not: connected at the
@@ -1829,7 +1842,19 @@ void NetLink::threadLoop() {
         have  = haveOut_;
         LeaveCriticalSection(&outCs_);
 
-        if (have && !ents.empty()) {
+        // Skip a snapshot we have already sent. haveOut_ is never cleared, so when
+        // the main thread stops publishing - a coordinated load, a save commit, any
+        // world swap - this loop otherwise re-broadcasts the LAST live snapshot at
+        // 20 Hz for as long as the stall lasts, telling the peer that bodies which
+        // are mid-teardown are still exactly where they were. A slow keepalive
+        // stays, so a genuinely idle-but-live world does not fall out of the
+        // receiver's staleness window.
+        bool freshStamp = (stamp != lastSentStamp);
+        DWORD nowSend = GetTickCount();
+        bool keepalive = (nowSend - lastKeepaliveMs) >= 500;
+        if (have && !ents.empty() && (freshStamp || keepalive)) {
+            lastSentStamp   = stamp;
+            if (keepalive) lastKeepaliveMs = nowSend;
             for (size_t off = 0; off < ents.size(); off += batchCap) {
                 unsigned count = (unsigned)(ents.size() - off);
                 if (count > batchCap) count = batchCap;

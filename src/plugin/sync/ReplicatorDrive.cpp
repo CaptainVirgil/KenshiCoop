@@ -36,6 +36,19 @@ void Replicator::logHardSnap(Character* c, const EntityState& out, const char* k
     skipped = 0;
 }
 
+// A self-heal may fire only when BOTH are true: the debounce window has elapsed,
+// and the stream has produced a genuinely NEWER sample that still asserts the
+// condition. Wall clock alone is not enough - sample() re-serves the same snapshot
+// for seconds after a peer goes quiet, so a purely time-based debounce expires
+// against the very sample it was meant to wait out, which is the bug it exists to
+// prevent. Requiring the ring to advance ties the wait to the peer still talking.
+static bool healDue(unsigned long now, unsigned long seeTick, unsigned long seeSample,
+                    unsigned long debounceMs, const EntityInterp& in) {
+    if (seeTick == 0) return false;
+    if ((now - seeTick) < debounceMs) return false;
+    return in.newestMs() > seeSample;
+}
+
 void Replicator::applyTargets(GameWorld* gw) {
     (void)gw;
     unsigned long now = nowMs();
@@ -424,7 +437,7 @@ void Replicator::applyTargets(GameWorld* gw) {
                 for (int fi = 0; fi < 5; ++fi) d.chainOwner[fi] = lsr.owner[fi];
                 d.haveChainOwner = true;
             }
-            if (!streamChained) d.chainSeeTick = 0;
+            if (!streamChained) { d.chainSeeTick = 0; d.chainSeeSample = 0; }
             if (streamChained)  d.chainNoSeeTick = 0;
             // RELEASE: the stream stopped reporting the shackle while our copy still
             // wears it. Debounced like every other destructive direction - a dropped
@@ -445,10 +458,13 @@ void Replicator::applyTargets(GameWorld* gw) {
             }
             // RELOCK: debounced against the render delay, or a relock races ahead of
             // the peer's own unshackle and wins.
-            if (streamChained && haveSr && !lsr.chained && d.chainSeeTick == 0)
-                d.chainSeeTick = now;
+            if (streamChained && haveSr && !lsr.chained && d.chainSeeTick == 0) {
+                d.chainSeeTick   = now;
+                d.chainSeeSample = d.interp.newestMs();
+            }
             if (streamChained && haveSr && !lsr.chained &&
-                (now - d.chainSeeTick) >= tuning_.furnHealDebounceMs &&
+                healDue(now, d.chainSeeTick, d.chainSeeSample,
+                        tuning_.furnHealDebounceMs, d.interp) &&
                 (now - d.chainHealTick) >= FURN_HEAL_MS) {
                 d.chainHealTick = now;
                 // Remembered owner if we have one, else the body's own slaveOwner
@@ -522,7 +538,17 @@ void Replicator::applyTargets(GameWorld* gw) {
             // host's work pose at rest). Cage/bed (kinds 1-2) remain true
             // transform anchors below.
             if (streamKind == 3) {
+                // Debounced like every other heal. This one matters MORE than the
+                // caged case, not less: a pole-chained body does emit a reliable
+                // EVT_EXIT_FURNITURE when it is released, so an undebounced re-chain
+                // here re-shackles a prisoner the peer just freed, off a stale batch.
+                if (haveFr && localKind != 3 && d.furnSeeTick == 0) {
+                    d.furnSeeTick   = now;
+                    d.furnSeeSample = d.interp.newestMs();
+                }
                 if (haveFr && localKind != 3 &&
+                    healDue(now, d.furnSeeTick, d.furnSeeSample,
+                            tuning_.furnHealDebounceMs, d.interp) &&
                     (now - d.furnHealTick) >= FURN_HEAL_MS) {
                     d.furnHealTick = now;
                     // A local bed/cage the stream does NOT vouch for is a
@@ -581,11 +607,14 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // client as the peer IMPRISONING someone. FURN_HEAL_MS is only a gap
                 // between attempts and cannot help when the first attempt is already
                 // wrong. The heal repairs a LOST event, so waiting costs nothing.
-                if (haveFr && localKind == streamKind) d.furnSeeTick = 0;
-                if (haveFr && localKind != streamKind && d.furnSeeTick == 0)
-                    d.furnSeeTick = now;
+                if (haveFr && localKind == streamKind) { d.furnSeeTick = 0; d.furnSeeSample = 0; }
+                if (haveFr && localKind != streamKind && d.furnSeeTick == 0) {
+                    d.furnSeeTick   = now;
+                    d.furnSeeSample = d.interp.newestMs();
+                }
                 if (haveFr && localKind != streamKind &&
-                    (now - d.furnSeeTick) >= tuning_.furnHealDebounceMs &&
+                    healDue(now, d.furnSeeTick, d.furnSeeSample,
+                            tuning_.furnHealDebounceMs, d.interp) &&
                     (now - d.furnHealTick) >= FURN_HEAL_MS) {
                     d.furnHealTick = now;
                     // Search for the fixture around the NEWEST received position, not
@@ -732,7 +761,8 @@ void Replicator::applyTargets(GameWorld* gw) {
                 continue;
             } else {
                 d.furnNoSeeTick = 0;
-                d.furnSeeTick   = 0; // stream asserts no occupancy: nothing to heal to
+                // Stream asserts no occupancy: nothing to heal toward.
+                d.furnSeeTick   = 0; d.furnSeeSample = 0;
             }
         }
         // ---- Crawl carve-out (protocol 53) -------------------------------------
@@ -1102,16 +1132,19 @@ void Replicator::applyTargets(GameWorld* gw) {
                 bool carryingRight = haveCr && lcr.carrying &&
                                      lcr.carried[3] == out.sIndex &&
                                      lcr.carried[4] == out.sSerial;
-                if (carryingRight) d.carrySeeTick = 0;
+                if (carryingRight) { d.carrySeeTick = 0; d.carrySeeSample = 0; }
                 // Debounce the heal against the render delay. `out` is the
                 // interpolated sample and lags real time, so a carry it still
                 // reports may already have ended here via the reliable
                 // EVT_DROP_BODY - healing on sight re-lifts a body the peer just
                 // put down. Require the stream to keep asserting the carry.
-                if (haveCr && !carryingRight && d.carrySeeTick == 0)
-                    d.carrySeeTick = now;
+                if (haveCr && !carryingRight && d.carrySeeTick == 0) {
+                    d.carrySeeTick   = now;
+                    d.carrySeeSample = d.interp.newestMs();
+                }
                 if (haveCr && !carryingRight &&
-                    (now - d.carrySeeTick) >= tuning_.carryHealDebounceMs &&
+                    healDue(now, d.carrySeeTick, d.carrySeeSample,
+                            tuning_.carryHealDebounceMs, d.interp) &&
                     (now - d.carryHealTick) >= CARRY_HEAL_MS) {
                     d.carryHealTick = now;
                     unsigned int ch[5] = { out.sType, out.sContainer,
@@ -1153,7 +1186,8 @@ void Replicator::applyTargets(GameWorld* gw) {
                     continue;
                 }
             } else {
-                d.carrySeeTick = 0; // stream stopped asserting a carry
+                // Stream stopped asserting a carry: nothing left to heal toward.
+                d.carrySeeTick = 0; d.carrySeeSample = 0;
                 engine::CarryRead lcr;
                 if (engine::readCarry(c, &lcr) && lcr.carrying) {
                     if (d.carryNoSeeTick == 0) {

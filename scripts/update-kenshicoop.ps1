@@ -64,15 +64,15 @@ function Find-Kenshi {
     }
     if (-not $steamRoot) {
         foreach ($guess in @("${env:ProgramFiles(x86)}\Steam", "$env:ProgramFiles\Steam")) {
-            if (Test-Path $guess) { $steamRoot = $guess; break }
+            if (Test-Path -LiteralPath $guess) { $steamRoot = $guess; break }
         }
     }
 
     if ($steamRoot) {
         [void]$candidates.Add((Join-Path $steamRoot "steamapps\common\Kenshi"))
         $vdf = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
-        if (Test-Path $vdf) {
-            foreach ($line in Get-Content $vdf) {
+        if (Test-Path -LiteralPath $vdf) {
+            foreach ($line in Get-Content -LiteralPath $vdf) {
                 if ($line -match '"path"\s+"([^"]+)"') {
                     $lib = $matches[1].Replace("\\", "\")
                     [void]$candidates.Add((Join-Path $lib "steamapps\common\Kenshi"))
@@ -85,7 +85,8 @@ function Find-Kenshi {
     [void]$candidates.Add("${env:ProgramFiles(x86)}\Kenshi")
 
     foreach ($c in $candidates) {
-        if ((Test-Path (Join-Path $c "kenshi_x64.exe")) -and (Test-Path (Join-Path $c "mods"))) {
+        if ((Test-Path -LiteralPath (Join-Path $c "kenshi_x64.exe")) -and
+            (Test-Path -LiteralPath (Join-Path $c "mods"))) {
             return $c
         }
     }
@@ -100,7 +101,7 @@ if (-not $KenshiPath) { $KenshiPath = Find-Kenshi }
 if (-not $KenshiPath) {
     Die "could not find Kenshi. Re-run with -KenshiPath 'D:\path\to\Kenshi'"
 }
-if (-not (Test-Path (Join-Path $KenshiPath "kenshi_x64.exe"))) {
+if (-not (Test-Path -LiteralPath (Join-Path $KenshiPath "kenshi_x64.exe"))) {
     Die "no kenshi_x64.exe in '$KenshiPath' - that is not a Kenshi install"
 }
 Ok "Kenshi: $KenshiPath"
@@ -122,8 +123,8 @@ if ((Split-Path $ModDir -Leaf) -ne "KenshiCoop" -or
 $SaveDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "kenshi\save" } else { $null }
 if (-not $SaveDir) {
     Note "saves: location unknown (no LOCALAPPDATA) - not touched by this script"
-} elseif (Test-Path $SaveDir) {
-    $saveCount = @(Get-ChildItem $SaveDir -Directory -ErrorAction SilentlyContinue).Count
+} elseif (Test-Path -LiteralPath $SaveDir) {
+    $saveCount = @(Get-ChildItem -LiteralPath $SaveDir -Directory -ErrorAction SilentlyContinue).Count
     Note "saves: $SaveDir ($saveCount found) - not touched by this script"
 } else {
     Note "saves: $SaveDir (none yet) - not touched by this script"
@@ -138,13 +139,37 @@ if ($running.Count -gt 0) {
 }
 
 # ---- 3. rollback --------------------------------------------------------------
+# Never delete the live mod folder before a VALID restore source has been chosen.
+# The first version did, and took the newest backup by name without checking it
+# held anything: an aborted earlier run leaves an empty directory that sorts newest,
+# so rollback destroyed a working install, reported success, and left four good
+# backups sitting unused beside it.
 function Restore-Backup {
-    if (-not (Test-Path $BackupDir)) { Die "no backups in $BackupDir" }
-    $latest = Get-ChildItem $BackupDir -Directory | Sort-Object Name -Descending | Select-Object -First 1
-    if (-not $latest) { Die "no backups in $BackupDir" }
-    if (Test-Path $ModDir) { Remove-Item $ModDir -Recurse -Force }
-    Copy-Item $latest.FullName $ModDir -Recurse -Force
-    Ok "restored $($latest.Name)"
+    if (-not (Test-Path -LiteralPath $BackupDir)) { Die "no backups in $BackupDir" }
+    $chosen = $null
+    foreach ($cand in (Get-ChildItem -LiteralPath $BackupDir -Directory |
+                       Where-Object { $_.Name -notlike "*.partial" } |
+                       Sort-Object Name -Descending)) {
+        if (Test-Path -LiteralPath (Join-Path $cand.FullName "KenshiCoop.dll")) { $chosen = $cand; break }
+        Note "skipping incomplete backup $($cand.Name)"
+    }
+    if (-not $chosen) { Die "no usable backup in $BackupDir (none contains KenshiCoop.dll)" }
+
+    # Stage, then swap by rename. The staging area is OUTSIDE mods\ so Kenshi never
+    # scans a half-built folder as a mod.
+    $staging = Join-Path $BackupDir ".restoring"
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    Copy-Item -LiteralPath $chosen.FullName -Destination $staging -Recurse -Force
+    if (-not (Test-Path -LiteralPath (Join-Path $staging "KenshiCoop.dll"))) {
+        Remove-Item -LiteralPath $staging -Recurse -Force
+        Die "staged restore is incomplete; nothing changed"
+    }
+    $prev = "$ModDir.prev"
+    if (Test-Path -LiteralPath $prev) { Remove-Item -LiteralPath $prev -Recurse -Force }
+    if (Test-Path -LiteralPath $ModDir) { Move-Item -LiteralPath $ModDir -Destination $prev }
+    Move-Item -LiteralPath $staging -Destination $ModDir
+    if (Test-Path -LiteralPath $prev) { Remove-Item -LiteralPath $prev -Recurse -Force }
+    Ok "restored $($chosen.Name)"
     exit 0
 }
 if ($Rollback) { Restore-Backup }
@@ -212,25 +237,54 @@ try {
 
     # ---- 6. back up, preserving the player's config ---------------------------
     $keepConfig = $null
-    if (Test-Path $ModDir) {
-        $stamp  = Get-Date -Format "yyyyMMdd-HHmmss"
-        $target = Join-Path $BackupDir $stamp
-        New-Item -ItemType Directory -Path $target -Force | Out-Null
-        Copy-Item (Join-Path $ModDir "*") $target -Recurse -Force
+    if (Test-Path -LiteralPath $ModDir) {
+        $cfg = Join-Path $ModDir "coop_config.json"
+        if (Test-Path -LiteralPath $cfg) { $keepConfig = Get-Content -LiteralPath $cfg -Raw }
+
+        # Write to <stamp>.partial and rename only once the copy has returned, so an
+        # interrupted backup leaves something the rollback path skips by name rather
+        # than a plausible empty directory that outranks every good backup.
+        $stamp   = Get-Date -Format "yyyyMMdd-HHmmss"
+        $partial = Join-Path $BackupDir "$stamp.partial"
+        $target  = Join-Path $BackupDir $stamp
+        New-Item -ItemType Directory -Path $partial -Force | Out-Null
+        Get-ChildItem -LiteralPath $ModDir -Force | Copy-Item -Destination $partial -Recurse -Force
+        if (-not (Test-Path -LiteralPath (Join-Path $partial "KenshiCoop.dll"))) {
+            Remove-Item -LiteralPath $partial -Recurse -Force
+            Die "could not back up the current mod folder; nothing changed"
+        }
+        Move-Item -LiteralPath $partial -Destination $target
         Ok "backed up current mod to KenshiCoop-backups\$stamp"
 
-        $cfg = Join-Path $ModDir "coop_config.json"
-        if (Test-Path $cfg) { $keepConfig = Get-Content $cfg -Raw }
-
-        # Keep the last 5. Backups are cheap but not free, and this folder is
-        # outside mods\ precisely so Kenshi never scans it as a mod.
-        $old = Get-ChildItem $BackupDir -Directory | Sort-Object Name -Descending | Select-Object -Skip 5
-        foreach ($o in $old) { Remove-Item $o.FullName -Recurse -Force }
+        # Keep the last 5 COMPLETE backups. This folder is outside mods\ precisely
+        # so Kenshi never scans it as a mod.
+        $old = Get-ChildItem -LiteralPath $BackupDir -Directory |
+               Where-Object { $_.Name -notlike "*.partial" } |
+               Sort-Object Name -Descending | Select-Object -Skip 5
+        foreach ($o in $old) { Remove-Item -LiteralPath $o.FullName -Recurse -Force }
     }
 
     # ---- 7. swap ---------------------------------------------------------------
-    if (Test-Path $ModDir) { Remove-Item $ModDir -Recurse -Force }
-    Copy-Item $newMod $ModDir -Recurse -Force
+    # Stage then rename, rather than delete-then-copy: the latter leaves a window
+    # with no mod folder at all, and a failure inside it leaves the player with
+    # nothing. Copy-Item into a surviving destination also NESTS rather than
+    # replaces, which silently produces mods\KenshiCoop\KenshiCoop.
+    $staging = Join-Path $BackupDir ".installing"
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    Copy-Item -LiteralPath $newMod -Destination $staging -Recurse -Force
+    $prev = "$ModDir.prev"
+    if (Test-Path -LiteralPath $prev) { Remove-Item -LiteralPath $prev -Recurse -Force }
+    if (Test-Path -LiteralPath $ModDir) { Move-Item -LiteralPath $ModDir -Destination $prev }
+    Move-Item -LiteralPath $staging -Destination $ModDir
+    if (Test-Path -LiteralPath $prev) { Remove-Item -LiteralPath $prev -Recurse -Force }
+
+    # Verify what actually landed, not what we believe we copied.
+    if ($newProto -and $man -and $man.dllSha256) {
+        $landed = (Get-FileHash -LiteralPath (Join-Path $ModDir "KenshiCoop.dll") -Algorithm SHA256).Hash.ToLower()
+        if ($landed -ne $man.dllSha256.ToLower()) {
+            Die "installed DLL does not match the manifest - run with -Rollback"
+        }
+    }
 
     $cfgOut     = Join-Path $ModDir "coop_config.json"
     $cfgDefault = Join-Path $ModDir "coop_config.default.json"

@@ -54,6 +54,13 @@ compile_one() {
   local src="$1"
   local abs="$REPO/src/plugin/$src"
   local obj="$(obj_for "$src")"
+  # Delete first. The success test below is "does the object exist", and without
+  # this a compile that FAILS leaves the previous run's object sitting there and
+  # passes it -- so the link succeeds against stale code and verify.sh reports a
+  # green gate for a plugin that does not contain the change being tested. The
+  # grep that strips cl.exe's filename echo also swallows its exit status, which
+  # is why existence is the test at all.
+  rm -f "$obj"
   # /EHsc: the plugin mixes C++ objects with __try frames; /W3 matches Level3.
   vcl /nologo /c /EHsc /W3 /Gy /Oi $OPT $DEFS \
       /Fo"$(winpath "$obj")" "$(winpath "$abs")" 2>&1 |
