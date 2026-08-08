@@ -89,6 +89,19 @@ struct SyncTuning {
     unsigned int  midBandMax;
     unsigned int  midSliceMax;
 
+    // Carry self-heal (protocol 18): how long the stream must KEEP reporting a
+    // carry our local copy is not holding before we reproduce it locally.
+    //
+    // The heal exists only to repair a LOST reliable pickup event, so waiting is
+    // free. Firing immediately is not: the drive samples the INTERPOLATED state,
+    // which renders up to maxCadenceDelayMs in the past (measured live at 321 ms
+    // typical, 802 ms peak), while EVT_DROP_BODY arrives on the reliable channel
+    // and applies at once. Without this debounce the stale stream re-lifts a body
+    // the peer just set down -- the drop shows up on the other client as a
+    // pickup -- and the carryNoSeeTick debounce then drops it ~3 s later, so the
+    // pair churns. The drop direction was always debounced; this is its mirror.
+    unsigned long carryHealDebounceMs;
+
     SyncTuning()
         : moneyMinSendMs(1000),   moneyResendMs(5000),
           factionSampleMs(1000),  factionResendMs(10000),
@@ -99,7 +112,8 @@ struct SyncTuning {
           buildSampleMs(1000),    buildResendMs(10000),
           bdoorSampleMs(1000),    bdoorResendMs(10000),
           doorEchoHoldMs(5000),
-          midBandMax(256),        midSliceMax(32) {}
+          midBandMax(256),        midSliceMax(32),
+          carryHealDebounceMs(1500) {}
 };
 
 } // namespace coop

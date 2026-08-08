@@ -1039,7 +1039,16 @@ void Replicator::applyTargets(GameWorld* gw) {
                 bool carryingRight = haveCr && lcr.carrying &&
                                      lcr.carried[3] == out.sIndex &&
                                      lcr.carried[4] == out.sSerial;
+                if (carryingRight) d.carrySeeTick = 0;
+                // Debounce the heal against the render delay. `out` is the
+                // interpolated sample and lags real time, so a carry it still
+                // reports may already have ended here via the reliable
+                // EVT_DROP_BODY - healing on sight re-lifts a body the peer just
+                // put down. Require the stream to keep asserting the carry.
+                if (haveCr && !carryingRight && d.carrySeeTick == 0)
+                    d.carrySeeTick = now;
                 if (haveCr && !carryingRight &&
+                    (now - d.carrySeeTick) >= tuning_.carryHealDebounceMs &&
                     (now - d.carryHealTick) >= CARRY_HEAL_MS) {
                     d.carryHealTick = now;
                     unsigned int ch[5] = { out.sType, out.sContainer,
@@ -1081,6 +1090,7 @@ void Replicator::applyTargets(GameWorld* gw) {
                     continue;
                 }
             } else {
+                d.carrySeeTick = 0; // stream stopped asserting a carry
                 engine::CarryRead lcr;
                 if (engine::readCarry(c, &lcr) && lcr.carrying) {
                     if (d.carryNoSeeTick == 0) {

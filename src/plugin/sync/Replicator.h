@@ -812,6 +812,13 @@ private:
         unsigned int agreeStreak;     // consecutive agreeing+in-position samples
         // Carried-body sync (protocol 18):
         unsigned long carryHealTick;  // last self-heal pickup attempt (throttle)
+        // First tick the stream reported this carry while our copy was not
+        // holding it. The mirror of carryNoSeeTick, and needed for the same
+        // reason: `out` is the INTERPOLATED sample, rendered up to a second in
+        // the past, so it still reports a carry the reliable EVT_DROP_BODY has
+        // already ended here. Healing on the first such tick re-lifts a body the
+        // peer just put down. See tuning_.carryHealDebounceMs.
+        unsigned long carrySeeTick;
         unsigned long carryNoSeeTick; // first tick a locally-carrying copy's stream
                                       //   stopped reporting TASK_CARRY_BODY (the
                                       //   debounced host-side-drop detector)
@@ -880,7 +887,7 @@ private:
                    combatOverTick(0), npcSnapTick(0),
                    goalsCleared(false),
                    trusted(false), agreeStreak(0),
-                   carryHealTick(0), carryNoSeeTick(0),
+                   carryHealTick(0), carrySeeTick(0), carryNoSeeTick(0),
                    furnHealTick(0), furnNoSeeTick(0), furnPeerTick(0),
                    haveChainOwner(false), chainHealTick(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
