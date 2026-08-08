@@ -175,7 +175,11 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     static Character*  chars[MAX_NPCS]; // main-thread only
     static EntityState states[MAX_NPCS];
     bool nearTrunc = false;
-    unsigned int n = engine::listNpcs(gw, chars, states, MAX_NPCS, &nearTrunc);
+    // full = auditRows_: the judgment below reads only the hand and the position,
+    // so the diagnostic-only fields are gathered ONLY when something is going to
+    // print them. Under the harness the rows stay byte-identical.
+    unsigned int n = engine::listNpcs(gw, chars, states, MAX_NPCS, &nearTrunc,
+                                      auditRows_);
 
     // Protocol 36 wide-radius existence pass: enumerate out to the census
     // radius so local-only ghosts get culled at render range instead of at the
@@ -202,7 +206,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         float radius = censusRadius_;
         if (censusRejudge_) radius = censusRadius_ * CENSUS_REJUDGE_SCALE;
         wn = engine::listNpcsWide(gw, radius, wChars, wStates, NPC_CENSUS_MAX,
-                                  &wideTrunc);
+                                  &wideTrunc, auditRows_);
         if (censusRejudge_) {
             char b[160]; _snprintf(b, sizeof(b) - 1,
                 "[census] re-judge sweep radius=%.0f (was stale; enumerated=%u trunc=%d)",
@@ -382,7 +386,17 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             // Host owns it again: hand it back once the stream has DWELLED (a
             // boundary NPC that flickers into the set for a frame stays hidden).
             if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
-                engine::restoreNpc(gw, chars[i]);
+                // Only forget the entry if the un-hide actually happened. Erasing on
+                // a failed restore leaves the body invisible and off the update list
+                // with nothing left that knows to retry it; keeping it means the ~2 s
+                // re-assertion sweep comes back around.
+                if (!engine::restoreNpc(gw, chars[i])) {
+                    char rb[128]; _snprintf(rb, sizeof(rb) - 1,
+                        "[authority] restore MISS hand=%u,%u (engine call failed; retrying)",
+                        k.i, k.s);
+                    rb[sizeof(rb) - 1] = '\0'; coop::logErrLine(rb);
+                    continue;
+                }
                 suppressed_.erase(s);
                 s = suppressed_.end();
                 ++authRestores_;
@@ -512,7 +526,13 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             else        { ac.streamed = 0;   if (ac.unstreamed < 1000000u) ++ac.unstreamed; }
             if (exists) {
                 if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
-                    engine::restoreNpc(gw, wChars[i]);
+                    if (!engine::restoreNpc(gw, wChars[i])) {
+                        char rb[128]; _snprintf(rb, sizeof(rb) - 1,
+                            "[authority] restore MISS hand=%u,%u (engine call failed; retrying)",
+                            k.i, k.s);
+                        rb[sizeof(rb) - 1] = '\0'; coop::logErrLine(rb);
+                        continue;
+                    }
                     suppressed_.erase(s);
                     s = suppressed_.end();
                     ++authRestores_;

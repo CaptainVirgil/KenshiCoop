@@ -295,8 +295,17 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             midSliceMs_ = nowPub;
             midCursor_ += quota; // linear cursor, index mod size below
         }
+        // Bound the SCAN, not just the send. The stationary skip below deliberately
+        // does not consume quota, so a field of parked NPCs walks the whole band -
+        // and this loop runs every render frame while the cursor only advances at
+        // 20 Hz, so the same walk is repeated 3-4x before it can even produce a
+        // different answer. At midBandMax 256 that is up to 256 hand-resolves and
+        // captures per frame to ship at most `quota` bodies. A budget of a few
+        // times quota keeps the reach past parked bodies that the skip exists for,
+        // while making the worst case independent of how large the band is.
+        const unsigned int scanBudget = (quota * 4 < sz) ? quota * 4 : sz;
         unsigned int tried = 0, added = 0;
-        while (tried < sz && added < quota && n < MAX_PUBLISH) {
+        while (tried < scanBudget && added < quota && n < MAX_PUBLISH) {
             const Key mk = midBand_[(midCursor_ + tried) % sz].k;
             ++tried;
             bool dup = false;
@@ -756,8 +765,10 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     // diverge - without the margin a real NPC wandering near the boundary
     // (inside the join's scan, outside the host's) would be false-culled.
     bool trunc = false;
+    // The census wire row carries the hand and the position and nothing else, so
+    // the cheap capture is the whole requirement here too.
     unsigned int n = engine::listNpcsWide(gw, censusRadius_ * 1.25f, chars, states,
-                                          NPC_CENSUS_MAX, &trunc);
+                                          NPC_CENSUS_MAX, &trunc, auditRows_);
     // A truncated census is an ACTIVE falsehood, not just a thin one: every NPC
     // past the cap is broadcast as "does not exist on the host", and the join
     // culls its real local copy against that. The fill is per-anchor, so a dense

@@ -254,7 +254,12 @@ bool suppressNpc(GameWorld* gw, Character* c);
 // SEH-guarded: hand a previously-suppressed NPC back to the engine's local AI
 // (when the host stops streaming it), so the world keeps living rather than
 // leaving a frozen body behind. Also makes the body visible again.
-void restoreNpc(GameWorld* gw, Character* c);
+// Returns true only once the body is back on the update list AND visible. A
+// failed un-hide must not be booked as success: the caller erases its
+// suppressed_ entry on the strength of this, and an entry erased after a failed
+// restore is a body left invisible, un-ticked and un-retryable for the rest of
+// the session - the exact leak the teardown restore exists to prevent.
+bool restoreNpc(GameWorld* gw, Character* c);
 
 // True if 'obj' is one of THIS client's player-squad members. Caller holds the
 // SEH frame. Exposed to the sync layer for the recruit membership audit (a
@@ -270,21 +275,25 @@ bool isPlayerSquad(GameWorld* gw, RootObject* obj);
 // caller that treats absence as authority (suppress/cull) would judge bodies it
 // never saw. A bare count cannot express this: n == maxOut is indistinguishable
 // from a list that happened to fit exactly.
+// `full` selects how much of each body is read: false (the default) captures
+// identity + transform only, which is everything the authority passes consume;
+// true does the whole ~14-engine-call capture and is what the diagnostic row
+// emitters need. The authority path used to always pay `full` and discard it.
 unsigned int listNpcs(GameWorld* gw, Character** outChars, EntityState* outStates,
-                      unsigned int maxOut, bool* outTruncated = 0);
+                      unsigned int maxOut, bool* outTruncated = 0, bool full = false);
 
 // SEH-guarded: WIDE-radius world-NPC enumeration (protocol 36 census). Same
 // exclusions as listNpcs (never the local player squad) but the query reaches
 // 'radius' units around every interest center instead of the ~200 u stream
 // bubble - the host builds its 1 Hz existence census from this, and the join
 // scans the same radius to find local-only ghosts to cull. States are hand +
-// position only in spirit (captureOne fills everything; callers use the hand).
+// position only (see `full`).
 // *outTruncated: see listNpcs. It matters more here - a truncated HOST census
 // silently reports "these NPCs do not exist" for everything past the cap, and
 // the join culls real bodies against it.
 unsigned int listNpcsWide(GameWorld* gw, float radius, Character** outChars,
                           EntityState* outStates, unsigned int maxOut,
-                          bool* outTruncated = 0);
+                          bool* outTruncated = 0, bool full = false);
 
 // SEH-guarded: how many world NPCs (never the local player squad) sit within
 // 'radius' of ONE point. Deliberately NOT anchor-driven: listNpcs/listNpcsWide

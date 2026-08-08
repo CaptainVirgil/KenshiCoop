@@ -824,7 +824,13 @@ void Replicator::publishDoors(const SyncContext& ctx) {
         // walks through - which is the flapping bar door, not a lost packet.
         // With cellAuth off this resolves to the host, which is the behaviour
         // the world stream already assumes.
-        if (!weAuthor(gw, ownerId, r.x, r.z)) {
+        // cellAuth_-gated, matching the two analogous gates in ReplicatorPublish.
+        // authorityFor() resolves to the HOST whenever presence authority is off, so
+        // an unconditional test silently stops the join publishing doors at all in
+        // that configuration - which is how the whole scenario tier runs. The
+        // post-apply hold below is independent and stays unconditional: it damps the
+        // flapping bar door on its own, without needing to know who authors what.
+        if (cellAuth_ && !weAuthor(gw, ownerId, r.x, r.z)) {
             // Keep the baseline current anyway: when the cell changes hands we
             // must not mistake the peer's accumulated changes for our own.
             dr.seeded = true; dr.knownOpen = r.open; dr.knownLocked = r.locked;

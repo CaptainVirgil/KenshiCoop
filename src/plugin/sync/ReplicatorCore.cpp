@@ -370,8 +370,8 @@ void Replicator::clearPeerReplicationState(GameWorld* gw) {
         if (gw && si->second && engine::readHand(si->second, h))
             live = engine::resolveCharByHand(h[0], h[1], h[2], h[3], h[4]);
         if (live != si->second) { ++gone; continue; }
-        engine::restoreNpc(gw, si->second);
-        ++restored;
+        if (engine::restoreNpc(gw, si->second)) ++restored;
+        else                                     ++gone;
     }
     _snprintf(b, sizeof(b) - 1, "[leave] restored suppressed=%u despawned=%u",
               restored, gone);
