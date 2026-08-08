@@ -8,6 +8,7 @@
 
 #include <string>
 #include <set>
+#include "../sync/SyncTuning.h" // per-channel cadences, settable like everything else
 
 namespace coop {
 
@@ -299,6 +300,26 @@ struct Config {
     // session - and the peer's engine resolves REAL fights with those stale
     // numbers. "0" is the A/B escape hatch.
     bool          statsSync;
+
+    // Per-channel send cadences and self-heal debounces. Defaults live in the
+    // SyncTuning constructor; every field is overridable by env or coop_config.json
+    // (see loadConfig). Before this was wired, changing one meant rebuilding the
+    // DLL - which is a poor way to tune a value whose right setting depends on the
+    // session you are in the middle of.
+    //
+    // Prefer the JSON keys when telling a player to change something: the game is
+    // launched from Steam, so an env var means editing Steam launch options.
+    SyncTuning    tuning;
+
+    // KENSHICOOP_CRASH_TRACER (DEFAULT OFF): install the fault tracer from
+    // core/CrashDump.cpp. It is a diagnostic, not a shipping feature: it takes a
+    // vectored handler at priority 1, so it runs on EVERY exception on every
+    // thread, and Kenshi throws and catches C++ exceptions as routine traffic.
+    // On a reported fault it walks 28 stack frames and writes them through a
+    // logger that fflushes per line on the main thread. Worth all of that when
+    // chasing a crash, worth none of it in a session that is not crashing - so
+    // it is opt-in, and asking a player to set it is part of taking a report.
+    bool          crashTracer;
 
     // Carried-body sync (KENSHICOOP_CARRY_SYNC != "0"; DEFAULT ON;
     // protocol 18): reliable pickup/drop edges + self-healing carried state

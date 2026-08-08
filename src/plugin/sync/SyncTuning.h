@@ -102,6 +102,14 @@ struct SyncTuning {
     // pair churns. The drop direction was always debounced; this is its mirror.
     unsigned long carryHealDebounceMs;
 
+    // Furniture/chain self-heal (protocol 19/41/42): the same debounce for the same
+    // reason. The occupancy heal-ENTER and the shackle relock both read the delayed
+    // sample, and both were one-directional -- the EXIT side was debounced by
+    // FURN_EXIT_MS while the ENTER side fired on sight. Freeing a caged prisoner
+    // therefore read on the peer as an imprisonment, and unshackling one could
+    // re-lock permanently.
+    unsigned long furnHealDebounceMs;
+
     SyncTuning()
         : moneyMinSendMs(1000),   moneyResendMs(5000),
           factionSampleMs(1000),  factionResendMs(10000),
@@ -113,7 +121,7 @@ struct SyncTuning {
           bdoorSampleMs(1000),    bdoorResendMs(10000),
           doorEchoHoldMs(5000),
           midBandMax(256),        midSliceMax(32),
-          carryHealDebounceMs(1500) {}
+          carryHealDebounceMs(1500), furnHealDebounceMs(1500) {}
 };
 
 } // namespace coop

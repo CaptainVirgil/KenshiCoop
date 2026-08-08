@@ -97,6 +97,26 @@ Copy-Item $mod  (Join-Path $modDir "KenshiCoop.mod")
   "ip": "127.0.0.1",
   "port": 27800,
   "autoConnect": false
+
+  // Tuning. Everything below is OPTIONAL - delete a line and the built-in default
+  // applies. These are here rather than as environment variables because the game
+  // is launched from Steam, where an env var means editing launch options.
+  //
+  // "midBandMax": 256      how many far NPCs get motion updates between census
+  // "midSliceMax": 32      beats, and how many go out per 50 ms tick. Lower these
+  //                        if a very busy town costs you bandwidth; raise them if
+  //                        distant NPCs teleport instead of walking.
+  //
+  // "carryHealDebounceMs": 1500   how long the stream must keep insisting a body is
+  // "furnHealDebounceMs": 1500    carried/caged before this client reproduces it.
+  //                        Do NOT set these to 0: the incoming stream renders a
+  //                        fraction of a second in the past, so a zero debounce lets
+  //                        it undo something your friend just did - a body they set
+  //                        down gets picked back up, a prisoner they freed gets
+  //                        re-caged.
+  //
+  // "doorEchoHoldMs": 5000 how long to stay quiet about a door after your friend
+  //                        tells you its state.
 }
 '@ | Set-Content (Join-Path $modDir "coop_config.json") -Encoding UTF8
 

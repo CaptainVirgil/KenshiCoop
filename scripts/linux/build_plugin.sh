@@ -32,12 +32,15 @@ DEFS="$DEFS /D_WINDOWS /D_USRDLL /DWIN32_LEAN_AND_MEAN /DUNICODE /D_UNICODE"
 export INCLUDE="$(vc_include "$REPO")"
 export LIB="$(vc_lib "$REPO")"
 
-# Source set mirrors the <ClCompile> list in src/plugin/KenshiCoop.vcxproj.
-# ENet's unix.c is intentionally excluded (Windows socket backend only).
+# The vcxproj is authoritative for the source list on both build paths, including
+# its per-configuration <ExcludedFromBuild> markers -- Release must not contain
+# the scenario harness or the EngineProbe detours. ENet's unix.c is absent from
+# the project entirely (Windows socket backend only).
 mapfile -t SOURCES < <(
-  grep -oP '(?<=<ClCompile Include=")[^"]+' "$REPO/src/plugin/KenshiCoop.vcxproj" |
-    tr '\\' '/'
+  python3 "$REPO/scripts/linux/vcxproj_sources.py" \
+    "$REPO/src/plugin/KenshiCoop.vcxproj" "$CONFIG" x64
 )
+[ "${#SOURCES[@]}" -gt 0 ] || { echo "no sources for $CONFIG" >&2; exit 1; }
 
 echo "=== KenshiCoop.dll ($CONFIG|x64, v100 via Wine) - ${#SOURCES[@]} translation units ==="
 

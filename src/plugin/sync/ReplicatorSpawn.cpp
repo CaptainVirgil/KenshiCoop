@@ -330,11 +330,10 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
         // template already near the reply position means the census-missing
         // hand is probably THAT body under a hand we cannot correlate (engine
         // re-container, baked block just loaded) - minting would stand a
-        // double on top of it. Bound proxies (they answer to their own stream
-        // keys - pack members mint meters apart) and suppressed culls (hidden;
-        // often the very copy whose old hand got culled) are excluded, so a
-        // legit mint only defers while a visible uncorrelated twin stands
-        // there; the far-retry cadence re-judges in 5 s.
+        // double on top of it. Bound proxies are excluded (they answer to their
+        // own stream keys - pack members mint meters apart); suppressed bodies
+        // are NOT, see below. So a legit mint only defers while an uncorrelated
+        // twin stands there, and the far-retry cadence re-judges in 5 s.
         //
         // CENSUS-ONLY scope (2026-07-16 spawn_sync fix): the guard is for an
         // UNCORRELATED census hand (its exact identity is unknown, so a nearby
@@ -352,9 +351,13 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
             for (std::map<Key, Character*>::iterator pi = proxyByKey_.begin();
                  pi != proxyByKey_.end() && ne < NPC_CENSUS_MAX; ++pi)
                 excl[ne++] = pi->second;
-            for (std::map<Key, Character*>::iterator si = suppressed_.begin();
-                 si != suppressed_.end() && ne < NPC_CENSUS_MAX; ++si)
-                excl[ne++] = si->second;
+            // Suppressed bodies are deliberately NOT excluded. They used to be, on
+            // the reasoning that a hidden cull is often the very copy whose old hand
+            // got culled - but a hidden body is still a body standing on that spot,
+            // so excluding it let a mint land directly on top of one. The player sees
+            // one NPC until authority restores the original, and then two. Treating
+            // it as a twin costs a deferral the far-retry cadence re-judges in 5 s;
+            // treating it as absent costs a duplicate that never resolves itself.
             Character* twin = engine::sameTemplateNear(gw, p.charSid,
                                                        p.x, p.y, p.z,
                                                        MINT_DUPE_RADIUS,
@@ -681,6 +684,15 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
                                        ev.aIndex, ev.aSerial };
                 int kind = (int)ev.arg;
                 bool ok = occ && engine::applyFurniture(0, occ, fh, kind, true);
+                // Hold the bed fast-exit off this body for a beat. That path keys on
+                // `hostMoving` from the INTERPOLATED sample, which still describes the
+                // world before this event - so without the hold it dumps a body back
+                // out of the bed we were just told to put it in.
+                if (ok && kind == 1) {
+                    std::map<Key, Driven>::iterator dt = targets_.find(k);
+                    if (dt != targets_.end())
+                        dt->second.furnEnterHoldMs = nowMs() + tuning_.furnHealDebounceMs;
+                }
                 char fb[160]; _snprintf(fb, sizeof(fb) - 1,
                     "[furn] RECV ENTER id=%u occ=%u,%u furn=%u,%u kind=%d ok=%d",
                     ev.eventId, ev.sIndex, ev.sSerial, ev.aIndex, ev.aSerial,

@@ -483,8 +483,16 @@ void NetLink::threadLoop() {
                                 // a single peer. A third player connects at the wire
                                 // level but will silently desync - fail loudly instead.
                                 if (id >= 2) {
+                                    // Refuse, rather than logging "expect desync" and
+                                    // admitting them anyway. A third player who is let
+                                    // in gets a session that looks like it works and
+                                    // then quietly corrupts both other players' worlds;
+                                    // a clean rejection is something they can act on.
                                     netErr("3+ players unsupported: join-authored state is "
-                                           "not relayed peer-to-peer; expect desync");
+                                           "not relayed peer-to-peer; rejecting");
+                                    enet_peer_disconnect(ev.peer, 0);
+                                    enet_packet_destroy(ev.packet);
+                                    break;
                                 }
                                 ev.peer->data = (void*)(size_t)id;
                                 WelcomePacket w;
@@ -507,10 +515,16 @@ void NetLink::threadLoop() {
                             if (w.version != PROTOCOL_VERSION) {
                                 char b[128];
                                 _snprintf(b, sizeof(b) - 1,
-                                          "protocol mismatch: host v%u, ours v%u",
+                                          "protocol mismatch: host v%u, ours v%u; disconnecting",
                                           (unsigned)w.version, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netErr(b);
+                                // Tear down here too. The host's own gate normally
+                                // disconnects first, but relying on that leaves this
+                                // side half-open whenever it does not: connected at the
+                                // ENet level, myId_ never assigned, pushConnect never
+                                // fired, and no way for the player to tell why.
+                                if (ev.peer) enet_peer_disconnect(ev.peer, 0);
                             } else {
                                 InterlockedExchange(&myId_, (LONG)w.playerId);
                                 char b[96];

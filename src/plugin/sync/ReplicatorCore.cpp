@@ -49,7 +49,8 @@ Replicator::Replicator()
       trustGrants_(0), trustRevokes_(0),
       authSuppresses_(0), authRestores_(0), authReassertMs_(0), authPruned_(0),
       censusRadius_(0.0f), censusSendMs_(0), censusRecvMs_(0), censusCulls_(0),
-      censusPubTrunc_(false), censusFreshPrev_(false), censusFreshChkMs_(0),
+      censusPubTrunc_(false), censusFreshPrev_(false), censusRejudge_(false),
+      censusFreshChkMs_(0),
       censusStaleMs_(0), censusStaleEdges_(0), proxyDriftLogMs_(0),
       camHintSendMs_(0), peerCamMs_(0),
       midCursor_(0), midSliceMs_(0),
@@ -349,6 +350,31 @@ void Replicator::clearPeerReplicationState(GameWorld* gw) {
     }
     _snprintf(b, sizeof(b) - 1, "[leave] cleared worldProxies=%u stale=%u",
               wcleared, wstale);
+    b[sizeof(b) - 1] = '\0';
+    coop::logLine(b);
+    // Un-hide everything authority suppressed. resetSession() below only clears the
+    // map, and a suppressed body is off the update list, invisible, and (before the
+    // hull park) solid - so dropping the bookkeeping without restoring first leaves
+    // that body broken for the rest of the world, with nothing left that knows how
+    // to fix it. The world survives a peer leave, so these are the player's own NPCs
+    // being abandoned mid-hide.
+    //
+    // Same liveness proof the ~2 s re-assertion sweep uses: a body whose hand no
+    // longer resolves back to this pointer has been despawned by zone streaming, and
+    // touching it would be a use-after-free.
+    unsigned int restored = 0, gone = 0;
+    for (std::map<Key, Character*>::iterator si = suppressed_.begin();
+         si != suppressed_.end(); ++si) {
+        unsigned int h[5];
+        Character* live = 0;
+        if (gw && si->second && engine::readHand(si->second, h))
+            live = engine::resolveCharByHand(h[0], h[1], h[2], h[3], h[4]);
+        if (live != si->second) { ++gone; continue; }
+        engine::restoreNpc(gw, si->second);
+        ++restored;
+    }
+    _snprintf(b, sizeof(b) - 1, "[leave] restored suppressed=%u despawned=%u",
+              restored, gone);
     b[sizeof(b) - 1] = '\0';
     coop::logLine(b);
     // Now drop every map (proxyByKey_ included) back to freshly-launched state.

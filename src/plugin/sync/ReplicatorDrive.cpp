@@ -410,8 +410,13 @@ void Replicator::applyTargets(GameWorld* gw) {
         // (slaveOwner) while the driven copy is locally chained, and re-apply if it
         // has lost the chain. Scoped to the masked case (chained AND in a cage/bed);
         // a pole-only chained body is handled by the kind=3 self-heal below.
-        if (chainSync_ && (out.bodyState & BODY_CHAINED) &&
-            (out.bodyState & (BODY_IN_CAGE | BODY_IN_BED))) {
+        if (chainSync_ && (out.bodyState & (BODY_IN_CAGE | BODY_IN_BED))) {
+            // BOTH directions, because the masked case emits no event either way:
+            // the kind priority reports the cage, so neither locking nor unlocking a
+            // caged prisoner's shackle produces an EVT. The continuous BODY_CHAINED
+            // bit is the only signal, which makes it the actuator - and an actuator
+            // has to be able to say "off".
+            const bool streamChained = (out.bodyState & BODY_CHAINED) != 0;
             engine::ShackleRead lsr;
             bool haveSr = engine::readShackle(c, &lsr) && lsr.valid;
             if (haveSr && lsr.chained &&
@@ -419,7 +424,31 @@ void Replicator::applyTargets(GameWorld* gw) {
                 for (int fi = 0; fi < 5; ++fi) d.chainOwner[fi] = lsr.owner[fi];
                 d.haveChainOwner = true;
             }
-            if (haveSr && !lsr.chained &&
+            if (!streamChained) d.chainSeeTick = 0;
+            if (streamChained)  d.chainNoSeeTick = 0;
+            // RELEASE: the stream stopped reporting the shackle while our copy still
+            // wears it. Debounced like every other destructive direction - a dropped
+            // batch must not free a prisoner.
+            if (!streamChained && haveSr && lsr.chained) {
+                if (d.chainNoSeeTick == 0) {
+                    d.chainNoSeeTick = now;
+                } else if ((now - d.chainNoSeeTick) > FURN_EXIT_MS) {
+                    d.chainNoSeeTick = 0;
+                    bool ok = engine::applyFurniture(gw, c,
+                                                     d.haveChainOwner ? d.chainOwner : 0,
+                                                     3, false);
+                    char b[160]; _snprintf(b, sizeof(b) - 1,
+                        "[furn] SHACKLE RELEASE occ=%u,%u ok=%d",
+                        out.hIndex, out.hSerial, ok ? 1 : 0);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
+            }
+            // RELOCK: debounced against the render delay, or a relock races ahead of
+            // the peer's own unshackle and wins.
+            if (streamChained && haveSr && !lsr.chained && d.chainSeeTick == 0)
+                d.chainSeeTick = now;
+            if (streamChained && haveSr && !lsr.chained &&
+                (now - d.chainSeeTick) >= tuning_.furnHealDebounceMs &&
                 (now - d.chainHealTick) >= FURN_HEAL_MS) {
                 d.chainHealTick = now;
                 // Remembered owner if we have one, else the body's own slaveOwner
@@ -544,9 +573,32 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // rebuilt every drive tick, so this self-clears the moment the host
                 // stops streaming the furniture bit (body released) and its AI resumes.
                 if (aiSuspend_) engine::addAiSuspend(c);
+                // Debounce against the render delay, exactly as the carry heal does.
+                // `out.bodyState` is the interpolated sample and lags real time by a
+                // send interval, so it still reports the cage a reliable
+                // EVT_EXIT_FURNITURE has already ended here - and healing on sight
+                // re-cages the prisoner the peer just freed, which reads on this
+                // client as the peer IMPRISONING someone. FURN_HEAL_MS is only a gap
+                // between attempts and cannot help when the first attempt is already
+                // wrong. The heal repairs a LOST event, so waiting costs nothing.
+                if (haveFr && localKind == streamKind) d.furnSeeTick = 0;
+                if (haveFr && localKind != streamKind && d.furnSeeTick == 0)
+                    d.furnSeeTick = now;
                 if (haveFr && localKind != streamKind &&
+                    (now - d.furnSeeTick) >= tuning_.furnHealDebounceMs &&
                     (now - d.furnHealTick) >= FURN_HEAL_MS) {
                     d.furnHealTick = now;
+                    // Search for the fixture around the NEWEST received position, not
+                    // the render-delayed one: a body that left its cage and started
+                    // walking would otherwise be re-seated into whatever fixture sits
+                    // within FURN_MATCH_DIST of where it used to be.
+                    float fsx = out.x, fsy = out.y, fsz = out.z;
+                    {
+                        EntityState newestFurn;
+                        if (d.interp.latest(&newestFurn, 0, 0, 0)) {
+                            fsx = newestFurn.x; fsy = newestFurn.y; fsz = newestFurn.z;
+                        }
+                    }
                     // Chain (kind 3) has no searchable building and needs the
                     // OWNER: re-apply setChainedMode with the remembered owner,
                     // or - for a prisoner that spawned into interest already
@@ -562,7 +614,7 @@ void Replicator::applyTargets(GameWorld* gw) {
                            ? engine::applyFurniture(gw, c, d.chainOwner, 3, true)
                            : engine::applyFurniture(gw, c, 0, 3, true))
                         : engine::enterFurnitureNearPos(
-                            gw, c, streamKind, out.x, out.y, out.z, FURN_MATCH_DIST);
+                            gw, c, streamKind, fsx, fsy, fsz, FURN_MATCH_DIST);
                     // Drop the in-progress escape/attack action so the body doesn't
                     // finish breaking out before the suspend takes hold. endAction is
                     // SEH-guarded (same call the rest-park path uses).
@@ -592,7 +644,9 @@ void Replicator::applyTargets(GameWorld* gw) {
                 d.parked = false; d.haveDest = false;
                 if (haveActual) { d.haveActual = true; d.lx = ax; d.ly = ay; d.lz = az; }
                 continue;
-            } else if (localKind == 1 && hostMoving) {
+            } else if (localKind == 1 && hostMoving &&
+                       (d.furnEnterHoldMs == 0 ||
+                        (long)(now - d.furnEnterHoldMs) >= 0)) {
                 // Bed fast-exit (conscious sleep wake): a bed pose has NO
                 // reliable EXIT edge (publishOwned suppresses furniture edges
                 // while taskIsBedPose), so a host that wakes and WALKS would
@@ -606,6 +660,14 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // drop the in-progress sleep action, release the held pose, and
                 // FALL THROUGH (no continue) so the unified drive follows the
                 // host this same tick.
+                //
+                // The one thing it must NOT outrun is a reliable ENTER that just
+                // landed: `hostMoving` comes off the delayed sample, so right after
+                // the peer lays a KO'd body into a bed the stale batch still shows
+                // its carrier walking, and this would dump the body back on the
+                // floor. furnEnterHoldMs keeps the fast path for the case it exists
+                // for and stands down for the window where the event is newer than
+                // the stream.
                 bool ok = engine::applyFurniture(gw, c, lfr.furn, 1, false);
                 engine::endAction(c);
                 d.furnNoSeeTick = 0;
@@ -670,6 +732,7 @@ void Replicator::applyTargets(GameWorld* gw) {
                 continue;
             } else {
                 d.furnNoSeeTick = 0;
+                d.furnSeeTick   = 0; // stream asserts no occupancy: nothing to heal to
             }
         }
         // ---- Crawl carve-out (protocol 53) -------------------------------------

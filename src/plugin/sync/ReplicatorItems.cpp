@@ -674,10 +674,17 @@ void Replicator::applyWorldItems(GameWorld* gw, Inbound& in) {
     // cannot schedule itself into it. Injecting here makes it certain: without the hand
     // check the cull below is a second GameWorld::destroy on freed memory, which Kenshi
     // reports as "alredy has destroy reason coop-worlditem-cull" (world_item_stale).
+    // Harness-only. This one frees a live object on purpose, so a Release build must
+    // not be able to reach it from the environment at all - compile it out rather than
+    // default it off, the way KENSHICOOP_TEST_CRASH is handled in Plugin.cpp.
     static int testStale = -1;
     if (testStale < 0) {
+#ifdef KENSHICOOP_HARNESS
         const char* e = getenv("KENSHICOOP_WI_TEST_STALE");
         testStale = (e && e[0] == '1') ? 1 : 0;
+#else
+        testStale = 0;
+#endif
     }
 
     // Culls: destroy the proxy and drop the mapping (scoped to the authoring owner).
@@ -1117,9 +1124,13 @@ void Replicator::applyWeaponDrops(GameWorld* gw, Inbound& in) {
 // reproduced a different bug - the picker could name nothing, suppressed the intent as
 // increase-untracked, and the author was never even asked.
 static bool injectForgetTrack(bool authored) {
+#ifndef KENSHICOOP_HARNESS
+    (void)authored; return false; // test lever: harness builds only
+#else
     static int on = -1;
     if (on < 0) { const char* e = getenv("KENSHICOOP_WD_FORGET_TRACK"); on = (e && e[0] == '1') ? 1 : 0; }
     return on == 1 && authored;
+#endif
 }
 
 void Replicator::parkPendingPickup(const unsigned int targetHand[5], const char* sid,
@@ -1185,6 +1196,9 @@ int containerHoldsItemState(GameWorld* gw, const unsigned int cHand[5], const ch
 // Consulted by BOTH re-home attempts (the pickup apply and the reconcile retry), or "refuse
 // always" would be quietly satisfied by the retry.
 bool injectRehomeRefusal() {
+#ifndef KENSHICOOP_HARNESS
+    return false; // test lever: harness builds only
+#else
     static int mode = -1; // 0 = off, 1 = first only, 2 = always
     if (mode < 0) {
         const char* all = getenv("KENSHICOOP_WD_REFUSE_REHOME_ALL");
@@ -1195,6 +1209,7 @@ bool injectRehomeRefusal() {
     if (mode == 1) mode = 0;
     coop::logLine("[wd] REHOME-REFUSE-INJECTED (test lever: re-home refused)");
     return true;
+#endif
 }
 
 // TEST-ONLY fault injection: KENSHICOOP_WD_TRANSIENT_DEAD=N makes the first N PICKUP-time
@@ -1209,6 +1224,9 @@ bool injectRehomeRefusal() {
 // copy next to the item the peer now holds; parking it lets the next read - which succeeds -
 // finish the re-home.
 static bool injectTransientDead() {
+#ifndef KENSHICOOP_HARNESS
+    return false; // test lever: harness builds only
+#else
     static int budget = -1;
     if (budget < 0) {
         const char* e = getenv("KENSHICOOP_WD_TRANSIENT_DEAD");
@@ -1219,6 +1237,7 @@ static bool injectTransientDead() {
     --budget;
     coop::logLine("[wd] TRANSIENT-DEAD-INJECTED (test lever: this read reports the object gone)");
     return true;
+#endif
 }
 
 // Resolve a tracked ground item to a LIVE free ground object, or 0 if it is no longer one.
@@ -1765,6 +1784,11 @@ void Replicator::applyTransfers(GameWorld* gw, Inbound& in, NetLink& net, u32 lo
             // A worn CONTAINER (backpack) NEVER fabricates: the template mints an EMPTY bag,
             // so the trade would land as a contents-less duplicate the moment our real copy
             // resolves. A short container transfer stays short and reconcile corrects it.
+            // Deliberately default ON, inverting the house "flags default off" idiom:
+            // OFF is the riskier setting, not the safer one. A gear transfer whose real
+            // item does not resolve simply arrives short, and the receiver is left
+            // waiting on reconcile to notice. Keep the default; the env is the A/B
+            // escape hatch for proving a duplication report against it.
             static int gearFab = -1;
             if (gearFab < 0) { const char* e = getenv("KENSHICOOP_WEAPON_FAB"); gearFab = (e && e[0] == '0') ? 0 : 1; }
             if ((!isGearType(p.itemType) || gearFab) && !engine::isContainerItemType(p.itemType))

@@ -120,6 +120,10 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // restore only after a sustained streamed dwell (~2 s), counted in frames.
     const unsigned int SUPPRESS_AFTER_FRAMES = 75;
     const unsigned int RESTORE_AFTER_FRAMES  = 150;
+    // How much wider the single re-judge sweep reaches after a census dropout. A
+    // body only leaves the enumeration by walking, so one census gap can move it a
+    // few hundred units at most; 1.25x covers that without paying for it every tick.
+    const float CENSUS_REJUDGE_SCALE = 1.25f;
 
     // Hands the host streamed a fresh sample for this tick = the authoritative set.
     std::set<Key> keep;
@@ -184,9 +188,29 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     bool wideTrunc = false;
     bool censusFresh = censusRadius_ > 0.0f && censusRecvMs_ != 0 &&
                        (nowMs() - censusRecvMs_) <= 5000;
-    if (censusFresh)
-        wn = engine::listNpcsWide(gw, censusRadius_, wChars, wStates, NPC_CENSUS_MAX,
+    if (censusFresh) {
+        // Re-judge sweep on the stale->fresh edge. Nothing is judged while the
+        // census is silent, so a body that drifts past censusRadius_ during the gap
+        // would otherwise never be judged again - it is simply outside every later
+        // enumeration. Widening the FIRST pass after the census returns reaches the
+        // cohort that drifted out, which is the whole leak: travel is a continuous
+        // zone stream, zone streaming stalls the host's main thread, so the gaps
+        // happen exactly while both squads are covering ground.
+        //
+        // One pass, not a permanent widening - the cost is a bigger enumeration, and
+        // the reason the radius is what it is has not changed.
+        float radius = censusRadius_;
+        if (censusRejudge_) radius = censusRadius_ * CENSUS_REJUDGE_SCALE;
+        wn = engine::listNpcsWide(gw, radius, wChars, wStates, NPC_CENSUS_MAX,
                                   &wideTrunc);
+        if (censusRejudge_) {
+            char b[160]; _snprintf(b, sizeof(b) - 1,
+                "[census] re-judge sweep radius=%.0f (was stale; enumerated=%u trunc=%d)",
+                radius, wn, wideTrunc ? 1 : 0);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            censusRejudge_ = false;
+        }
+    }
 
     // Phase 0.5: account the time wide culling spends DISABLED. Staleness is a
     // deliberate fail-open (a silent host must not mass-suppress a loaded area),
@@ -210,6 +234,8 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 "[census] fresh again (wide culling re-enabled; staleMs=%lu edges=%lu)",
                 censusStaleMs_, censusStaleEdges_);
             b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            // Arm the widened sweep for the NEXT pass: this tick already enumerated.
+            censusRejudge_ = true;
         }
         censusFreshPrev_  = censusFresh;
         censusFreshChkMs_ = nowF;

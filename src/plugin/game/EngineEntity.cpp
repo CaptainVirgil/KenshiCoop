@@ -881,6 +881,10 @@ bool isLocalPlayerChar(GameWorld* gw, Character* c) {
     }
 }
 
+// Where a suppressed body's collision capsule is parked. Deep under the terrain,
+// keeping x/z so anything that reads the hull still sees a sane column.
+static const float HULL_VOID_Y = -100000.0f;
+
 bool suppressNpc(GameWorld* gw, Character* c) {
     if (!gw || !c || !g_removeUpdateFn) return false;
     __try {
@@ -889,6 +893,21 @@ bool suppressNpc(GameWorld* gw, Character* c) {
         // Freezing alone leaves the body standing/visible at its seat; hide it too
         // so a host-unstreamed NPC fully disappears (no standing-on-the-seat double).
         static_cast<RootObject*>(c)->setVisible(false);
+        // setVisible is the RENDER virtual and nothing more. The Havok capsule stays
+        // exactly where it was, and because the body is off the update list it no
+        // longer runs its own collision response either - so it cannot be shoved
+        // aside the way a live NPC would be. The result is an immovable invisible
+        // pillar, and stairwells and doorways are the narrowest corridors in the
+        // game, so that is where players hit it: passable for the peer, blocked for
+        // whoever suppressed the body. Park the capsule under the world instead.
+        // Safe precisely BECAUSE the body is off the update list: nothing re-syncs
+        // the hull to the render transform behind us, and the ~2 s re-assertion
+        // sweep re-parks it if the engine wakes the body up.
+        if (g_hullTeleportFn && c->movement) {
+            Ogre::Vector3 p = c->getPosition();
+            Ogre::Vector3 sunk(p.x, HULL_VOID_Y, p.z);
+            g_hullTeleportFn(c->movement, &sunk);
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -898,6 +917,12 @@ bool suppressNpc(GameWorld* gw, Character* c) {
 void restoreNpc(GameWorld* gw, Character* c) {
     if (!gw || !c || !g_addUpdateFn) return;
     __try {
+        // Put the capsule back under the body before it can tick again, or the
+        // engine resumes a body whose collision is still under the map.
+        if (g_hullTeleportFn && c->movement) {
+            Ogre::Vector3 p = c->getPosition();
+            g_hullTeleportFn(c->movement, &p);
+        }
         g_addUpdateFn(gw, c);
         static_cast<RootObject*>(c)->setVisible(true);
     } __except (EXCEPTION_EXECUTE_HANDLER) {

@@ -374,6 +374,7 @@ SeparateSquadFn g_separateSquadFn = 0;
 EndActionFn     g_endActionFn     = 0;
 RagdollModeFn   g_ragdollModeFn   = 0;
 MoveRestoreFn   g_moveRestoreFn   = 0;
+HullTeleportFn  g_hullTeleportFn  = 0;
 MedFloatFn      g_knockoutFn      = 0;
 MedFloatFn      g_knockoutForceFn = 0;
 MedAmputateFn     g_medAmputateFn     = 0;
@@ -1575,6 +1576,8 @@ void resolve() {
     // CharMovement::pos, the mesh stays where the body collapsed while the nametag
     // walks away with the stream.
     g_moveRestoreFn = (MoveRestoreFn)KenshiLib::GetRealAddress(&CharMovement::restore);
+    g_hullTeleportFn = (HullTeleportFn)KenshiLib::GetRealAddress(
+        &CharMovement::teleportCollisionHull);
     g_knockoutFn      = (MedFloatFn)KenshiLib::GetRealAddress(&MedicalSystem::knockout);
     g_knockoutForceFn = (MedFloatFn)KenshiLib::GetRealAddress(&MedicalSystem::knockoutForceTimer);
 
@@ -1829,6 +1832,7 @@ void resolve() {
             { (void**)&g_relSetFn,          "FactionRelations::setRelation", CAP_FACTION,       true },
             { (void**)&g_attackTargetFn,    "Character::attackTarget",       CAP_COMBAT_ESCALATE,true },
             { (void**)&g_moveRestoreFn,     "CharMovement::restore",         CAP_MOVE_RESTORE,  true },
+            { (void**)&g_hullTeleportFn,    "CharMovement::teleportCollisionHull", CAP_HULL,   true },
             { (void**)&g_ownAddObjFn,       "Ownerships::addOwnedObject",    CAP_DEED,          true },
             { (void**)&g_ownRemObjFn,       "Ownerships::removeOwnedObject", CAP_DEED,          true },
             { (void**)&g_ownIsOwnedFn,      "Ownerships::isOwned",           CAP_DEED,          true },

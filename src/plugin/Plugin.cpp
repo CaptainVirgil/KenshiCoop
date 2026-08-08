@@ -1975,6 +1975,7 @@ void configureReplicator() {
                                g_cfg.combatBigSnapDist, g_cfg.combatSlideMax,
                                g_cfg.combatConvergeMs);
         g_repl.setSendStamp(g_cfg.sendStamp);
+        g_repl.setTuning(g_cfg.tuning);
         g_repl.setCensusRadius(g_cfg.censusRadius);
         g_repl.setSpawnMintRadius(g_cfg.spawnMintRadius);
         g_repl.setCensusParkDist(g_cfg.censusParkDist);
@@ -2314,7 +2315,12 @@ __declspec(dllexport) void startPlugin() {
     // own dump is written from a late filter and carries no usable frames, which is
     // where the 2026-08-03 crash investigation dead-ended; ours chains to RE_Kenshi's
     // filter afterwards, so its emergency save is unaffected. See core/CrashDump.h.
-    {
+    //
+    // Opt-in (KENSHICOOP_CRASH_TRACER=1), because the cost is paid on every exception
+    // in the process rather than only on the fatal one: the handler is vectored at
+    // priority 1 and the engine throws routinely. Ask for it when taking a crash
+    // report; leave it off for a session that is merely being played.
+    if (g_cfg.crashTracer) {
         std::string dir = g_cfg.logPath;
         size_t cut = dir.find_last_of("\\/");
         dir = (cut == std::string::npos) ? std::string(".") : dir.substr(0, cut);

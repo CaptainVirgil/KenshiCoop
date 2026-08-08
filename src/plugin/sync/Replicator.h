@@ -681,6 +681,9 @@ public:
     // KENSHICOOP_CENSUS_RADIUS: wide-radius existence culling reach (units);
     // <= 0 disables the census channel on both sides.
     void setCensusRadius(float r) { censusRadius_ = r; }
+    // Per-channel cadences and self-heal debounces, resolved from env/json in
+    // loadConfig. Applied whole rather than field-by-field: the struct IS the unit.
+    void setTuning(const SyncTuning& t) { tuning_ = t; }
 
     // KENSHICOOP_SPAWN_MINT_RADIUS (2026-07-11 "NPCs spawn on top of the join
     // player" fix): how far from our own squad a census-missing host NPC may
@@ -824,6 +827,13 @@ private:
                                       //   debounced host-side-drop detector)
         // Furniture occupancy sync (protocol 19):
         unsigned long furnHealTick;   // last self-heal enter attempt (throttle)
+        // First tick the stream reported an occupancy our copy is not in. The mirror
+        // of furnNoSeeTick, and needed for the same reason the carry heal needed
+        // carrySeeTick: `out.bodyState` is the interpolated sample and lags real
+        // time, so it still reports a cage a reliable EVT_EXIT_FURNITURE has already
+        // ended here. Healing on the first such tick re-cages a prisoner the peer
+        // just freed. See tuning_.furnHealDebounceMs.
+        unsigned long furnSeeTick;
         unsigned long furnNoSeeTick;  // first tick a locally-occupying copy's stream
                                       //   stopped reporting the occupancy bit (the
                                       //   debounced owner-side-exit detector)
@@ -843,6 +853,18 @@ private:
         // self-heal; this guard re-asserts setChainedMode independently so a peer
         // PC's local lockpick can't leave the owner's prisoner unlocked on the peer.
         unsigned long chainHealTick;
+        // The two directions of that guard, both debounced against the delayed
+        // sample. chainSeeTick gates the relock; chainNoSeeTick gates the RELEASE,
+        // which did not exist at all before: for a body both caged and chained the
+        // owner emits no exit event when only the shackle comes off (the kind
+        // priority reports the cage), so a stale batch could re-lock a prisoner and
+        // nothing would ever unlock it again - a permanent divergence where one
+        // player sees a freed captive and the other sees a slave.
+        unsigned long chainSeeTick;
+        unsigned long chainNoSeeTick;
+        // Set when a reliable furniture ENTER is applied: the bed fast-exit must not
+        // undo it on the strength of a sample older than the event.
+        unsigned long furnEnterHoldMs;
         // Stealth sync (protocol 20):
         unsigned long sneakTick;      // last setStealthMode apply (mode-flap throttle)
         // Prone posture sync (protocol 53):
@@ -888,8 +910,9 @@ private:
                    goalsCleared(false),
                    trusted(false), agreeStreak(0),
                    carryHealTick(0), carrySeeTick(0), carryNoSeeTick(0),
-                   furnHealTick(0), furnNoSeeTick(0), furnPeerTick(0),
+                   furnHealTick(0), furnSeeTick(0), furnNoSeeTick(0), furnPeerTick(0),
                    haveChainOwner(false), chainHealTick(0),
+                   chainSeeTick(0), chainNoSeeTick(0), furnEnterHoldMs(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), walkBranchPrev(false),
@@ -1037,6 +1060,11 @@ private:
     // the appended fields on the 5 s [audit] exist line.
     bool                      censusPubTrunc_;   // host: last publish hit NPC_CENSUS_MAX
     bool                      censusFreshPrev_;  // join: freshness at the last sample
+    // Armed when the census goes stale -> fresh: the next wide pass enumerates at a
+    // widened radius once, to reach bodies that drifted out while nothing was being
+    // judged. Without it those bodies are outside every later enumeration and leak
+    // permanently, which is what censusStaleEdges_ was counting.
+    bool                      censusRejudge_;
     unsigned long             censusFreshChkMs_; // join: when we last sampled it
     unsigned long             censusStaleMs_;    // join: cumulative stale time
     unsigned long             censusStaleEdges_; // join: fresh -> stale transitions

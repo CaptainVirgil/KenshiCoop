@@ -147,6 +147,11 @@ typedef void      (__fastcall* RagdollModeFn)(Character* self, bool on, int part
 // CharMovement::restore - the counterpart to destroy(), which re-creates the
 // movement controller's physics side (the HavokCharacter + collision hull).
 typedef void      (__fastcall* MoveRestoreFn)(CharMovement* self);
+// CharMovement::teleportCollisionHull - moves the Havok capsule independently of
+// the render transform. Suppression needs it: setVisible only hides the mesh, and
+// a hidden body that keeps its capsule is an invisible wall.
+typedef void      (__fastcall* HullTeleportFn)(CharMovement* self,
+                                               const Ogre::Vector3* pos);
 typedef void      (__fastcall* MedFloatFn)(MedicalSystem* self, float v);
 typedef void      (__fastcall* MedAmputateFn)(MedicalSystem* self, int limb,
                                               bool createSeveredItem,
@@ -400,6 +405,7 @@ extern SeparateSquadFn g_separateSquadFn;
 extern EndActionFn     g_endActionFn;
 extern RagdollModeFn   g_ragdollModeFn;
 extern MoveRestoreFn   g_moveRestoreFn;
+extern HullTeleportFn  g_hullTeleportFn;
 extern MedFloatFn      g_knockoutFn;
 extern MedFloatFn      g_knockoutForceFn;
 extern MedAmputateFn     g_medAmputateFn;
