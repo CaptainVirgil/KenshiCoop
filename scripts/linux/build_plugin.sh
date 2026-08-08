@@ -50,10 +50,27 @@ obj_for() {
   echo "$OBJ/$(echo "${1%.*}" | tr '/' '_' | sed 's/^[._]*//').obj"
 }
 
+# Recompile only when the source is newer than its object, unless KC_REBUILD=1.
+#
+# Deliberately a timestamp check on the .cpp alone and NOT a header dependency
+# scan: this codebase's headers are load-bearing (Replicator.h is included by
+# nearly everything and changes constantly), so a naive source-only check would
+# happily skip a TU that a header change had invalidated. Touching any header
+# therefore forces a full rebuild - correctness first, and the win is still real
+# for the common case of editing one .cpp.
+newest_header_ms() {
+  find "$REPO/src" "$REPO/third_party/vc10_compat" -name '*.h' -newer "$1" -print -quit 2>/dev/null
+}
+
 compile_one() {
   local src="$1"
   local abs="$REPO/src/plugin/$src"
   local obj="$(obj_for "$src")"
+
+  if [ -z "${KC_REBUILD:-}" ] && [ -f "$obj" ] && [ "$obj" -nt "$abs" ] &&
+     [ -z "$(newest_header_ms "$obj")" ]; then
+    return 0   # object is newer than the source AND every header
+  fi
   # Delete first. The success test below is "does the object exist", and without
   # this a compile that FAILS leaves the previous run's object sitting there and
   # passes it -- so the link succeeds against stale code and verify.sh reports a
@@ -67,7 +84,7 @@ compile_one() {
     grep -vE '^[A-Za-z0-9_./\\-]+\.(cpp|c)$' || true
   [ -f "$obj" ] || { echo "FAILED: $src" >&2; return 1; }
 }
-export -f compile_one obj_for winpath vcl
+export -f compile_one obj_for winpath vcl newest_header_ms
 export REPO OBJ OPT DEFS VC WINE_BIN
 
 printf '%s\n' "${SOURCES[@]}" |

@@ -71,6 +71,15 @@ cat > "$OUT/KenshiCoop/kit.json" <<JSON
 }
 JSON
 
+# Ship the linker map alongside the DLL. The Release build already emits one and
+# it was being thrown away, so a crash address from a player's report could not be
+# resolved to a function by anyone - including whoever reads the report. It is a
+# text file, it compresses to almost nothing, and it is the difference between
+# "it crashed" and "it crashed in applyTargets".
+if [ -f "$REPO/build/Release/KenshiCoop.map" ]; then
+    cp "$REPO/build/Release/KenshiCoop.map" "$OUT/KenshiCoop/"
+fi
+
 ZIP="$REPO/dist/KenshiCoop-kit-$LABEL.zip"
 rm -f "$ZIP"
 (cd "$OUT" && zip -qr "$ZIP" KenshiCoop)

@@ -5,6 +5,7 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 
 #include "CoopLog.h"
+#include <string>
 
 #include <windows.h>
 #include <cstdio>
@@ -66,7 +67,17 @@ void logInit(const char* path, const char* modeTag) {
     }
 
     if (path && path[0]) {
-        g_fp = std::fopen(path, "w"); // fresh file each run
+        // Keep ONE previous run. The log was truncated on every plugin load, so the
+        // usual sequence after a crash - relaunch Kenshi to look at what happened -
+        // destroyed the evidence before anyone could read it, and the crash is
+        // exactly the run whose log matters most.
+        {
+            std::string prev(path);
+            prev += ".prev";
+            std::remove(prev.c_str());
+            std::rename(path, prev.c_str()); // fails harmlessly on the first run
+        }
+        g_fp = std::fopen(path, "w");
     }
     writeLine("INFO", "log opened");
 }

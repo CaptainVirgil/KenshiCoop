@@ -98,16 +98,36 @@ if ($sources.Count -eq 0) { throw "no sources parsed for $Config" }
 $objDir = Join-Path $repo "build\$Config\obj-win"
 $outDir = Join-Path $repo "build\$Config"
 New-Item -ItemType Directory -Force -Path $objDir, $outDir | Out-Null
-# Delete first: the success test is whether objects exist, and a stale object from
-# a previous run would let a failed compile pass.
-Get-ChildItem -LiteralPath $objDir -Filter *.obj -ErrorAction SilentlyContinue |
-    Remove-Item -Force
+# Objects for the TUs we are about to rebuild are deleted individually below, so a
+# failed compile cannot pass on a stale one. Untouched objects are kept on purpose.
 
-Write-Host "=== KenshiCoop.dll ($Config|x64, v100 direct) - $($sources.Count) translation units ==="
+# Same incremental rule as the Linux script: skip a translation unit whose object
+# is newer than its source, and force a full rebuild when ANY header moved. The
+# headers here are load-bearing (Replicator.h is included by nearly everything), so
+# a source-only check would happily skip a TU a header change had invalidated.
+$newestHeader = (Get-ChildItem -LiteralPath (Join-Path $repo "src") -Recurse -Filter *.h |
+                 Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
+$headerStamp = if ($newestHeader) { $newestHeader.LastWriteTimeUtc } else { [datetime]::MinValue }
+
+$toCompile = @()
+foreach ($src in $sources) {
+    $obj = Join-Path $objDir ([System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj")
+    if (-not $env:KC_REBUILD -and (Test-Path -LiteralPath $obj)) {
+        $objTime = (Get-Item -LiteralPath $obj).LastWriteTimeUtc
+        $srcTime = (Get-Item -LiteralPath $src).LastWriteTimeUtc
+        if ($objTime -gt $srcTime -and $objTime -gt $headerStamp) { continue }
+        Remove-Item -LiteralPath $obj -Force
+    }
+    $toCompile += $src
+}
+
+Write-Host "=== KenshiCoop.dll ($Config|x64, v100 direct) - $($toCompile.Count) of $($sources.Count) translation units ==="
+if ($toCompile.Count -gt 0) {
 # /MP fans out across cores, which is why this is one invocation rather than a loop.
-& $cl /nologo /c /MP /EHsc /W3 /Gy /Oi @opt @defs "/Fo$objDir\" @sources 2>&1 |
+& $cl /nologo /c /MP /EHsc /W3 /Gy /Oi @opt @defs "/Fo$objDir\" @toCompile 2>&1 |
     Where-Object { $_ -notmatch '^[A-Za-z0-9_.\\/-]+\.(cpp|c)$' } |
     ForEach-Object { Write-Host "  $_" }
+}
 
 # Link in SOURCE order, not directory order. /OPT:ICF folds identical COMDATs and
 # the result depends on the order the linker sees them, so an alphabetical object
