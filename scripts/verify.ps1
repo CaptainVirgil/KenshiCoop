@@ -59,18 +59,22 @@ if (Test-Path $fixtures) {
     # Whichever host is present. Windows PowerShell 5.1 stays the default on
     # Windows; pwsh is what exists on Linux, where scripts/linux/verify.sh runs
     # the same fixtures.
-    $psHost = if (Get-Command powershell -ErrorAction SilentlyContinue) { "powershell" }
-              elseif (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" }
-              else { $null }
+    # Whichever host is present, so this file also works when driven from
+    # scripts/linux/verify.sh. NOT an early return on failure: this runs at script
+    # scope, where `return` would abandon the remaining sections and the summary.
+    $psHost = $null
+    if (Get-Command powershell -ErrorAction SilentlyContinue) { $psHost = "powershell" }
+    elseif (Get-Command pwsh -ErrorAction SilentlyContinue)   { $psHost = "pwsh" }
+
     if (-not $psHost) {
         Write-Host "CONTRACT FIXTURES: FAIL - no PowerShell host found"
         $overall = $false
-        return
+    } else {
+        & $psHost -NoProfile -ExecutionPolicy Bypass -File $fixtures
+        $fixOk = ($LASTEXITCODE -eq 0)
+        Write-Host ("CONTRACT FIXTURES: " + $(if ($fixOk) { "PASS" } else { "FAIL (exit $LASTEXITCODE)" }))
+        if (-not $fixOk) { $overall = $false }
     }
-    & $psHost -NoProfile -ExecutionPolicy Bypass -File $fixtures
-    $fixOk = ($LASTEXITCODE -eq 0)
-    Write-Host ("CONTRACT FIXTURES: " + $(if ($fixOk) { "PASS" } else { "FAIL (exit $LASTEXITCODE)" }))
-    if (-not $fixOk) { $overall = $false }
 } else {
     Write-Host "CONTRACT FIXTURES: FAIL - scripts\tests\Contract.Tests.ps1 not found"
     $overall = $false
