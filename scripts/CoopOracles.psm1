@@ -1,4 +1,4 @@
-﻿# CoopOracles.psm1 - the KenshiCoop validation oracle library.
+# CoopOracles.psm1 - the KenshiCoop validation oracle library.
 #
 # Every oracle that judges a host/join log pair lives here (ported from the old
 # inline run_test.ps1 implementations) so the SAME verdict code runs in three
