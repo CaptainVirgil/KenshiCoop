@@ -224,6 +224,7 @@ HANDLE           g_recvHandle = INVALID_HANDLE_VALUE;
 std::vector<u32> g_recvCrcs;           // incremental FNV per fileIdx
 std::vector<u8>  g_recvSeen;           // fileIdx touched at least once
 unsigned long    g_recvStartTick = 0;
+unsigned long    g_recvLastChunkTick = 0; // watchdog: last chunk arrival
 
 // Scenario gate accessors' backing state.
 u32 g_lastSentXferId  = 0;
@@ -560,6 +561,12 @@ std::string lastCommitName() { return g_recvName; }
 bool             receiving()      { return g_recvActive; }
 unsigned __int64 recvBytes()      { return g_recvBytes; }
 unsigned __int64 recvTotalBytes() { return g_recvTotalBytes; }
+unsigned long    recvStalledMs() {
+    if (!g_recvActive || g_recvLastChunkTick == 0) return 0;
+    return GetTickCount() - g_recvLastChunkTick;
+}
+unsigned __int64 sentBytes()      { return g_sendSentBytes; }
+unsigned __int64 sendTotalBytes() { return g_sendTotalBytes; }
 u16              recvFileCount()  { return g_recvFileCount; }
 
 static u32 g_lastAckXferId = 0;
@@ -615,6 +622,7 @@ void onSaveBegin(const SaveBeginPacket& b) {
     g_recvTotalBytes = b.totalBytes;
     g_recvBytes      = 0;
     g_recvStartTick  = GetTickCount();
+    g_recvLastChunkTick = g_recvStartTick;
     g_recvStaging    = saveFolderFor(g_recvName + "__incoming");
     g_recvCrcs.assign(b.fileCount, fnv1aInit());
     g_recvSeen.assign(b.fileCount, 0);
@@ -655,6 +663,8 @@ void onSaveFile(const SaveFileHeader& h, const char* path, const unsigned char* 
         coop::logErrLine("[save] XFER chunk rejected: unsafe relative path");
         return;
     }
+
+    g_recvLastChunkTick = GetTickCount();
 
     if (g_recvOpenIdx != (int)h.fileIdx) {
         recvCloseFile();

@@ -834,6 +834,21 @@ void coopPanelDrive() {
     // the F2 panel. The percent is whole-number so the panel only rebuilds ~100x
     // over a transfer, not every chunk. Null when not streaming.
     std::string transfer;
+    // The HOST arm did not exist: while it pushed a multi-MB save its panel said
+    // "Connected - peer joined" and nothing else, so a long transfer was
+    // indistinguishable from a hang on both sides at once.
+    if (g_cfg.isHost && coop::savexfer::sending()) {
+        unsigned __int64 sent = coop::savexfer::sentBytes();
+        unsigned __int64 tot  = coop::savexfer::sendTotalBytes();
+        int pct = (tot > 0) ? (int)((sent * 100) / tot) : 0;
+        if (pct > 100) pct = 100;
+        char hb[96];
+        _snprintf(hb, sizeof(hb) - 1,
+                  "Sending your world to your friend... %d%% (%.1f/%.1f MB)", pct,
+                  (double)sent / (1024.0 * 1024.0), (double)tot / (1024.0 * 1024.0));
+        hb[sizeof(hb) - 1] = '\0';
+        transfer = hb;
+    }
     if (!g_cfg.isHost && g_net.isRunning() && !g_gameStarted) {
         if (coop::savexfer::receiving()) {
             unsigned __int64 got = coop::savexfer::recvBytes();
@@ -847,6 +862,14 @@ void coopPanelDrive() {
                       (double)tot / (1024.0 * 1024.0));
             tb[sizeof(tb) - 1] = '\0';
             transfer = tb;
+            // A transfer that has stopped moving looks exactly like one that is
+            // moving slowly, and the receiver had no watchdog - so a host that quit
+            // mid-stream left this line frozen at a percentage indefinitely.
+            const unsigned long stalled = coop::savexfer::recvStalledMs();
+            if (stalled > 20000) {
+                transfer = "World transfer stalled - your friend may have disconnected. "
+                           "Toggle Connection OFFLINE then ONLINE to retry.";
+            }
         } else if (!g_loadAfterCommit.empty()) {
             // NACK sent (host baking/streaming) or committed + about to load.
             transfer = "Preparing host world...";
