@@ -117,8 +117,12 @@ if ((Split-Path $ModDir -Leaf) -ne "KenshiCoop" -or
 }
 
 # Saves live here. Reported so it is obvious the script has no business with them.
-$SaveDir = Join-Path $env:LOCALAPPDATA "kenshi\save"
-if (Test-Path $SaveDir) {
+# LOCALAPPDATA is always set on Windows; guarded anyway so a missing environment
+# degrades to "cannot say where" instead of aborting an otherwise fine update.
+$SaveDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "kenshi\save" } else { $null }
+if (-not $SaveDir) {
+    Note "saves: location unknown (no LOCALAPPDATA) - not touched by this script"
+} elseif (Test-Path $SaveDir) {
     $saveCount = @(Get-ChildItem $SaveDir -Directory -ErrorAction SilentlyContinue).Count
     Note "saves: $SaveDir ($saveCount found) - not touched by this script"
 } else {
@@ -243,7 +247,7 @@ try {
     Say "Done."
     Say "  Build:  $newLabel$(if ($newProto) { "  (protocol $newProto)" })"
     Say "  Both players must be on this same build, or the connection is refused."
-    Say "  Saves untouched: $SaveDir"
+    if ($SaveDir) { Say "  Saves untouched: $SaveDir" } else { Say "  Saves untouched." }
     Say "  Roll back with:  .\update-kenshicoop.ps1 -Rollback"
     Say ""
     Say "  In game: enable KenshiCoop in the Mods menu, then press F2."
