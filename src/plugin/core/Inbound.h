@@ -474,14 +474,27 @@ public:
         ii.keyKind = keyKind;
         ii.flags   = flags;
         for (int k = 0; k < 5; ++k) ii.cKey[k] = cKey[k];
-        if (items && count > 0) ii.items.assign(items, items + count);
+        if (items && count > 0) {
+            ii.items.assign(items, items + count);
+            // The template ids in these entries are compared and std::string'd all
+            // over the reconcile path. Senders terminate them; that is the sender's
+            // promise, not our guarantee, so make it true on our own copy.
+            for (unsigned int i = 0; i < count; ++i) {
+                wireTerm(ii.items[i].stringID);
+                wireTerm(ii.items[i].manufacturer);
+                wireTerm(ii.items[i].material);
+            }
+        }
         EnterCriticalSection(&cs_); inv_.push_back(ii); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received world-item snapshot, owner-tagged.
     void pushWorldItems(u32 ownerId, const WorldItemEntry* items, unsigned int count) {
         InboundWorldItems wi;
         wi.ownerId = ownerId;
-        if (items && count > 0) wi.items.assign(items, items + count);
+        if (items && count > 0) {
+            wi.items.assign(items, items + count);
+            for (unsigned int i = 0; i < count; ++i) wireTerm(wi.items[i].stringID);
+        }
         EnterCriticalSection(&cs_); wi_.push_back(wi); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received world-item cull (list of netIds), owner-tagged.

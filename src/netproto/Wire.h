@@ -1519,6 +1519,18 @@ inline u8 packetType(const void* data, unsigned int len) {
     return *reinterpret_cast<const u8*>(data);
 }
 
+// Force NUL-termination of a fixed-size wire char array.
+//
+// Senders always terminate, and every receiver assumed it. That assumption is the
+// sender's to keep, not ours: a field arriving without a terminator turns the very
+// next std::string(...) or strcmp(...) into a read past the end of the packet
+// struct. Every one of these fields is a GameData stringID or a save name, so
+// truncating the last byte costs nothing real - a 48-byte template id that uses
+// all 48 bytes does not exist - and it makes the whole downstream safe at O(1)
+// instead of auditing a dozen call sites.
+template <unsigned N>
+inline void wireTerm(char (&field)[N]) { field[N - 1] = '\0'; }
+
 // Safe typed read: returns true and fills out if the buffer is large enough.
 template <typename T>
 inline bool readPacket(const void* data, unsigned int len, T* out) {

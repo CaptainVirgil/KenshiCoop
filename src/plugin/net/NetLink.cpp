@@ -787,6 +787,7 @@ void NetLink::threadLoop() {
                         FactionPacket fa;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &fa)
                             && inbound_) {
+                            wireTerm(fa.sid);
                             inbound_->pushFaction(fa.ownerId, fa);
                         }
                     } else if (type == PKT_TIME) {
@@ -811,6 +812,7 @@ void NetLink::threadLoop() {
                         ProdPacket pp;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &pp)
                             && inbound_) {
+                            wireTerm(pp.outSid);
                             inbound_->pushProd(pp.ownerId, pp);
                         }
                     } else if (type == PKT_RESEARCH) {
@@ -819,6 +821,7 @@ void NetLink::threadLoop() {
                         ResearchPacket rp;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &rp)
                             && inbound_) {
+                            wireTerm(rp.sid);
                             inbound_->pushResearch(rp.ownerId, rp);
                         }
                     } else if (type == PKT_DEED) {
@@ -827,6 +830,7 @@ void NetLink::threadLoop() {
                         DeedPacket dep;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &dep)
                             && inbound_) {
+                            wireTerm(dep.ownerSid);
                             inbound_->pushDeed(dep.ownerId, dep);
                         }
                     } else if (type == PKT_BUILD_PLACE) {
@@ -835,6 +839,7 @@ void NetLink::threadLoop() {
                         BuildPlacePacket bp;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &bp)
                             && inbound_) {
+                            wireTerm(bp.sid);
                             inbound_->pushBuildPlace(bp.ownerId, bp);
                         }
                     } else if (type == PKT_BUILD_STATE) {
@@ -882,6 +887,7 @@ void NetLink::threadLoop() {
                         SpawnInfoPacket sip;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sip)
                             && inbound_) {
+                            wireTerm(sip.charSid); wireTerm(sip.facSid);
                             inbound_->pushSpawnInfo(sip.ownerId, sip);
                         }
                     // The save/load queues below are each drained by exactly ONE
