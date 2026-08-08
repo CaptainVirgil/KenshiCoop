@@ -254,6 +254,22 @@ private:
 
     ENetHost*   enetHost_;   // net thread only
     ENetPeer*   serverPeer_; // client only; net thread only
+
+    // Send one packet to whoever the peer is, and destroy it if there is nobody to
+    // send to. NET THREAD ONLY. This exact if/else-if/else appeared 41 times in
+    // threadLoop, once per packet type - the same three lines, the same ownership
+    // rule, and the same easy mistake available in each copy (an early return that
+    // leaks the packet, or a missing destroy on the no-peer path).
+    void sendToPeer(ENetPacket* pkt, int channel) {
+        if (!pkt) return;
+        if (isHost_) {
+            enet_host_broadcast(enetHost_, channel, pkt);
+        } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
+            enet_peer_send(serverPeer_, channel, pkt);
+        } else {
+            enet_packet_destroy(pkt); // no one to send to yet
+        }
+    }
     Inbound*    inbound_;
 
     CRITICAL_SECTION         outCs_;
