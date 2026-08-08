@@ -193,6 +193,20 @@ void Replicator::resetSession() {
     combatCapMs_.clear();
     authCount_.clear();
     ownHands_.clear();
+    // Five members whose absence made the "clears every map" contract untrue.
+    // All five key off the OLD world's hands or geometry, so carrying them across
+    // a world swap means judging new bodies against dead state.
+    pendingHits_.clear();     // combat hits authored against the old world
+    censusFrozen_.clear();    // per-key AI freeze-holds
+    proxyDriftPrev_.clear();  // census position at the last proxy drift sample
+    buildPoseCapMs_.clear();  // per-key build-pose throttle
+    //
+    // peerClock_ is deliberately NOT cleared, and that is not an omission: it maps
+    // the peer's clock into ours, which is a property of the connection rather than
+    // of the world, and re-measuring it costs an interpolation starve window right
+    // when the new world needs smooth motion. Same reasoning as ownRanks_ and the
+    // outbound sequence counters below.
+
     // Protocol 36: the existence census describes the OLD world's hands; the
     // host re-publishes within a second of the new world going live.
     censusHands_.clear();

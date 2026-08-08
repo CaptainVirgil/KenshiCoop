@@ -860,21 +860,30 @@ void NetLink::threadLoop() {
                             && inbound_) {
                             inbound_->pushSpawnInfo(sip.ownerId, sip);
                         }
-                    } else if (type == PKT_SAVE_REQ) {
+                    // The save/load queues below are each drained by exactly ONE
+                    // role: the join consumes BEGIN/FILE/DONE/LOAD_GO, the host
+                    // consumes REQ/ACK/LOAD_REQ/LOAD_NACK. Nothing drains the other
+                    // direction, and these queues are deliberately excluded from the
+                    // world-state flush - so a packet accepted for the wrong role is
+                    // queued forever and the memory grows with peer traffic for the
+                    // life of the session. Validating direction here, where the role
+                    // is already known, fixes the leak and rules out a whole class of
+                    // wrong-direction confusion downstream.
+                    } else if (type == PKT_SAVE_REQ && isHost_) {
                         // Reliable join save request (protocol 31, join -> host).
                         SaveReqPacket sq;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sq)
                             && inbound_) {
                             inbound_->pushSaveReq(sq.ownerId, sq);
                         }
-                    } else if (type == PKT_SAVE_BEGIN) {
+                    } else if (type == PKT_SAVE_BEGIN && !isHost_) {
                         // Reliable save-transfer announce (protocol 31, host -> join).
                         SaveBeginPacket sb;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sb)
                             && inbound_) {
                             inbound_->pushSaveBegin(sb.ownerId, sb);
                         }
-                    } else if (type == PKT_SAVE_FILE) {
+                    } else if (type == PKT_SAVE_FILE && !isHost_) {
                         // Reliable save-file chunk (protocol 31, host -> join):
                         // [SaveFileHeader][path[pathLen]][payload[dataLen]].
                         const unsigned len = (unsigned)ev.packet->dataLength;
@@ -892,7 +901,7 @@ void NetLink::threadLoop() {
                                                        (const u8*)p + hdr.pathLen);
                             }
                         }
-                    } else if (type == PKT_SAVE_DONE) {
+                    } else if (type == PKT_SAVE_DONE && !isHost_) {
                         // Reliable save-transfer CRC table (protocol 31, host -> join):
                         // [SaveDoneHeader][u32 crc * fileCount].
                         const unsigned len = (unsigned)ev.packet->dataLength;
@@ -908,28 +917,28 @@ void NetLink::threadLoop() {
                                                            ? (const u32*)p : 0);
                             }
                         }
-                    } else if (type == PKT_SAVE_ACK) {
+                    } else if (type == PKT_SAVE_ACK && isHost_) {
                         // Reliable commit acknowledgement (protocol 31, join -> host).
                         SaveAckPacket sa;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sa)
                             && inbound_) {
                             inbound_->pushSaveAck(sa.ownerId, sa);
                         }
-                    } else if (type == PKT_LOAD_GO) {
+                    } else if (type == PKT_LOAD_GO && !isHost_) {
                         // Reliable coordinated-load order (protocol 32, host -> join).
                         LoadGoPacket lg;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &lg)
                             && inbound_) {
                             inbound_->pushLoadGo(lg.ownerId, lg);
                         }
-                    } else if (type == PKT_LOAD_REQ) {
+                    } else if (type == PKT_LOAD_REQ && isHost_) {
                         // Reliable join load request (protocol 32, join -> host).
                         LoadReqPacket lr;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &lr)
                             && inbound_) {
                             inbound_->pushLoadReq(lr.ownerId, lr);
                         }
-                    } else if (type == PKT_LOAD_NACK) {
+                    } else if (type == PKT_LOAD_NACK && isHost_) {
                         // Reliable copy-missing/diverged answer (protocol 32, join -> host).
                         LoadNackPacket ln;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &ln)
