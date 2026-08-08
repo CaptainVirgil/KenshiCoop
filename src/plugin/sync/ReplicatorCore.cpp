@@ -166,6 +166,21 @@ void Replicator::lifeSweep(GameWorld* gw, unsigned long now) {
         }
         ++it;
     }
+
+    // Same job, same cadence, for the throttle maps that had no release at all.
+    // The horizon matches life_'s PRUNE_MS: a hand not seen for that long has left
+    // interest or despawned, and its cooldown stamp is describing a world that is
+    // no longer in front of the player.
+    unsigned int dropped = 0;
+    dropped += pruneStaleStamps(parkMs_,         now, PRUNE_MS);
+    dropped += pruneStaleStamps(censusFrozen_,   now, PRUNE_MS);
+    dropped += pruneStaleStamps(buildPoseCapMs_, now, PRUNE_MS);
+    dropped += pruneStaleStamps(spawnReplyMs_,   now, PRUNE_MS);
+    if (dropped > 0) {
+        char pb[96];
+        _snprintf(pb, sizeof(pb) - 1, "[life] pruned throttle stamps=%u", dropped);
+        pb[sizeof(pb) - 1] = '\0'; coop::logLine(pb);
+    }
 }
 
 void Replicator::resetSession() {

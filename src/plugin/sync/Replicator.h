@@ -1290,7 +1290,14 @@ private:
     struct InvPub { u32 hash; unsigned long lastSendMs; u32 pendingHash; unsigned long pendingSince; unsigned int lastSentN; unsigned int lastSentUnits; };
     // truncated (protocol 46): the author's container did not fit in INV_ITEMS_MAX, so
     // `items` is an INCOMPLETE description - reconcile additive-only, never delete.
-    struct InvRecv { u32 ownerId; std::vector<InvItemEntry> items; bool dirty; bool truncated; };
+    // seenMs: when this container's hand last resolved locally. An entry is created
+    // for every snapshot received and, before this existed, removed only by
+    // resetSession - so a session that walked past a lot of storage pinned ~10 KB of
+    // vector capacity per container FOREVER (INV_ITEMS_MAX 64 x 159 B), and every
+    // later pass walked all of them.
+    struct InvRecv { u32 ownerId; std::vector<InvItemEntry> items; bool dirty; bool truncated;
+                     unsigned long seenMs;
+                     InvRecv() : ownerId(0), dirty(false), truncated(false), seenMs(0) {} };
     std::set<Key>          ownedContainers_;
     std::map<Key, InvPub>  invPub_;
     std::map<Key, InvRecv> invRecv_;

@@ -160,6 +160,25 @@ const unsigned long ATTR_WINDOW_MS = 3000; // remember a combatant's victim this
 // re-issue base (each attempt runs the engine's real pickup, don't spam it);
 // the drop debounce must sit above the lossy batch's worst gap (the disarm
 // lesson: a 1-batch stream blip must not tear a valid carry down).
+// Drop entries older than a horizon from a Key-keyed timestamp map.
+//
+// A dozen throttle and log-once maps are written as `m[k] = now` and appear in no
+// erase path anywhere in the tree, so each one grows per entity ever ENCOUNTERED
+// rather than per entity present: a long session in a populated region accumulates
+// them for its whole life, and every later pass walks all of them. resetSession was
+// their only release, and a session that never swaps worlds never gets one.
+//
+// C++03, so this is a template over the map type rather than a lambda predicate.
+template <class MapT>
+inline unsigned int pruneStaleStamps(MapT& m, unsigned long now, unsigned long horizonMs) {
+    unsigned int dropped = 0;
+    for (typename MapT::iterator it = m.begin(); it != m.end(); ) {
+        if ((now - it->second) > horizonMs) { m.erase(it++); ++dropped; }
+        else                                { ++it; }
+    }
+    return dropped;
+}
+
 const unsigned long CARRY_HEAL_MS = 1500; // min gap between self-heal pickups
 const unsigned long CARRY_DROP_MS = 3000; // stream must stop reporting the carry
                                           // this long before the local copy drops

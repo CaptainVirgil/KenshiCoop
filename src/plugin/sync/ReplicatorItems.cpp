@@ -178,6 +178,32 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
 
 void Replicator::applyInventories(GameWorld* gw) {
     if (invRecv_.empty()) return;
+    // Age out containers whose hand has stopped resolving. Walking away from a
+    // storage building leaves its snapshot behind otherwise, and a long session in
+    // a town accumulates them without bound - both the memory and the cost of every
+    // subsequent pass over the map. The horizon is generous because leaving and
+    // returning to a building is ordinary play; only a genuine departure crosses it.
+    {
+        const unsigned long INV_FORGET_MS = 60000;
+        const unsigned long now = nowMs();
+        for (std::map<Key, InvRecv>::iterator it = invRecv_.begin(); it != invRecv_.end(); ) {
+            const Key& k = it->first;
+            if (engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs) != 0 ||
+                ownedContainers_.count(k) != 0 || ownHands_.count(k) != 0) {
+                it->second.seenMs = now;
+                ++it;
+                continue;
+            }
+            if (it->second.seenMs == 0) { it->second.seenMs = now; ++it; continue; }
+            if ((now - it->second.seenMs) < INV_FORGET_MS) { ++it; continue; }
+            // swap-with-a-temporary, not clear(): under this toolchain clear() keeps
+            // the vector's capacity, which is the whole 10 KB being reclaimed.
+            std::vector<InvItemEntry>().swap(it->second.items);
+            xferBase_.erase(k); xferSeeded_.erase(k);
+            xferPend_.erase(k); xferDefer_.erase(k);
+            invRecv_.erase(it++);
+        }
+    }
     for (std::map<Key, InvRecv>::iterator it = invRecv_.begin(); it != invRecv_.end(); ++it) {
         if (!it->second.dirty) continue;
         it->second.dirty = false;
