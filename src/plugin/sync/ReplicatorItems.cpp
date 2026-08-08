@@ -56,9 +56,10 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
     // INV_ITEMS_MAX at 64 a full snapshot is ~10 KB, so a censused chest farm re-asserting
     // every 5 s would cost real bandwidth for nothing; big snapshots re-assert on the slow
     // interval instead. Small ones keep the historical cadence.
-    const unsigned long INV_RESEND_MS      = 5000;
-    const unsigned long INV_RESEND_BIG_MS  = 30000;
-    const unsigned int  INV_RESEND_BIG_N   = 24;   // entries above which "big" applies
+    // Defaults live in SyncTuning; overridable per session from coop_config.json.
+    const unsigned long INV_RESEND_MS      = tuning_.invResendMs;
+    const unsigned long INV_RESEND_BIG_MS  = tuning_.invResendBigMs;
+    const unsigned int  INV_RESEND_BIG_N   = tuning_.invResendBigN;
     // A changed snapshot must be STABLE this long before we publish it. A change that only
     // REARRANGES or ADDS (entry count >= last sent) settles fast. A change that REMOVES an
     // entry settles much longer: mid-drag the UI holds the dragged item on the CURSOR, out

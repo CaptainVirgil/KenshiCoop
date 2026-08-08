@@ -114,6 +114,9 @@ $script:CoopDiagEnvKeys = @(
     'KENSHICOOP_BDOOR_RESEND_MS'
     'KENSHICOOP_CARRY_HEAL_DEBOUNCE_MS'
     'KENSHICOOP_FURN_HEAL_DEBOUNCE_MS'
+    'KENSHICOOP_INV_RESEND_MS'
+    'KENSHICOOP_INV_RESEND_BIG_MS'
+    'KENSHICOOP_INV_RESEND_BIG_N'
     'KENSHICOOP_MID_BAND_MAX'
     'KENSHICOOP_MID_SLICE_MAX'
     # --- diagnostics (default OFF; the tracer is a cost paid on every exception) --

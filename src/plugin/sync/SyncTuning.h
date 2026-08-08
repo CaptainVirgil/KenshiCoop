@@ -102,6 +102,16 @@ struct SyncTuning {
     // pair churns. The drop direction was always debounced; this is its mirror.
     unsigned long carryHealDebounceMs;
 
+    // Inventory snapshot re-assert cadence (protocol 4a). The channel is RELIABLE,
+    // so these are not loss recovery - they are a periodic re-assert that also
+    // heals a diverged container. A full snapshot is ~10 KB, so the interval is the
+    // difference between a censused chest farm costing nothing and costing real
+    // bandwidth. Tunable because the right value depends on how much storage is in
+    // interest, which is a property of where the players are, not of the code.
+    unsigned long invResendMs;      // snapshots below invResendBigN entries
+    unsigned long invResendBigMs;   // snapshots at or above it
+    unsigned int  invResendBigN;
+
     // Furniture/chain self-heal (protocol 19/41/42): the same debounce for the same
     // reason. The occupancy heal-ENTER and the shackle relock both read the delayed
     // sample, and both were one-directional -- the EXIT side was debounced by

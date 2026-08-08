@@ -407,6 +407,12 @@ void NetLink::threadLoop() {
 
     u32   nextId = 1;
     DWORD lastConnectAttempt = GetTickCount();
+    // Bandwidth sampling. Nothing in the plugin measured its own traffic, so every
+    // judgement about what to send was made blind - including "the mid band is
+    // cheap", which was true but unverified. ENet already counts the bytes; this
+    // just reports them, once every few seconds, in the units a decision needs.
+    DWORD lastBwMs   = GetTickCount();
+    enet_uint32 bwOut0 = 0, bwIn0 = 0;
     // Entity-batch de-duplication state (see the send block below).
     u32   lastSentStamp    = 0;
     DWORD lastKeepaliveMs  = GetTickCount();
@@ -1860,6 +1866,26 @@ void NetLink::threadLoop() {
                 enet_peer_send(serverPeer_, CH_BULK, out);
             } else {
                 enet_packet_destroy(out);
+            }
+        }
+
+        // Bandwidth line: rates over the sampling window, plus the running totals.
+        // ENet's counters are cumulative and wrap, so the deltas are what matter.
+        {
+            const DWORD nowBw = GetTickCount();
+            if (enetHost_ && (nowBw - lastBwMs) >= 5000) {
+                const enet_uint32 outNow = enetHost_->totalSentData;
+                const enet_uint32 inNow  = enetHost_->totalReceivedData;
+                const double secs = (double)(nowBw - lastBwMs) / 1000.0;
+                const double outKb = (double)(enet_uint32)(outNow - bwOut0) / 1024.0 / secs;
+                const double inKb  = (double)(enet_uint32)(inNow  - bwIn0)  / 1024.0 / secs;
+                char b[160];
+                _snprintf(b, sizeof(b) - 1,
+                          "[net] bandwidth out=%.1f KB/s in=%.1f KB/s (window %.0fs)",
+                          outKb, inKb, secs);
+                b[sizeof(b) - 1] = '\0';
+                netLog(b);
+                bwOut0 = outNow; bwIn0 = inNow; lastBwMs = nowBw;
             }
         }
 

@@ -254,6 +254,9 @@ void loadConfig(Config& c) {
                                           "carryHealDebounceMs");
     tuneU(c.tuning.furnHealDebounceMs,  f, "KENSHICOOP_FURN_HEAL_DEBOUNCE_MS",
                                           "furnHealDebounceMs");
+    tuneU(c.tuning.invResendMs,       f, "KENSHICOOP_INV_RESEND_MS",       "invResendMs");
+    tuneU(c.tuning.invResendBigMs,    f, "KENSHICOOP_INV_RESEND_BIG_MS",   "invResendBigMs");
+    tuneUInt(c.tuning.invResendBigN,  f, "KENSHICOOP_INV_RESEND_BIG_N",    "invResendBigN");
     tuneUInt(c.tuning.midBandMax,     f, "KENSHICOOP_MID_BAND_MAX",        "midBandMax");
     tuneUInt(c.tuning.midSliceMax,    f, "KENSHICOOP_MID_SLICE_MAX",       "midSliceMax");
     c.carrySync = envOr("KENSHICOOP_CARRY_SYNC", "1") != "0";
