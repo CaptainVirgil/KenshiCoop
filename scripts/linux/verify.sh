@@ -26,10 +26,14 @@ step() {
     printf '\n=== %s ===\n' "$name"
     if "$@"; then
         printf '  PASS  %s\n' "$name"
-    else
-        printf '  FAIL  %s\n' "$name"
-        fail=$((fail + 1))
+        return 0
     fi
+    printf '  FAIL  %s\n' "$name"
+    fail=$((fail + 1))
+    # Explicit, because a function returns the status of its LAST command - which
+    # would be the printf or the arithmetic, i.e. always success - and callers now
+    # branch on this to avoid running a binary whose build just failed.
+    return 1
 }
 
 run_exe() {
@@ -44,10 +48,22 @@ run_exe() {
 
 step "build plugin (Release)"  ./scripts/linux/build_plugin.sh Release
 step "build plugin (Harness)"  ./scripts/linux/build_plugin.sh Harness
-step "build prototest"         ./scripts/linux/build_prototest.sh
-step "prototest"               run_exe "$REPO/dist/prototest.exe"
-step "build tunneltest"        ./scripts/linux/build_tunneltest.sh
-step "tunneltest"              run_exe "$REPO/dist/tunneltest.exe"
+# Delete the binary before rebuilding, and skip the run when the build failed.
+# Otherwise a build error leaves the PREVIOUS binary on disk, the run step
+# executes it, and the gate reports a green test suite for code that does not
+# compile - which is exactly what happened on 2026-08-08.
+rm -f "$REPO/dist/prototest.exe" "$REPO/dist/tunneltest.exe"
+
+if step "build prototest" ./scripts/linux/build_prototest.sh; then
+    step "prototest"           run_exe "$REPO/dist/prototest.exe"
+else
+    printf '  SKIP  prototest (its build failed)\n'
+fi
+if step "build tunneltest" ./scripts/linux/build_tunneltest.sh; then
+    step "tunneltest"          run_exe "$REPO/dist/tunneltest.exe"
+else
+    printf '  SKIP  tunneltest (its build failed)\n'
+fi
 
 PS_HOST="$(command -v pwsh || command -v powershell || true)"
 if [ -n "$PS_HOST" ]; then

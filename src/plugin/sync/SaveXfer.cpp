@@ -565,8 +565,16 @@ unsigned long    recvStalledMs() {
     if (!g_recvActive || g_recvLastChunkTick == 0) return 0;
     return GetTickCount() - g_recvLastChunkTick;
 }
+// The sender's state lives inside the !KENSHICOOP_PROTOTEST block above (prototest
+// exercises the RECEIVER only, with no ENet or engine), so these report nothing
+// there rather than referencing symbols that do not exist in that build.
+#ifndef KENSHICOOP_PROTOTEST
 unsigned __int64 sentBytes()      { return g_sendSentBytes; }
 unsigned __int64 sendTotalBytes() { return g_sendTotalBytes; }
+#else
+unsigned __int64 sentBytes()      { return 0; }
+unsigned __int64 sendTotalBytes() { return 0; }
+#endif
 u16              recvFileCount()  { return g_recvFileCount; }
 
 static u32 g_lastAckXferId = 0;
