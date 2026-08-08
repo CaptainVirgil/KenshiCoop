@@ -44,8 +44,14 @@ Then, on either OS:
 
 | | Linux | Windows |
 |---|---|---|
-| plugin | `scripts/linux/build_plugin.sh [Harness\|Release\|Debug]` | `scripts\build_plugin.cmd [Harness\|Release\|Debug]` |
+| plugin | `scripts/linux/build_plugin.sh [Harness\|Release\|Debug]` | `scripts\build_plugin_direct.ps1` (no VS2010 needed) or `scripts\build_plugin.cmd` (needs one) |
 | gate | `scripts/linux/verify.sh` | `scripts\verify.ps1` |
+
+**The two paths are verified to agree.** Built from the same commit they produce identical
+`.text`, `.data`, `.pdata` and `.reloc`; `.rdata` differs only by the aligned length of the
+embedded PDB path. Both scripts link objects in vcxproj source order — `/OPT:ICF` folding
+depends on link order, so an alphabetical object list silently changes `.text`. See the
+`kenshicoop-build` skill for the comparison procedure and the Windows VM harness.
 
 The gate builds both configurations and runs `prototest` (517 checks: exact packed
 sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp
@@ -161,7 +167,31 @@ violation.
 - **A hold must be applied at both ends.** `xferLatch_` in `ReplicatorItems.cpp` is the
   reference implementation.
 - **Absence is not evidence.** A truncated census or a capped enumeration means "unknown",
-  not "gone". Broadcasting it as absence makes the peer delete real bodies.
+  not "gone". Broadcasting it as absence makes the peer delete real bodies. (The census
+  publish path still does this — it is a known open bug, not a rule being followed.)
+- **A debounce counts stream progress, not wall clock.** `sample()` re-serves the same
+  snapshot for seconds after a peer goes quiet, so a time-only window expires against the
+  very sample it exists to wait out. `healDue()` requires `interp.newestMs()` to advance.
+- **Authorship gates are `cellAuth_ && !weAuthor(...)`.** Unconditional, they disable the
+  channel entirely on the join whenever presence authority is off.
+- **Frame counts are not time.** `SUPPRESS_AFTER_FRAMES` and friends make behaviour depend
+  on frame rate; `docs/REPLICATION_PITFALLS.md` §1 says stop writing them.
+
+## Known open work
+
+`docs/PROTOCOL_HISTORY.md` reconstructs the wire versions and marks what is evidenced
+versus inferred — read it before any protocol change. A 12-dimension audit (2026-08-08)
+produced a ranked backlog; the significant unfixed items are:
+
+- **Truncated NPC census is broadcast as complete**, so the peer culls real bodies.
+- **Unbounded growth** over a long session: KO/death-latched `targets_` entries are
+  immortal, `invRecv_` retains ~10 KB per container ever seen, the save/load queues are
+  never drained on the opposite role, and `resetSession` misses six members.
+- **Peer trust**: packets are dispatched before the handshake completes, save receive does
+  no size accounting, and fixed-size wire `char[]` fields are read as C strings.
+- **Perf**: the wide authority sweep still runs every frame to judge a 1 Hz census; the
+  20 Hz near band has no change gate.
+- **No bandwidth telemetry anywhere**, so none of the above is measurable in a live session.
 
 ## Diagnosing a live session
 

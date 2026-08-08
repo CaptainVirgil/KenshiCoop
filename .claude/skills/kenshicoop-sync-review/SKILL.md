@@ -39,6 +39,16 @@ The reference pair is carry: `carrySeeTick` + `tuning_.carryHealDebounceMs` agai
 single most common bug in this codebase, and it presents to players as **actions arriving
 inverted** — one player sets a body down, the other watches him pick one up.
 
+**And the debounce must count stream progress, not wall clock.** `sample()` keeps
+re-serving the same snapshot for seconds after a peer goes quiet, so a purely time-based
+window expires against the very sample it was meant to wait out. Use the `healDue()` helper
+in `ReplicatorDrive.cpp`: it requires both the elapsed window *and* `interp.newestMs()` to
+have advanced. Found the hard way — the first version of these debounces was time-only.
+
+Five heals exist (carry, furniture ENTER, chained fall-through, shackle relock, bed
+fast-exit). If you add a sixth, it needs both halves, and it needs resetting on every path
+that makes the condition moot — a `*SeeTick` left armed is a heal that never fires again.
+
 ### 3. Who authors this?
 
 Ask `weAuthor(gw, localId, x, z)`. If both clients describe the same object, each engine's
@@ -46,8 +56,20 @@ local simulation contradicts the other forever. Doors shipped this way: both sid
 published every door within 100 u, each engine opened them for its own characters, and the
 result was a permanent open/close ping-pong that no echo guard could damp.
 
-With cell authority off, `authorityFor` resolves to the host — which is what the world
-stream already assumes. It never returns "nobody".
+**Gate the test on `cellAuth_`, as `cellAuth_ && !weAuthor(...)`.** With presence authority
+off, `authorityFor` resolves to the HOST for everything, so an unconditional test silently
+stops the join publishing that channel at all. The door fix shipped without the guard and
+disabled join-side door publishing in exactly the configuration the whole scenario tier
+runs under (`CoopHarness.psm1` pins `KENSHICOOP_CELL_AUTH=0` unless a scenario opts in),
+where no test could see it. It never returns "nobody".
+
+### 3b. How much of each body do you actually need?
+
+`captureOne` is ~14 engine calls; `captureLite` is identity and transform. The enumerators
+take a `full` flag — pass `auditRows_` so diagnostics keep the whole picture and the player
+build does not pay for fields nobody reads. The authority passes were paying full price for
+every body within 2000 u, every frame, on both clients, and discarding all but the hand and
+the position.
 
 ### 4. Does this need a protocol bump?
 

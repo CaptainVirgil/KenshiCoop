@@ -109,9 +109,20 @@ Write-Host "=== KenshiCoop.dll ($Config|x64, v100 direct) - $($sources.Count) tr
     Where-Object { $_ -notmatch '^[A-Za-z0-9_.\\/-]+\.(cpp|c)$' } |
     ForEach-Object { Write-Host "  $_" }
 
-$objs = @(Get-ChildItem -LiteralPath $objDir -Filter *.obj | ForEach-Object { $_.FullName })
-if ($objs.Count -ne $sources.Count) {
-    throw "compiled $($objs.Count) of $($sources.Count) translation units - build failed"
+# Link in SOURCE order, not directory order. /OPT:ICF folds identical COMDATs and
+# the result depends on the order the linker sees them, so an alphabetical object
+# list produces a subtly different .text than the Linux build does from the same
+# sources - which makes the two artifacts impossible to compare. Same order, same
+# layout.
+$objs = @()
+foreach ($src in $sources) {
+    $obj = Join-Path $objDir ([System.IO.Path]::GetFileNameWithoutExtension($src) + ".obj")
+    if (-not (Test-Path -LiteralPath $obj)) { throw "no object for $src - build failed" }
+    $objs += $obj
+}
+$produced = @(Get-ChildItem -LiteralPath $objDir -Filter *.obj).Count
+if ($produced -ne $sources.Count) {
+    throw "compiled $produced of $($sources.Count) translation units - build failed"
 }
 
 Write-Host "=== linking $($objs.Count) objects ==="

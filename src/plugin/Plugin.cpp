@@ -1848,6 +1848,15 @@ void startNetworking() {
             coopLog("[steam] transport=steam armed (connect by SteamID; no port forwarding)");
         }
     }
+    // Disarm on every non-Steam path, including the two fallbacks above. NetLink
+    // decides whether to install the Steam socket hooks from `steamPeer_ != 0`, and
+    // that member was only ever written, never cleared - so switching Transport to
+    // UDP after any Steam session left the tunnel armed and routed a "direct UDP"
+    // session back through the Steam hooks. The panel said UDP; the packets did not.
+    if (g_cfg.transport != "steam") {
+        g_net.setSteamTransport(0);
+        coop::steamp2p::shutdown();
+    }
 
     bool ok;
     if (g_cfg.isHost) {

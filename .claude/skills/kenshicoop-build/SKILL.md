@@ -98,6 +98,59 @@ Three things a clean Windows machine needs that nothing documents:
 
 `vswhere` needs `-products *` to see the Build Tools SKU, or it reports no MSBuild at all.
 
+**Link in source order.** `/OPT:ICF` folds identical COMDATs and the result depends on the
+order the linker sees objects, so linking a directory listing (alphabetical) instead of the
+vcxproj's source order produces a subtly different `.text`. Both build scripts link in
+source order for this reason — it is what makes the two artifacts comparable at all.
+
+## Verifying the two builds agree
+
+Proven on 2026-08-08 at commit `5a7902d`, and repeatable:
+
+```bash
+# same commit both sides, then compare PE sections
+python3 - <<'EOF'
+import struct
+def info(p):
+    d=open(p,'rb').read(); pe=struct.unpack_from('<I',d,0x3c)[0]
+    n=struct.unpack_from('<H',d,pe+6)[0]; o=pe+24+struct.unpack_from('<H',d,pe+20)[0]
+    return [(d[o+i*40:o+i*40+8].rstrip(b'\x00').decode(),
+             struct.unpack_from('<I',d,o+i*40+8)[0]) for i in range(n)]
+for p in ("KenshiCoop-windows.dll","build/Release/KenshiCoop.dll"):
+    print(p, info(p))
+EOF
+```
+
+Expected result: `.text`, `.data`, `.pdata`, `.reloc` **identical**; `.rdata` differs by the
+aligned length of the embedded PDB path (the two builds sit at different absolute paths).
+Anything else is a real divergence — check the flags and the link order first.
+
+Do not compare hashes: the PDB path and build timestamp guarantee they differ.
+
+## Building on Windows without owning a Windows machine
+
+A throwaway VM is enough, and the whole loop is scriptable:
+
+```bash
+docker run -d --name kenshicoop-win --device=/dev/kvm --device=/dev/net/tun \
+  --cap-add NET_ADMIN -p 8006:8006 -p 3389:3389 \
+  -e VERSION=11 -e RAM_SIZE=12G -e CPU_CORES=6 -e DISK_SIZE=96G \
+  -v <storage>:/storage -v <data>:/data -v <oem>:/oem dockurr/windows
+```
+
+Traps worth knowing, all of which cost a reinstall to learn:
+
+- **dockur bakes `/oem` into the install ISO.** Preserving `win11x64.iso` across a rebuild
+  to save the download also preserves the *old* OEM scripts, so fixes silently do not run.
+  Wipe storage entirely when the OEM changes.
+- `/oem/install.bat` runs **once**, on first boot. Install a small polling task that watches
+  the shared folder for a script and runs it, or every iteration means reinstalling Windows.
+- Hand the guest **archives, not trees**: the deps are ~15k small files (Boost) and copying
+  them file-by-file over the share takes longer than the rest of the build.
+- `ZipFile::ExtractToDirectory` throws on a collision; `Expand-Archive -Force` overwrites.
+- `msiexec /a` marks everything read-only, which makes the `<deque>` patch fail with access
+  denied.
+
 ## Packaging a kit for both players
 
 The two players must run the **same build** — `PROTOCOL_VERSION` mismatch is a hard
