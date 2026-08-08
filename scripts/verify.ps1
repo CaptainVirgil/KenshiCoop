@@ -54,9 +54,20 @@ Write-Host ""
 Write-Host "############################################################"
 Write-Host "# verify: harness contract fixtures"
 Write-Host "############################################################"
-$fixtures = Join-Path $scriptDir "tests\Contract.Tests.ps1"
+$fixtures = Join-Path (Join-Path $scriptDir "tests") "Contract.Tests.ps1"
 if (Test-Path $fixtures) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $fixtures
+    # Whichever host is present. Windows PowerShell 5.1 stays the default on
+    # Windows; pwsh is what exists on Linux, where scripts/linux/verify.sh runs
+    # the same fixtures.
+    $psHost = if (Get-Command powershell -ErrorAction SilentlyContinue) { "powershell" }
+              elseif (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" }
+              else { $null }
+    if (-not $psHost) {
+        Write-Host "CONTRACT FIXTURES: FAIL - no PowerShell host found"
+        $overall = $false
+        return
+    }
+    & $psHost -NoProfile -ExecutionPolicy Bypass -File $fixtures
     $fixOk = ($LASTEXITCODE -eq 0)
     Write-Host ("CONTRACT FIXTURES: " + $(if ($fixOk) { "PASS" } else { "FAIL (exit $LASTEXITCODE)" }))
     if (-not $fixOk) { $overall = $false }

@@ -47,6 +47,13 @@ Then, on either OS:
 | plugin | `scripts/linux/build_plugin.sh [Harness\|Release\|Debug]` | `scripts\build_plugin.cmd [Harness\|Release\|Debug]` |
 | gate | `scripts/linux/verify.sh` | `scripts\verify.ps1` |
 
+The gate builds both configurations and runs `prototest` (517 checks: exact packed
+sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp
+buffer, the save-transfer receiver) and `tunneltest` (17 checks: ENet over the Steam
+socket hooks under loss and the 1200 B datagram ceiling), both under Wine on Linux.
+It launches no game. `Contract.Tests.ps1` runs too if a PowerShell host is installed;
+on Linux that means `pwsh`, and it is skipped rather than failed when absent.
+
 `Harness` (the default) includes the scenario runner. `Release` is the player build and
 excludes `test/Scenario*.cpp` and `game/EngineProbe.cpp`.
 
