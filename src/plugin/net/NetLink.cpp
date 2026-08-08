@@ -374,12 +374,20 @@ void NetLink::threadLoop() {
         ENetAddress addr;
         addr.host = ENET_HOST_ANY;
         addr.port = (enet_uint16)port_;
-        enetHost_ = enet_host_create(&addr, 8 /*peers*/, CH_COUNT /*channels*/, 0, 0);
+        // 2 peers, not 8: the sync model is host + ONE join and a third is rejected
+        // at HELLO anyway, so the slots only ever served to let strangers occupy
+        // them. maximumPacketSize likewise - ENet defaults to 32 MB and allocates
+        // and reassembles a declared size BEFORE any of this plugin's own length
+        // checks run, so a peer could make us hold 32 MB per fragmented packet. The
+        // largest legitimate packet here is a 4 KB save chunk.
+        enetHost_ = enet_host_create(&addr, 2 /*peers*/, CH_COUNT /*channels*/, 0, 0);
         if (!enetHost_) { netErr("host create failed"); InterlockedExchange(&running_, 0); return; }
+        enetHost_->maximumPacketSize = 64 * 1024;
         netLog("hosting");
     } else {
         enetHost_ = enet_host_create(0, 1, CH_COUNT, 0, 0);
         if (!enetHost_) { netErr("client create failed"); InterlockedExchange(&running_, 0); return; }
+        enetHost_->maximumPacketSize = 64 * 1024; // see the host note above
         ENetAddress addr;
         if (steam) enet_address_set_host_ip(&addr, "1.0.0.1");
         else       enet_address_set_host(&addr, ip_.c_str());
@@ -471,6 +479,22 @@ void NetLink::threadLoop() {
                 }
                 case ENET_EVENT_TYPE_RECEIVE: {
                     const u8 type = packetType(ev.packet->data, (unsigned)ev.packet->dataLength);
+                    // Nothing but the handshake is honoured before the handshake
+                    // completes. Only HELLO and WELCOME used to consult connection
+                    // state; every other branch parsed and queued regardless of
+                    // whether this peer had ever been assigned an id - so the
+                    // version gate and the two-player gate could both be bypassed by
+                    // simply not sending HELLO and proceeding to talk. The peer is
+                    // established on the host when ev.peer->data holds its id, and
+                    // on the join when myId_ has been set from WELCOME.
+                    const bool established = isHost_
+                        ? (ev.peer != 0 && ev.peer->data != 0)
+                        : (InterlockedCompareExchange(&myId_, 0, 0) != 0);
+                    const bool handshake = (type == PKT_HELLO) || (type == PKT_WELCOME);
+                    if (!established && !handshake) {
+                        enet_packet_destroy(ev.packet);
+                        break;
+                    }
                     if (isHost_ && type == PKT_HELLO) {
                         HelloPacket h;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &h)) {

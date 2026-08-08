@@ -586,6 +586,20 @@ void onSaveBegin(const SaveBeginPacket& b) {
     memcpy(name, b.name, sizeof(b.name));
     name[sizeof(b.name)] = '\0';
 
+    // Bound what the peer may declare before any of it reaches the disk. fileCount
+    // is a u16 and totalBytes a u64 straight off the wire, and both size the work
+    // we are about to do on their say-so; the measured real transfer is ~3.7 MB.
+    const unsigned int      SAVE_XFER_MAX_FILES = 4096;
+    const unsigned __int64  SAVE_XFER_MAX_BYTES = 512ull * 1024ull * 1024ull;
+    if (b.fileCount > SAVE_XFER_MAX_FILES || b.totalBytes > SAVE_XFER_MAX_BYTES) {
+        char eb[176];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] REJECT begin: implausible transfer (files=%u bytes=%I64u)",
+                  (unsigned)b.fileCount, b.totalBytes);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        g_recvActive = false;
+        return;
+    }
     if (!saveNameSafe(std::string(name))) {
         char eb[160];
         _snprintf(eb, sizeof(eb) - 1,
@@ -623,6 +637,20 @@ void onSaveBegin(const SaveBeginPacket& b) {
 void onSaveFile(const SaveFileHeader& h, const char* path, const unsigned char* data) {
     if (!g_recvActive || h.xferId != g_recvXferId) return; // stale/aborted transfer
     if (h.fileIdx >= g_recvFileCount) return;
+    // h.offset is a raw u32 from the wire and is passed to SetFilePointer, so a
+    // single 4 KB chunk could extend a staged file to ~4 GB - which NTFS will
+    // happily materialise. Nothing may land outside what BEGIN declared, and the
+    // running total may not exceed it either.
+    if ((unsigned __int64)h.offset + (unsigned __int64)h.dataLen > g_recvTotalBytes ||
+        g_recvBytes + (unsigned __int64)h.dataLen > g_recvTotalBytes) {
+        char eb[176];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] XFER chunk rejected: writes past the declared total "
+                  "(off=%u len=%u total=%I64u)",
+                  (unsigned)h.offset, (unsigned)h.dataLen, g_recvTotalBytes);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        return;
+    }
     if (!relPathSafe(path, h.pathLen)) {
         coop::logErrLine("[save] XFER chunk rejected: unsafe relative path");
         return;

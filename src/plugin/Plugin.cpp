@@ -434,6 +434,30 @@ void driveSaveSync() {
             char name[sizeof(it->pkt.name) + 1];
             memcpy(name, it->pkt.name, sizeof(it->pkt.name));
             name[sizeof(it->pkt.name)] = '\0';
+            // A 60-byte packet asks the host to run a full engine save and then
+            // stream the whole folder back. Unthrottled and un-deduped, that is a
+            // remote trigger for multi-second stalls repeated as fast as packets
+            // arrive - and reqId exists precisely to identify a repeat, but was
+            // only ever logged.
+            static unsigned long lastReqTick = 0;
+            static unsigned int  lastReqId   = 0;
+            const unsigned long  nowTick     = GetTickCount();
+            const unsigned long  REQ_MIN_GAP_MS = 30000;
+            if (it->pkt.reqId != 0 && it->pkt.reqId == lastReqId) {
+                coopLog("[save] REQ ignored (duplicate reqId)");
+                continue;
+            }
+            if (lastReqTick != 0 && (nowTick - lastReqTick) < REQ_MIN_GAP_MS) {
+                char tb[144];
+                _snprintf(tb, sizeof(tb) - 1,
+                          "[save] REQ ignored (throttled; %lums since the last one)",
+                          nowTick - lastReqTick);
+                tb[sizeof(tb) - 1] = '\0'; coopLog(tb);
+                continue;
+            }
+            lastReqTick = nowTick;
+            lastReqId   = it->pkt.reqId;
+
             char b[144];
             _snprintf(b, sizeof(b) - 1,
                       "[save] REQ from join id=%u name='%s' -> saving",
