@@ -281,7 +281,7 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         const unsigned int nearEnd = n;
         unsigned int sz = (unsigned int)midBand_.size();
         unsigned int quota = (sz + 9) / 10;
-        if (quota > 16) quota = 16;
+        if (quota > tuning_.midSliceMax) quota = tuning_.midSliceMax;
         // Advance the slice on the NET-TICK cadence (50 ms), not per frame:
         // publishOwned runs every render frame but the net thread samples
         // the latest snapshot only at 20 Hz, so per-frame rotation dropped
@@ -891,10 +891,12 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         // Nearest-first BUDGET: driving every census NPC measurably slowed
         // the join's sim (run 111445: slewSkip 7949 vs baseline ~1-2.6k, and
         // the sim-tick/render-frame ratio degraded enough to fail the
-        // smoothness gate on bodies that WERE tracking). The nearest ~48
-        // cover everything the join player can meaningfully watch; the far
-        // remainder keeps the census-park fallback it always had.
-        const unsigned int MID_BAND_MAX = 48;
+        // smoothness gate on bodies that WERE tracking). Nearest-first, so the
+        // far remainder keeps the census-park fallback it always had -- but the
+        // cap is now tuning_.midBandMax rather than a flat 48, because 48 is
+        // below what a shared-cell fight puts on screen and everything past it
+        // ran on local AI until a census beat snapped it. See SyncTuning.h.
+        const unsigned int MID_BAND_MAX = tuning_.midBandMax;
         if (midBand_.size() > MID_BAND_MAX) midBand_.resize(MID_BAND_MAX);
         if (midCursor_ >= midBand_.size()) midCursor_ = 0;
     }

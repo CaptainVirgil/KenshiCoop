@@ -61,6 +61,34 @@ struct SyncTuning {
     unsigned long bdoorSampleMs;
     unsigned long bdoorResendMs;
 
+    // Baked doors, echo hold: after APPLYING a peer's door row, do not publish a
+    // contradicting row for that door until this elapses.
+    //
+    // Kenshi re-closes a door its own logic thinks nobody is holding, so
+    // writeDoorByHand reports success and the state does not stick. The old
+    // baseline-first echo guard cannot see that: at the next sample the engine
+    // reads closed, the baseline says open, and we "correct" the peer - who
+    // applies our close, whose engine reopens it, forever. Measured live on
+    // 2026-08-07: one bar door, RECV open=1 followed by SEND open=0 ~150 ms
+    // later, repeating for the whole session.
+    unsigned long doorEchoHoldMs;
+
+    // Mid band (the round-robin that gives far NPCs motion between census
+    // beats). midBandMax is how many bodies are eligible; midSliceMax caps the
+    // per-tick slice, so cadence is |band|/10 slices = ~2 Hz per body.
+    //
+    // These were 48 and 16, sized when the mid band was a bandwidth experiment.
+    // A shared-cell fight blows straight past that: measured live on 2026-08-07,
+    // enum=220 NPCs with 116 authored locally and the band pinned at mid=48, so
+    // 68 authored bodies got no motion at all and the join drove them from its
+    // own AI until a census beat snapped them (median 128 u, p90 1322 u).
+    //
+    // The budget was never the constraint. One EntityState is 79 B, so a full
+    // 256-body band at ~2 Hz is 256 * 2 * 79 = ~40 KB/s -- nothing for the Steam
+    // P2P transport, and the near band already runs 20 Hz alongside it.
+    unsigned int  midBandMax;
+    unsigned int  midSliceMax;
+
     SyncTuning()
         : moneyMinSendMs(1000),   moneyResendMs(5000),
           factionSampleMs(1000),  factionResendMs(10000),
@@ -69,7 +97,9 @@ struct SyncTuning {
           researchSampleMs(1000), researchResendMs(15000),
           deedSampleMs(1000),     deedResendMs(15000),
           buildSampleMs(1000),    buildResendMs(10000),
-          bdoorSampleMs(1000),    bdoorResendMs(10000) {}
+          bdoorSampleMs(1000),    bdoorResendMs(10000),
+          doorEchoHoldMs(5000),
+          midBandMax(256),        midSliceMax(32) {}
 };
 
 } // namespace coop

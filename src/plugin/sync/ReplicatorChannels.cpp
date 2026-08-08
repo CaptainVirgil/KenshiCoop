@@ -814,6 +814,29 @@ void Replicator::publishDoors(const SyncContext& ctx) {
         Key k; k.t = r.hand[0]; k.c = r.hand[1]; k.cs = r.hand[2];
         k.i = r.hand[3]; k.s = r.hand[4];
         DoorRow& dr = doorRows_[k];
+        // A door belongs to whoever authors the ground it stands on, the same
+        // rule the near and mid bands already follow. Without it BOTH clients
+        // describe every door within 100 u, and since each engine opens doors
+        // for its own bodies, the two descriptions disagree the moment anyone
+        // walks through - which is the flapping bar door, not a lost packet.
+        // With cellAuth off this resolves to the host, which is the behaviour
+        // the world stream already assumes.
+        if (!weAuthor(gw, ownerId, r.x, r.z)) {
+            // Keep the baseline current anyway: when the cell changes hands we
+            // must not mistake the peer's accumulated changes for our own.
+            dr.seeded = true; dr.knownOpen = r.open; dr.knownLocked = r.locked;
+            continue;
+        }
+        // Post-apply hold: the peer just told us about this door and Kenshi may
+        // not have kept what we wrote. Contradicting them now is what starts the
+        // ping-pong, so let their row stand for a beat.
+        if (dr.holdUntilMs != 0) {
+            if ((long)(now - dr.holdUntilMs) < 0) {
+                dr.knownOpen = r.open; dr.knownLocked = r.locked;
+                continue;
+            }
+            dr.holdUntilMs = 0;
+        }
         if (!dr.seeded) {
             // Both clients load the same save, so the baseline is shared: seed
             // silently and stream only genuine mid-session movement.
@@ -865,6 +888,7 @@ void Replicator::applyDoors(const SyncContext& ctx) {
         // write causes must not be re-detected as ours next sample.
         dr.knownOpen = (int)p.open; dr.knownLocked = (int)p.locked;
         dr.seeded = true;
+        dr.holdUntilMs = nowMs() + tuning_.doorEchoHoldMs;
         engine::DoorRead cur;
         if (!engine::readDoorByHand(p.hand, &cur))
             continue; // out-of-interest or runtime door - accepted edge

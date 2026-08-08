@@ -41,30 +41,44 @@ mapfile -t SOURCES < <(
 
 echo "=== KenshiCoop.dll ($CONFIG|x64, v100 via Wine) - ${#SOURCES[@]} translation units ==="
 
+obj_for() {
+  # Flatten the path into the object name, dropping the leading ../.. of the
+  # vendored ENet sources so nothing lands as a dotfile.
+  echo "$OBJ/$(echo "${1%.*}" | tr '/' '_' | sed 's/^[._]*//').obj"
+}
+
 compile_one() {
   local src="$1"
   local abs="$REPO/src/plugin/$src"
-  # Flatten the path into the object name, dropping the leading ../.. of the
-  # vendored ENet sources so nothing lands as a dotfile.
-  local obj="$OBJ/$(echo "${src%.*}" | tr '/' '_' | sed 's/^[._]*//').obj"
+  local obj="$(obj_for "$src")"
   # /EHsc: the plugin mixes C++ objects with __try frames; /W3 matches Level3.
   vcl /nologo /c /EHsc /W3 /Gy /Oi $OPT $DEFS \
       /Fo"$(winpath "$obj")" "$(winpath "$abs")" 2>&1 |
     grep -vE '^[A-Za-z0-9_./\\-]+\.(cpp|c)$' || true
   [ -f "$obj" ] || { echo "FAILED: $src" >&2; return 1; }
 }
-export -f compile_one winpath vcl
+export -f compile_one obj_for winpath vcl
 export REPO OBJ OPT DEFS VC WINE_BIN
 
 printf '%s\n' "${SOURCES[@]}" |
   xargs -P "$(nproc)" -I{} bash -c 'compile_one "$@"' _ {}
 
-echo "=== linking ==="
+# Link exactly what this run produced. Globbing the object directory instead
+# would sweep up stale objects from an earlier layout and hand the linker two
+# definitions of everything (LNK2005).
+OBJS=()
+for src in "${SOURCES[@]}"; do
+  obj="$(obj_for "$src")"
+  [ -f "$obj" ] || { echo "missing object for $src -- compile failed" >&2; exit 1; }
+  OBJS+=("$(winpath "$obj")")
+done
+
+echo "=== linking ${#OBJS[@]} objects ==="
 vclink /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG \
   /OUT:"$(winpath "$OUT/KenshiCoop.dll")" \
   /PDB:"$(winpath "$OUT/KenshiCoop.pdb")" \
   /MAP:"$(winpath "$OUT/KenshiCoop.map")" \
-  "$(winpath "$OBJ")"\\*.obj \
+  "${OBJS[@]}" \
   kenshilib.lib OgreMain_x64.lib MyGUIEngine_x64.lib ws2_32.lib winmm.lib \
   user32.lib kernel32.lib advapi32.lib shell32.lib ole32.lib
 

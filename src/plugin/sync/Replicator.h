@@ -1737,8 +1737,11 @@ private:
     struct DoorRow {
         int knownOpen; int knownLocked; unsigned long lastSendMs;
         u32 seqSeen; bool seeded;
+        // Set when we APPLY a peer row: until it passes, this door is the peer's
+        // to describe and we stay quiet about it. See tuning_.doorEchoHoldMs.
+        unsigned long holdUntilMs;
         DoorRow() : knownOpen(-1), knownLocked(-1), lastSendMs(0),
-                    seqSeen(0), seeded(false) {}
+                    seqSeen(0), seeded(false), holdUntilMs(0) {}
     };
     std::map<Key, DoorRow> doorRows_;
     u32           doorSeqOut_;
