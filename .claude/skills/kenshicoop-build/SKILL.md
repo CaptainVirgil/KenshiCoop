@@ -78,11 +78,25 @@ re-run.
 
 ## Windows without a VS2010 install
 
-Set `KC_TOOLCHAIN` to an extracted toolchain (same layout `setup_toolchain.sh` builds:
-`%KC_TOOLCHAIN%\VS10\VC` and `%KC_TOOLCHAIN%\SDK`) and both `.cmd` scripts use it. The
-extraction itself is the same `msiexec /a` trick as on Linux, and the `<deque>` patch is
-still required — KB2519277 is offline, so a clean Windows box hits the identical
-`C2027 use of undefined type 'CraftingItem'`.
+Use `scripts\build_plugin_direct.ps1 -Config Release -Toolchain <root>`, not
+`build_plugin.cmd`. Verified in a clean Windows 11 VM.
+
+MSBuild is not an option there: `v100` selection needs the legacy toolset props a genuine
+VS2010/SDK 7.1 installer writes under `MSBuild\Microsoft.Cpp\v4.0`, and
+`Microsoft.Cpp.WindowsSDK.targets` fails with MSB8036 even when the SDK is physically
+present and the version is passed explicitly. The direct script sets `INCLUDE`/`LIB`/`PATH`
+and drives `cl.exe`/`link.exe`, reading the source list and per-config exclusions out of
+the vcxproj so the project stays authoritative.
+
+Three things a clean Windows machine needs that nothing documents:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `cl.exe` exits `0xC0000135` with no output at all | v100 `cl.exe` imports `MSVCR100.dll`; a clean Windows has no VC++ 2010 runtime. Wine ships a builtin, so Linux never hits it | install the VC++ 2010 **x64** redistributable |
+| `error C2027: use of undefined type 'CraftingItem'` | SDK 7.1's RTM `<deque>`; KB2519277 is offline | apply the same `<deque>` patch `setup_toolchain.sh` does |
+| `error MSB4019` / `MSB8036` from MSBuild | no real VS2010; `v100` props and SDK registration absent | use `build_plugin_direct.ps1` |
+
+`vswhere` needs `-products *` to see the Build Tools SKU, or it reports no MSBuild at all.
 
 ## Packaging a kit for both players
 

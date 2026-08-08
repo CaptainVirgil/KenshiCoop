@@ -57,12 +57,34 @@ on Linux that means `pwsh`, and it is skipped rather than failed when absent.
 `Harness` (the default) includes the scenario runner. `Release` is the player build and
 excludes `test/Scenario*.cpp` and `game/EngineProbe.cpp`.
 
-**Windows without a VS2010 install:** set `KC_TOOLCHAIN` to a directory laid out like
-`scripts/linux/setup_toolchain.sh` produces (`%KC_TOOLCHAIN%\VS10\VC`, `%KC_TOOLCHAIN%\SDK`)
-and both `.cmd` scripts use it instead of `C:\Program Files (x86)\Microsoft Visual Studio 10.0`.
-This is not an exotic case: KB2519277, the VC2010 SP1 compiler update, has been taken
-offline, so extracting the compiler from the SDK 7.1 ISO and patching its `<deque>` is now
-the only way to stand this toolchain up on a clean Windows machine.
+**Windows without a VS2010 install** — verified end to end in a clean Windows 11 VM:
+
+```
+scripts\build_plugin_direct.ps1 -Config Release -Toolchain <extracted-root>
+```
+
+Use that, not `build_plugin.cmd`. MSBuild cannot build this project without a genuine
+Visual Studio 2010: the `v100` toolset selection needs the legacy props a real
+VS2010/SDK 7.1 installer writes under `MSBuild\Microsoft.Cpp\v4.0`, and
+`Microsoft.Cpp.WindowsSDK.targets` wants a Windows SDK registered its way — MSB8036
+persists with the SDK physically present and the version passed explicitly. The compiler
+itself only ever needed `INCLUDE`, `LIB` and `PATH`, which is what the direct script sets.
+`KenshiCoop.vcxproj` stays authoritative: the script reads the source list and the
+per-configuration exclusions out of it.
+
+Two prerequisites that a clean machine hits and no upstream doc mentions:
+
+- **The VC++ 2010 x64 redistributable.** `cl.exe` v100 imports `MSVCR100.dll`, so without
+  it the compiler does not start — exit `0xC0000135`, no output, no diagnostic. Wine ships
+  a builtin, which is why the Linux path never sees this.
+- **KB2519277 is gone.** The VC2010 SP1 compiler update is no longer downloadable, so
+  extracting the compiler from the SDK 7.1 ISO and patching its `<deque>` (see
+  `setup_toolchain.sh`) is now the only way to stand this toolchain up at all. The same
+  `<deque>` fix is required on Windows.
+
+`KC_TOOLCHAIN` also redirects `build_plugin.cmd` and `build_prototest.cmd` at an extracted
+toolchain, which is enough for the direct-compiler paths (prototest builds and runs
+natively this way).
 
 ## Shipping a build
 
