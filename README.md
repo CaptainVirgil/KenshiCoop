@@ -59,16 +59,31 @@ panel, so there's no config file to edit and no launcher scripts to run. (A tiny
 
 ### 1. Install the mod
 
-Grab `KenshiCoop-kit.zip` from the
-[latest release](https://github.com/nhoral/KenshiCoop/releases/latest) and
-unzip it anywhere (both players). You do not need to clone this repository -
-but if you did, the same kit is in [dist/mod-kit](dist/mod-kit).
+> **This is the CaptainVirgil fork.** Releases live at
+> [CaptainVirgil/KenshiCoop](https://github.com/CaptainVirgil/KenshiCoop/releases/latest),
+> not upstream's page — the two are on different protocol versions and will refuse to
+> connect to each other. **[PLAYING.md](PLAYING.md) is the five-minute setup guide**; the
+> rest of this README is upstream's description of how the mod works.
 
-The zip contains a single **`KenshiCoop`** folder. Copy that folder into your
-Kenshi `mods` directory so you end up with
-`<Kenshi>\mods\KenshiCoop\KenshiCoop.dll` (default Steam path:
-`C:\Program Files (x86)\Steam\steamapps\common\Kenshi\mods\`). Then launch
-Kenshi and enable **KenshiCoop** in the Mods menu.
+Download `update-kenshicoop.ps1` from the latest release and run it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\update-kenshicoop.ps1"
+```
+
+It finds Kenshi across all Steam library folders, verifies the download against a
+published checksum, backs up your current mod folder, and preserves your
+`coop_config.json`. It does not touch save games. `-Rollback` undoes it. On Linux,
+`scripts/linux/update-kenshicoop.sh` does the same with `--rollback`.
+
+Both players must install the **same build** — a protocol mismatch is a hard connection
+rejection. The updater prints the build label and protocol version; compare them.
+
+Installing by hand instead: the kit zip contains a single **`KenshiCoop`** folder; copy it
+into `<Kenshi>\mods\` so you have `<Kenshi>\mods\KenshiCoop\KenshiCoop.dll`. Then launch
+Kenshi and enable **KenshiCoop** in the Mods menu. Note that `dist/mod-kit/` in this repo is
+upstream's pre-fork drop and is **stale** — it ships a protocol-52 DLL and will not connect
+to a current build.
 
 ### 2. Connect in-game (press F2)
 

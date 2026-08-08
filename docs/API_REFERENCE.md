@@ -1,5 +1,14 @@
 # RE_Kenshi / KenshiLib API Reference
 
+> **STALE — do not trust version numbers or class lists in this file.**
+> It documents `PROTOCOL_VERSION = 36` in one place and `5` in another; the wire is at
+> **54**. It also describes classes that have since been deleted and omits most of what
+> was added after protocol 36. `src/netproto/Wire.h` is the only authority on the wire,
+> and `docs/PROTOCOL_HISTORY.md` records how it got there. The engine-control prose here
+> is still broadly useful, which is why it has not been deleted — read it for shape, not
+> for facts.
+
+
 > **Purpose.** A dense, model-facing technical reference for everything this
 > project can use to *control Kenshi*. It documents (a) the RE_Kenshi / KenshiLib
 > plugin framework (loading, hooking, address resolution), (b) the reverse-engineered
