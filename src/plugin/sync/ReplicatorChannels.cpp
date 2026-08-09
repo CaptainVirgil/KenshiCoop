@@ -2418,6 +2418,94 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
     if (!userActed) engine::reconcileVoteButtons();
 }
 
+void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
+                             bool isHost) {
+    std::deque<InboundWeather> got;
+    in.drainWeather(got);
+    if (!weatherSync_) return;
+
+    if (isHost) {
+        // ~1 Hz sample of the ACTIVE biome region, change-gated: a settled sky
+        // sends nothing. The rate only has to beat a weather TRANSITION, which
+        // is minutes long, so this is a few dozen bytes a second at worst.
+        const unsigned long SEND_MS = 1000;
+        const unsigned long now = nowMs();
+        if (weatherLastSendMs_ != 0 && (now - weatherLastSendMs_) < SEND_MS) return;
+        weatherLastSendMs_ = now;
+        engine::WeatherRead wr;
+        if (!engine::readWeather(&wr) || !wr.valid) return;
+        // Change gate. endTimeMinutes and the season fields move rarely;
+        // weatherTime advances constantly, so it is deliberately NOT part of
+        // the comparison - otherwise this would send every beat and the gate
+        // would be decorative. The receiver still gets the fresh clock
+        // whenever anything else moves, and a transition always moves the
+        // name or the strengths.
+        if (weatherHave_ &&
+            std::strcmp(weatherLastName_, wr.sid) == 0 &&
+            weatherLastStrength_  == wr.strength &&
+            weatherLastEffect_    == wr.effectStrength &&
+            weatherLastEnd_       == wr.endTimeMinutes &&
+            weatherLastSeason_    == wr.seasonIndex &&
+            weatherLastSeasonEnd_ == wr.seasonEndDay) return;
+        std::strncpy(weatherLastName_, wr.sid, sizeof(weatherLastName_) - 1);
+        weatherLastName_[sizeof(weatherLastName_) - 1] = '\0';
+        weatherLastStrength_  = wr.strength;
+        weatherLastEffect_    = wr.effectStrength;
+        weatherLastEnd_       = wr.endTimeMinutes;
+        weatherLastSeason_    = wr.seasonIndex;
+        weatherLastSeasonEnd_ = wr.seasonEndDay;
+        weatherHave_ = true;
+        WeatherPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.type           = (u8)PKT_WEATHER;
+        pkt.ownerId        = ownerId;
+        pkt.seq            = weatherSeqOut_++;
+        std::strncpy(pkt.sid, wr.sid, sizeof(pkt.sid) - 1);
+        pkt.strength       = wr.strength;
+        pkt.effectStrength = wr.effectStrength;
+        pkt.endTimeMinutes = wr.endTimeMinutes;
+        pkt.weatherTime    = wr.weatherTime;
+        pkt.seasonIndex    = wr.seasonIndex;
+        pkt.seasonEndDay   = wr.seasonEndDay;
+        net.queueWeather(pkt);
+        char b[160];
+        _snprintf(b, sizeof(b) - 1, "[weather] SEND '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  pkt.sid, (double)pkt.strength, (double)pkt.effectStrength,
+                  pkt.endTimeMinutes, pkt.seasonIndex);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+        return;
+    }
+
+    // JOIN: newest wins. The channel is ordered-reliable, so the seq guard is
+    // belt-and-braces against a reconnect replay.
+    const WeatherPacket* newest = 0;
+    for (std::deque<InboundWeather>::iterator it = got.begin(); it != got.end(); ++it) {
+        if (!newest || (i32)(it->pkt.seq - newest->seq) > 0) newest = &it->pkt;
+    }
+    if (!newest) return;
+    if (weatherHave_ && (i32)(newest->seq - weatherSeqIn_) <= 0) return;
+    weatherSeqIn_ = newest->seq; weatherHave_ = true;
+    engine::WeatherRead wr;
+    memset(&wr, 0, sizeof(wr));
+    std::strncpy(wr.sid, newest->sid, sizeof(wr.sid) - 1);
+    wr.strength       = newest->strength;
+    wr.effectStrength = newest->effectStrength;
+    wr.endTimeMinutes = newest->endTimeMinutes;
+    wr.weatherTime    = newest->weatherTime;
+    wr.seasonIndex    = newest->seasonIndex;
+    wr.seasonEndDay   = newest->seasonEndDay;
+    wr.valid          = true;
+    // Logs only the EDGE: applyWeather returns true when it actually wrote
+    // something, so a matching sky is silent.
+    if (engine::applyWeather(wr)) {
+        char b[160];
+        _snprintf(b, sizeof(b) - 1, "[weather] APPLY '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  wr.sid, (double)wr.strength, (double)wr.effectStrength,
+                  wr.endTimeMinutes, wr.seasonIndex);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+}
+
 void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
                           bool isHost) {
     std::deque<InboundTime> got;

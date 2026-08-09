@@ -31,7 +31,7 @@ typedef double         f64;
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 54;
+const u16 PROTOCOL_VERSION = 55;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -81,7 +81,8 @@ enum PacketType {
     PKT_CELL_CLAIM       = 44,// RELIABLE zone-cell presence claim (protocol 49); CellClaimPacket
     PKT_INV_XFER_ACK     = 45,// RELIABLE transfer verdict (protocol 50); InvXferAckPacket
     PKT_MONEY_DELTA      = 46,// RELIABLE join money-pool delta (join -> host, protocol 52); MoneyDeltaPacket
-    PKT_DEED             = 47 // RELIABLE property-ownership row (protocol 54); DeedPacket
+    PKT_DEED             = 47,// RELIABLE property-ownership row (protocol 54); DeedPacket
+    PKT_WEATHER          = 48 // RELIABLE host-authoritative weather state (protocol 55); WeatherPacket
 };
 
 // One-shot transition events carried on the RELIABLE channel. Continuous state
@@ -1065,6 +1066,35 @@ struct TimePacket {
     f64 gameHours; // absolute in-game clock, total hours
 };
 
+// ---- Protocol 55: host-authoritative weather ---------------------------------
+// Kenshi rolls weather per BIOME REGION, from a probability-weighted table, with
+// no seed exposed anywhere in the engine - so two clients standing in the same
+// biome diverge by construction and nothing converges them. Observed live
+// 2026-08-09: one player in rain, the other clear, same biome, metres apart.
+// Not cosmetic - acid rain damages non-Skeletons and storms affect ranged
+// combat, so divergent weather is divergent gameplay.
+//
+// The state is pushed rather than a seed, because there is no seed. The weather
+// IDENTITY travels as the weather's GameData stringID: Weather* differs between
+// processes, and the stringID is what every other channel here already uses to
+// mean "the same data object on both machines". An unmatched id is dropped
+// rather than guessed - the wrong weather is worse than a stale one.
+//
+// Host-authoritative and low rate (~1 Hz): a few dozen bytes, and the receiver
+// only writes when something actually changed.
+struct WeatherPacket {
+    u8  type;            // = PKT_WEATHER
+    u32 ownerId;         // network player id of the sender (the host)
+    u32 seq;             // per-sender monotonic (stale-sample guard)
+    char sid[48];        // GameData stringID of the region's current weather
+    f32 strength;        // WeatherInstance::strength
+    f32 effectStrength;  // WeatherInstance::effectStrength
+    i32 endTimeMinutes;  // WeatherInstance::endTimeMinutes (when it lapses)
+    f32 weatherTime;     // WeatherInstance::weatherTime (progress through it)
+    i32 seasonIndex;     // WeatherRegion::currentSeasonIndex
+    i32 seasonEndDay;    // WeatherRegion::currentSeasonEndDay
+};
+
 // ---- Protocol 26: baked-door open/lock state ----------------------------------
 // One door/gate state row, keyed by the door Building's save-stable hand (the
 // furniture/bed identity precedent - door_probe run 160041 confirmed census
@@ -1583,6 +1613,7 @@ inline void wireSanitize(MedicalPacket& p) {
 }
 inline void wireSanitize(FactionPacket& p)    { wireTerm(p.sid); }
 inline void wireSanitize(DeedPacket& p)       { wireTerm(p.ownerSid); }
+inline void wireSanitize(WeatherPacket& p)    { wireTerm(p.sid); }
 inline void wireSanitize(BuildPlacePacket& p) { wireTerm(p.sid); }
 inline void wireSanitize(SpawnInfoPacket& p)  { wireTerm(p.charSid); wireTerm(p.facSid); }
 inline void wireSanitize(ProdPacket& p)       { wireTerm(p.outSid); }

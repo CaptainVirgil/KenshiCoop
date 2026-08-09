@@ -33,6 +33,7 @@ enum FaultOp {
     FAULT_CAPTURE,          // captureOne (squad/NPC EntityState capture)
     FAULT_APPLY,            // motion/transform apply (reserved for later wiring)
     FAULT_OTHER,            // unclassified guarded entry (reserved)
+    FAULT_WEATHER,          // WeatherSystem read/apply (protocol 55)
     FAULT_OP_COUNT
 };
 

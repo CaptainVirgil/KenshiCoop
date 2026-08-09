@@ -154,6 +154,8 @@ void loadConfig(Config& c) {
                              fileOr(f, "splitAuthority", "0").c_str()) != "0";
     c.damageFloaters = envOr("KENSHICOOP_DAMAGE_FLOATERS",
                              fileOr(f, "damageFloaters", "1").c_str()) != "0";
+    c.weatherSync    = envOr("KENSHICOOP_WEATHER_SYNC",
+                             fileOr(f, "weatherSync", "1").c_str()) != "0";
     // Divergence-gated authority promoted to DEFAULT ON (step-4 A/B, 2026-07-05:
     // trusted-set engaged in 4/4 runs - grants 5-8, trusted ~5 of 12 driven - with
     // npc_track/pose gates at parity; the single red run was a host crash that
@@ -464,6 +466,7 @@ std::string describeConfig(const Config& c) {
         { "censusFreezeAi", c.censusFreezeAi },
         { "splitAuth", c.splitAuthority },
         { "dmgFloat", c.damageFloaters },
+        { "weather",  c.weatherSync },
     };
     s += " on=[";
     bool first = true;

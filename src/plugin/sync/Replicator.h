@@ -615,6 +615,11 @@ public:
     //    than fighting its continuous enforcement; when speedSync is off the
     //    channel degrades to offset logging (no lever to compose with).
     void syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId, bool isHost);
+    // Host-authoritative weather (protocol 55). Kenshi rolls weather per biome
+    // region from a weighted table with no exposed seed, so two clients in the
+    // same biome diverge by construction - the state has to be pushed.
+    void syncWeather(Inbound& in, NetLink& net, u32 ownerId, bool isHost);
+    void setWeatherSync(bool v) { weatherSync_ = v; }
 
     // Game-clock sync master enable (KENSHICOOP_TIME_SYNC).
     void setTimeSync(bool v) { timeSync_ = v; }
@@ -2380,6 +2385,20 @@ private:
     // multiplier (1.0 = no correction); the speed layer applies effective *
     // timeSlew_ in its quiet writes so the slew and the consensus compose.
     bool          timeSync_;
+    bool          weatherSync_;
+    unsigned long weatherLastSendMs_;
+    u32           weatherSeqOut_;
+    u32           weatherSeqIn_;
+    // Last state we published, so a settled sky is silent. Plain fields rather
+    // than engine::WeatherRead: this header is included where the engine facade
+    // is not, and the change gate only needs these.
+    char          weatherLastName_[48];
+    float         weatherLastStrength_;
+    float         weatherLastEffect_;
+    int           weatherLastEnd_;
+    int           weatherLastSeason_;
+    int           weatherLastSeasonEnd_;
+    bool          weatherHave_;
     float         timeSlew_;          // join: current slew factor (host: always 1)
     u32           timeSeqOut_;        // host: monotonic seq for PKT_TIME
     u32           timeSeqSeen_;       // join: newest sample seq applied

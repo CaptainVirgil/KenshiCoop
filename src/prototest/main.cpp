@@ -132,6 +132,8 @@ static void testSizes() {
     CHECK_EQ("sizeof(NpcCensusHeader)",         sizeof(NpcCensusHeader),         7); // v35: census
     CHECK_EQ("sizeof(ResearchPacket)",          sizeof(ResearchPacket),          57); // v37: research
     CHECK_EQ("sizeof(DeedPacket)",              sizeof(DeedPacket),              78); // v54: deeds
+    // v55: host-authoritative weather. 1+4+4+48+4+4+4+4+4+4 packed.
+    CHECK_EQ("sizeof(WeatherPacket)",           sizeof(WeatherPacket),           81);
     CHECK_EQ("sizeof(CamHintPacket)",           sizeof(CamHintPacket),           17); // v43: camera hint
     CHECK_EQ("sizeof(CellClaimPacket)",         sizeof(CellClaimPacket),         21); // v49: cell claim
     CHECK_EQ("sizeof(InvXferAckPacket)",        sizeof(InvXferAckPacket),        18); // v50: transfer verdict
@@ -324,8 +326,8 @@ static void testSizes() {
     CHECK_EQ("EVT_SQUAD_MOVE id", (int)EVT_SQUAD_MOVE, 11);
     CHECK("EVT_SQUAD_MOVE distinct", EVT_SQUAD_MOVE != EVT_RECRUIT &&
           EVT_SQUAD_MOVE != EVT_NONE && EVT_SQUAD_MOVE != EVT_EXIT_FURNITURE);
-    CHECK_EQ("PROTOCOL_VERSION (v54: property-deed ownership)",
-             (int)PROTOCOL_VERSION, 54);
+    CHECK_EQ("PROTOCOL_VERSION (v55: host-authoritative weather)",
+             (int)PROTOCOL_VERSION, 55);
 
     // Protocol 52: the shared money pool. The two players spend from ONE wallet,
     // so the join reports CHANGES and the host the authoritative TOTAL - swap

@@ -380,3 +380,34 @@ stays 7, an old receiver sees `count > NPC_CENSUS_MAX`, drops the packet, and
 its census goes STALE — fail-safe rather than fail-destructive. Costs a bump
 either way, and every player must update the same day, which is the only
 reason it has not been done.
+
+## v55 — host-authoritative weather (2026-08-09)
+
+Adds `PKT_WEATHER` (48) / `WeatherPacket` (81 B). Host publishes the ACTIVE
+biome region's weather at ~1 Hz, change-gated; the join applies it.
+
+**Why a push and not a seed.** Kenshi rolls weather per biome region from a
+probability-weighted table (`Season::getNewWeather`), and the dump exposes no
+seed field anywhere — so two clients standing in the same biome diverge by
+construction and nothing converges them. Observed live: one player in rain, the
+other clear, metres apart. Not cosmetic — acid rain damages non-Skeletons and
+storms affect ranged combat, so divergent weather is divergent gameplay.
+
+**Identity is the weather's GameData stringID**, not its name and not its
+pointer. Pointers differ between processes; the stringID is what every other
+channel here already uses to mean "the same data object on both machines". An
+id the receiver cannot resolve in its own current-season table is DROPPED, not
+guessed — a stale sky beats a wrong one.
+
+**`weatherTime` is deliberately outside the change gate.** It advances every
+tick, so including it would send every beat and make the gate decorative. The
+receiver still gets a fresh clock whenever anything else moves, and any real
+transition moves the id or the strengths.
+
+Engine note for whoever touches this next: `kenshi/Weather.h` cannot be
+included in the engine prelude — the dump defines `class WeatherRegion` in both
+that header and `PhysicsCollection.h`, and `Weather.h` uses `WeatherRegion`,
+`Weather` and `Season` before declaring them. The facade therefore reads through
+local offset mirrors quoted from the dump, and re-declares `WeatherSystem` at
+GLOBAL scope (GetRealAddress resolves through the mangled name, so the namespace
+matters).

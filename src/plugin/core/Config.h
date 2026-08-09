@@ -198,6 +198,14 @@ struct Config {
     // rides PKT_COMBAT_HIT and is applied by the owner.
     bool          damageFloaters;
 
+    // Host-authoritative weather (KENSHICOOP_WEATHER_SYNC=0 disables; DEFAULT
+    // ON, protocol 55). Kenshi rolls weather per biome region from a weighted
+    // table with no exposed seed, so two clients standing in the SAME biome
+    // diverge by construction and nothing converges them - observed live with
+    // one player in rain and the other clear, metres apart. Not cosmetic: acid
+    // rain damages non-Skeletons and storms affect ranged combat.
+    bool          weatherSync;
+
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
     // apply no damage to DRIVEN bodies. Not because vitals "never cross the

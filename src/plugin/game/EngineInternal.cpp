@@ -28,7 +28,8 @@ const char* const kFaultNames[FAULT_OP_COUNT] = {
     "inv_of",         // FAULT_INV_OF
     "capture",        // FAULT_CAPTURE
     "apply",          // FAULT_APPLY
-    "other"           // FAULT_OTHER
+    "other",          // FAULT_OTHER
+    "weather"         // FAULT_WEATHER
 };
 } // namespace
 

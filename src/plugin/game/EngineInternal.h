@@ -68,6 +68,11 @@
 #include <kenshi/Faction.h>         // Faction::getData / FactionManager::getFactionByStringID (protocol 21)
 #include <kenshi/FactionRelations.h> // FactionRelations (protocol 24 faction-relation sync)
 #include <kenshi/Platoon.h>         // Platoon / ActivePlatoon / Ownerships (wallets, protocol 52)
+// NOTE: kenshi/Weather.h is deliberately NOT included. The dump defines class
+// WeatherRegion in BOTH Weather.h and PhysicsCollection.h, and Weather.h uses
+// WeatherRegion/Weather/Season before declaring them - so it cannot coexist with
+// the rest of this prelude. The weather facade in EngineWorld.cpp reads the few
+// fields it needs through local offset mirrors instead (protocol 55).
 #include <kenshi/Building/DoorStuff.h> // DoorStuff (door/gate state, protocol 26)
 #include <kenshi/Building/FarmBuilding.h>      // FarmBuilding growth floats (protocol 33; pulls Production/Storage/UseableStuff)
 #include <kenshi/Building/CraftingBuilding.h>  // CraftingBuilding::operate override (protocol 33)

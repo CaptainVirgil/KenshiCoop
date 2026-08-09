@@ -14,6 +14,16 @@
 
 #include "EngineInternal.h"
 
+// Minimal GLOBAL re-declaration of the engine's weather singleton, so the
+// linker resolves KenshiLib's exported symbol. It must be at global scope and
+// spelled exactly as the dump has it - static, returning WeatherSystem* -
+// because GetRealAddress resolves through the MANGLED NAME. The body stays
+// empty on purpose: every field the facade below touches is reached by offset,
+// which is also why kenshi/Weather.h (unincludable here - see EngineInternal.h)
+// is not needed.
+class WeatherSystem { public: static WeatherSystem* getInstance(); };
+
+
 namespace coop {
 namespace engine {
 
@@ -1703,6 +1713,177 @@ int probeVendorBuy(GameWorld* gw, const unsigned int vHand[5],
     }
 }
 
+
+// ---- Protocol 55: weather ----------------------------------------------------
+// Read and write through LOCAL OFFSET MIRRORS rather than kenshi/Weather.h.
+// That header cannot be included here: the dump defines class WeatherRegion in
+// both Weather.h and PhysicsCollection.h, and Weather.h uses WeatherRegion,
+// Weather and Season before declaring any of them. The three offsets below are
+// all this needs, and they are quoted from that same dump.
+//
+// Identity travels as the weather's GameData stringID, not its name or its
+// pointer: pointers differ between processes and the stringID is what every
+// other channel in this plugin already uses to mean "the same data object on
+// both machines".
+namespace {
+
+// kenshi/Weather.h layout, quoted:
+//   WeatherSystem::ActiveRegionWeather  0x00  (WeatherRegion*)
+//   WeatherRegion::weatherInstance      0x30  (WeatherInstance*)
+//   WeatherRegion::currentSeason        0x38  (Season*)
+//   WeatherRegion::currentSeasonIndex   0x40  (int)
+//   WeatherRegion::currentSeasonEndDay  0x44  (int)
+//   WeatherRegion::requestUpdateEffects 0x69  (bool)
+//   WeatherInstance::weather            0x08  (Weather*)
+//   WeatherInstance::effectStrength     0x10  (float)
+//   WeatherInstance::strength           0x14  (float)
+//   WeatherInstance::endTimeMinutes     0x48  (int)
+//   WeatherInstance::weatherTime        0x50  (float)
+//   Weather::weatherData                0x08  (GameData*)
+//   Season::weathers                    0x08  (lektor<Weather*>)
+const unsigned WX_SYS_ACTIVE_REGION = 0x00;
+const unsigned WX_REG_INSTANCE      = 0x30;
+const unsigned WX_REG_SEASON        = 0x38;
+const unsigned WX_REG_SEASON_IDX    = 0x40;
+const unsigned WX_REG_SEASON_END    = 0x44;
+const unsigned WX_REG_REQ_EFFECTS   = 0x69;
+const unsigned WX_INST_WEATHER      = 0x08;
+const unsigned WX_INST_EFFECT       = 0x10;
+const unsigned WX_INST_STRENGTH     = 0x14;
+const unsigned WX_INST_END_MIN      = 0x48;
+const unsigned WX_INST_TIME         = 0x50;
+const unsigned WX_WEATHER_DATA      = 0x08;
+const unsigned WX_SEASON_WEATHERS   = 0x08;
+
+template <typename T> T  fieldGet(void* base, unsigned off) {
+    return *(T*)((char*)base + off);
+}
+template <typename T> void fieldSet(void* base, unsigned off, T v) {
+    *(T*)((char*)base + off) = v;
+}
+
+typedef void* (*WeatherGetInstFn)();
+WeatherGetInstFn g_weatherInstFn = 0;
+int              g_weatherResolved = 0; // 0 untried, 1 ok, -1 failed
+
+// The stringID of a Weather*, via its GameData. Empty on any fault.
+void weatherSidOf(void* w, char* out, unsigned cap) {
+    out[0] = '\0';
+    if (!w || cap == 0) return;
+    GameData* gd = fieldGet<GameData*>(w, WX_WEATHER_DATA);
+    if (!gd) return;
+    const std::string& sid = gd->stringID;
+    unsigned n = (unsigned)sid.size();
+    if (n >= cap) n = cap - 1;
+    if (n) memcpy(out, sid.c_str(), n);
+    out[n] = '\0';
+}
+
+void* activeRegionSeh() {
+    __try {
+        if (!g_weatherInstFn) return 0;
+        void* ws = g_weatherInstFn();
+        if (!ws) return 0;
+        return fieldGet<void*>(ws, WX_SYS_ACTIVE_REGION);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return 0; }
+}
+
+bool readWeatherSeh(void* r, WeatherRead* out) {
+    __try {
+        void* wi = fieldGet<void*>(r, WX_REG_INSTANCE);
+        if (!wi) return false;
+        out->effectStrength = fieldGet<float>(wi, WX_INST_EFFECT);
+        out->strength       = fieldGet<float>(wi, WX_INST_STRENGTH);
+        out->endTimeMinutes = fieldGet<int>  (wi, WX_INST_END_MIN);
+        out->weatherTime    = fieldGet<float>(wi, WX_INST_TIME);
+        out->seasonIndex    = fieldGet<int>  (r,  WX_REG_SEASON_IDX);
+        out->seasonEndDay   = fieldGet<int>  (r,  WX_REG_SEASON_END);
+        weatherSidOf(fieldGet<void*>(wi, WX_INST_WEATHER), out->sid, sizeof(out->sid));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return false; }
+}
+
+// Find OUR Weather* with this stringID in the current season's table.
+void* findWeatherBySidSeh(void* r, const char* want) {
+    __try {
+        void* season = fieldGet<void*>(r, WX_REG_SEASON);
+        if (!season || !want || !want[0]) return 0;
+        // lektor<Weather*> is the engine's vector: {T* begin; T* end; ...}.
+        void** first = fieldGet<void**>(season, WX_SEASON_WEATHERS);
+        void** last  = fieldGet<void**>(season, WX_SEASON_WEATHERS + sizeof(void*));
+        if (!first || !last || last < first) return 0;
+        const unsigned n = (unsigned)(last - first);
+        if (n > 4096) return 0; // obviously-bad read; bail rather than walk it
+        char sid[64];
+        for (unsigned i = 0; i < n; ++i) {
+            if (!first[i]) continue;
+            weatherSidOf(first[i], sid, sizeof(sid));
+            if (sid[0] && strcmp(sid, want) == 0) return first[i];
+        }
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return 0; }
+}
+
+bool applyWeatherSeh(void* r, void* w, const WeatherRead* in, bool* outChanged) {
+    __try {
+        void* wi = fieldGet<void*>(r, WX_REG_INSTANCE);
+        if (!wi) return false;
+        bool ch = false;
+        if (w && fieldGet<void*>(wi, WX_INST_WEATHER) != w) {
+            fieldSet<void*>(wi, WX_INST_WEATHER, w); ch = true;
+        }
+        if (fieldGet<float>(wi, WX_INST_EFFECT)   != in->effectStrength) { fieldSet<float>(wi, WX_INST_EFFECT,   in->effectStrength); ch = true; }
+        if (fieldGet<float>(wi, WX_INST_STRENGTH) != in->strength)       { fieldSet<float>(wi, WX_INST_STRENGTH, in->strength);       ch = true; }
+        if (fieldGet<int>  (wi, WX_INST_END_MIN)  != in->endTimeMinutes) { fieldSet<int>  (wi, WX_INST_END_MIN,  in->endTimeMinutes); ch = true; }
+        if (fieldGet<float>(wi, WX_INST_TIME)     != in->weatherTime)    { fieldSet<float>(wi, WX_INST_TIME,     in->weatherTime);    ch = true; }
+        if (fieldGet<int>  (r, WX_REG_SEASON_IDX) != in->seasonIndex)    { fieldSet<int>  (r, WX_REG_SEASON_IDX, in->seasonIndex);    ch = true; }
+        if (fieldGet<int>  (r, WX_REG_SEASON_END) != in->seasonEndDay)   { fieldSet<int>  (r, WX_REG_SEASON_END, in->seasonEndDay);   ch = true; }
+        // The engine's own "state moved, re-derive the visuals" flag - the
+        // supported way in, rather than calling the private updateWeatherEffects.
+        if (ch) fieldSet<bool>(r, WX_REG_REQ_EFFECTS, true);
+        if (outChanged) *outChanged = ch;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return false; }
+}
+
+} // namespace
+
+// getInstance is a STATIC member (RVA 0xF89A0), so a plain function pointer.
+// GetRealAddress takes any NON-VIRTUAL function pointer - the _NV_ wrappers in
+// this dump exist only to bypass a vtable, which is why their absence from
+// Weather.h blocks nothing.
+void resolveWeather() {
+    if (g_weatherResolved != 0) return;
+    g_weatherInstFn = (WeatherGetInstFn)KenshiLib::GetRealAddress(
+        &WeatherSystem::getInstance);
+    g_weatherResolved = g_weatherInstFn ? 1 : -1;
+}
+
+bool readWeather(WeatherRead* out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    resolveWeather();
+    if (g_weatherResolved != 1) return false;
+    void* r = activeRegionSeh();
+    if (!r) return false;
+    if (!readWeatherSeh(r, out)) return false;
+    out->valid = true;
+    return true;
+}
+
+bool applyWeather(const WeatherRead& in) {
+    resolveWeather();
+    if (g_weatherResolved != 1) return false;
+    void* r = activeRegionSeh();
+    if (!r) return false;
+    // An unresolvable stringID means the sender's season table is not ours.
+    // Leave the sky alone rather than writing a half-state: stale beats wrong.
+    void* w = findWeatherBySidSeh(r, in.sid);
+    if (in.sid[0] && !w) return false;
+    bool changed = false;
+    if (!applyWeatherSeh(r, w, &in, &changed)) return false;
+    return changed;
+}
 
 } // namespace engine
 } // namespace coop

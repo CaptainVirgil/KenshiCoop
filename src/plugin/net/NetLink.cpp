@@ -217,6 +217,7 @@ void NetLink::queueMoneyDelta(const MoneyDeltaPacket& pkt) { pushLocked(outCs_, 
 void NetLink::queueFaction(const FactionPacket& pkt) { pushLocked(outCs_, outFaction_, pkt); }
 
 void NetLink::queueTime(const TimePacket& pkt) { pushLocked(outCs_, outTime_, pkt); }
+void NetLink::queueWeather(const WeatherPacket& pkt) { pushLocked(outCs_, outWeather_, pkt); }
 
 void NetLink::queueDoor(const DoorPacket& pkt) { pushLocked(outCs_, outDoor_, pkt); }
 
@@ -802,6 +803,13 @@ void NetLink::threadLoop() {
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &fa)
                             && inbound_) {
                             inbound_->pushFaction(fa.ownerId, fa);
+                        }
+                    } else if (type == PKT_WEATHER) {
+                        // Host-authoritative weather (protocol 55).
+                        WeatherPacket wx;
+                        if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &wx)
+                            && inbound_) {
+                            inbound_->pushWeather(wx.ownerId, wx);
                         }
                     } else if (type == PKT_TIME) {
                         // Reliable host-authoritative game-clock sample
@@ -1411,6 +1419,20 @@ void NetLink::threadLoop() {
         LeaveCriticalSection(&outCs_);
         for (size_t i = 0; i < timePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&timePkts[i], sizeof(TimePacket),
+                                                 ENET_PACKET_FLAG_RELIABLE);
+            sendToPeer(out, CH_RELIABLE);
+        }
+
+        // Drain + send any queued weather states on CH_RELIABLE (protocol 55).
+        // ~1 Hz host broadcast, change-gated by the Replicator, so a settled
+        // sky is silent. Reliable because a lost change would leave the join in
+        // the wrong weather until the next real transition.
+        std::vector<WeatherPacket> wxPkts;
+        EnterCriticalSection(&outCs_);
+        wxPkts.swap(outWeather_);
+        LeaveCriticalSection(&outCs_);
+        for (size_t i = 0; i < wxPkts.size(); ++i) {
+            ENetPacket* out = enet_packet_create(&wxPkts[i], sizeof(WeatherPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
             sendToPeer(out, CH_RELIABLE);
         }

@@ -1760,6 +1760,32 @@ bool writeDoorByHand(const unsigned int dHand[5], int wantOpen, int wantLocked,
 // Ownerships block that holds the protocol-52 wallet). Both clients loaded the
 // same save, so the building's hand is the cross-client identity - the door
 // precedent, not the protocol-27 runtime-mint one.
+// ---- Protocol 55: weather ----------------------------------------------------
+// Kenshi rolls weather per BIOME REGION from a probability-weighted table with
+// no exposed seed, so two clients in the same biome diverge by construction.
+// These read and write the ACTIVE region (the one the camera is in), which is
+// the only one either client is looking at.
+//
+// The weather identity travels as its GameData stringID because Weather*
+// differs between processes; applyWeather resolves it against the receiver's own
+// current season table and does nothing when it cannot (a wrong weather is worse
+// than a stale one). All SEH-guarded; false means "could not read/apply", never
+// a partial write.
+struct WeatherRead {
+    char  sid[48];        // current weather's GameData stringID ("" when none)
+    float strength;
+    float effectStrength;
+    int   endTimeMinutes;
+    float weatherTime;
+    int   seasonIndex;
+    int   seasonEndDay;
+    bool  valid;
+};
+bool readWeather(WeatherRead* out);
+// Returns true when something was actually changed (so the caller can log an
+// edge rather than every beat). A name that does not resolve returns false.
+bool applyWeather(const WeatherRead& in);
+
 struct DeedRead {
     unsigned int hand[5]; // [type, container, containerSerial, index, serial]
     int   owned;          // 1 = owner faction IS the player faction

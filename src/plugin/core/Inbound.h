@@ -184,6 +184,12 @@ struct InboundTime {
     TimePacket pkt;
 };
 
+// One received weather state (protocol 55): the host's active biome region.
+struct InboundWeather {
+    u32           ownerId;
+    WeatherPacket pkt;
+};
+
 // One received baked-door state row (protocol 26): a door the sender's table
 // saw move; the receiver applies it through the engine's own door actions
 // (baseline updated first - echo-free).
@@ -420,7 +426,7 @@ public:
         speed_(worldReset_),
         stats_(worldReset_),      money_(worldReset_),      moneyDelta_(worldReset_),
         faction_(worldReset_),
-        time_(worldReset_),       door_(worldReset_),       prod_(worldReset_),
+        time_(worldReset_),       weather_(worldReset_),   door_(worldReset_),       prod_(worldReset_),
         research_(worldReset_),   deed_(worldReset_),
         buildPlace_(worldReset_), buildState_(worldReset_),
         buildDoor_(worldReset_),  buildRemove_(worldReset_), stealth_(worldReset_, 512),
@@ -584,6 +590,11 @@ public:
     void pushTime(u32 ownerId, const TimePacket& pkt) {
         InboundTime iti; iti.ownerId = ownerId; iti.pkt = pkt;
         EnterCriticalSection(&cs_); time_.push_back(iti); LeaveCriticalSection(&cs_);
+    }
+    // NET thread: one received weather state (protocol 55), owner-tagged.
+    void pushWeather(u32 ownerId, const WeatherPacket& pkt) {
+        InboundWeather iw; iw.ownerId = ownerId; iw.pkt = pkt;
+        EnterCriticalSection(&cs_); weather_.push_back(iw); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received baked-door state row (protocol 26), owner-tagged.
     void pushDoor(u32 ownerId, const DoorPacket& pkt) {
@@ -754,6 +765,9 @@ public:
     void drainTime(std::deque<InboundTime>& out) {
         EnterCriticalSection(&cs_); out.swap(time_); LeaveCriticalSection(&cs_);
     }
+    void drainWeather(std::deque<InboundWeather>& out) {
+        EnterCriticalSection(&cs_); out.swap(weather_); LeaveCriticalSection(&cs_);
+    }
     void drainDoor(std::deque<InboundDoor>& out) {
         EnterCriticalSection(&cs_); out.swap(door_); LeaveCriticalSection(&cs_);
     }
@@ -882,6 +896,7 @@ private:
     WorldQ<InboundMoneyDelta>      moneyDelta_;
     WorldQ<InboundFaction>         faction_;
     WorldQ<InboundTime>            time_;
+    WorldQ<InboundWeather>         weather_;
     WorldQ<InboundDoor>            door_;
     WorldQ<InboundProd>            prod_;
     WorldQ<InboundResearch>        research_;

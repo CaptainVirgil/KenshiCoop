@@ -127,6 +127,7 @@ public:
     void queueMoneyDelta(const MoneyDeltaPacket& pkt);
     void queueFaction(const FactionPacket& pkt);
     void queueTime(const TimePacket& pkt);
+    void queueWeather(const WeatherPacket& pkt);
     void queueDoor(const DoorPacket& pkt);
     // MAIN thread: queue a reliable host-authoritative machine state row
     // (protocol 33). Change-gated + safety-resent by the caller.
@@ -323,6 +324,7 @@ private:
     std::vector<MoneyDeltaPacket> outMoneyDelta_;
     std::vector<FactionPacket>   outFaction_;
     std::vector<TimePacket>      outTime_;
+    std::vector<WeatherPacket>   outWeather_;
     std::vector<DoorPacket>      outDoor_;
     // Reliable machine state rows (protocol 33). Guarded by outCs_.
     std::vector<ProdPacket>      outProd_;

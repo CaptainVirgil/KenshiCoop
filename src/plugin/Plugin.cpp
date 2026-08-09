@@ -1339,6 +1339,7 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // applies against this tick's consensus state.
         if (g_cfg.timeSync)
             g_repl.syncTime(gw, g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+            g_repl.syncWeather(g_inbound, g_net, g_net.localId(), g_cfg.isHost);
         // Runtime-spawn proxy replication (protocol 21): the join asks about
         // streamed hands it couldn't resolve last tick (host RUNTIME spawns)
         // and mints local proxy bodies from the host's replies; the host
@@ -2499,6 +2500,7 @@ void installEngineDetours() {
     // Hand-hash split of world-NPC duty inside a contested cell. BOTH clients
     // must run the same setting: each computes the partition independently from
     // the shared hand, so a one-sided enable makes both claim the same bodies.
+    g_repl.setWeatherSync(g_cfg.weatherSync);
     if (g_cfg.splitAuthority) {
         g_repl.setSplitAuthority(true);
         coopLog("[cell] contested-cell authority SPLIT by hand hash "
