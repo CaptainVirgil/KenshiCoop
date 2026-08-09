@@ -1,0 +1,61 @@
+KenshiCoop (fork-5) - Linux install (Kenshi via Steam/Proton)
+=============================================================
+
+Both players must install THIS SAME BUILD: the two copies check each other's
+version when they connect, and refuse if they differ.
+
+  Build: fork-5      Protocol: 54
+
+WHAT YOU NEED FIRST
+-------------------
+  1. Kenshi on Steam, running under Proton.
+  2. RE_Kenshi 0.3.1 or newer, installed INTO the Kenshi prefix - it is what
+     loads this mod. https://github.com/BFrizzleFoShizzle/RE_Kenshi/releases/latest
+     Its installer is a Windows program, so run it through Proton against the
+     Kenshi prefix (compatdata/233860), not against a fresh one.
+  3. Steam running and online.
+
+INSTALL
+-------
+Close Kenshi first, then:
+
+    ./update-kenshicoop.sh
+
+It reads your Steam library folders to find Kenshi, verifies the download against
+a published checksum, backs up your current mod folder and installs this one.
+
+  Undo it:            ./update-kenshicoop.sh --rollback
+  Kenshi elsewhere:   ./update-kenshicoop.sh --kenshi /path/to/Kenshi
+
+By hand instead: copy the KenshiCoop folder into
+  ~/.local/share/Steam/steamapps/common/Kenshi/mods/
+
+YOUR SAVE GAMES ARE NOT TOUCHED
+-------------------------------
+Saves live inside the Proton prefix, under
+  .../compatdata/233860/pfx/drive_c/users/steamuser/AppData/Local/kenshi/save
+which is a completely different tree from mods/. The installer only writes inside
+<Kenshi>/mods/KenshiCoop and its own backup folder, and refuses to run if the
+path it worked out is not that. Your previous mod folder is copied to
+<Kenshi>/KenshiCoop-backups/ first, and the last five are kept.
+
+PLAYING
+-------
+Identical to Windows: enable KenshiCoop in the Mods menu, press F2, swap Steam
+IDs, one player HOSTs and loads a save, the other JOINs from the main menu. One
+of you must be HOST and the other JOIN - both default to HOST.
+
+NOTES SPECIFIC TO PROTON
+------------------------
+  * Steam must be the Linux Steam client, running and online; the mod talks to it
+    through the game's Steam API, so offline mode will not connect.
+  * The log is <Kenshi>/KenshiCoop_host.log or _join.log, written next to the
+    game rather than inside the prefix. The file name comes from the Role you
+    picked, not the one negotiated, so _host.log may be the join's.
+  * If you built this yourself, scripts/linux/ has the whole toolchain: no
+    Windows and no sudo required.
+
+WHAT TO EXPECT
+--------------
+Experimental. Desyncs happen, crashes happen, two players is the design target.
+The host owns the world and saves are shared between both machines.

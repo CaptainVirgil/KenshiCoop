@@ -18,6 +18,7 @@ LABEL="${1:?usage: make_release.sh <label>}"
 OUT="$REPO/dist/release-$LABEL"
 
 "$REPO/scripts/linux/make_kit.sh" "$LABEL" > /dev/null
+KIT_ZIP="$REPO/dist/KenshiCoop-kit-$LABEL.zip"
 SRC="$REPO/dist/kit/KenshiCoop"
 [ -f "$SRC/KenshiCoop.dll" ] || { echo "kit build produced no DLL" >&2; exit 1; }
 
@@ -198,6 +199,14 @@ rm -f "$WIN_ZIP" "$LIN_TGZ"
 (cd "$OUT/win"   && zip -qr "$WIN_ZIP" KenshiCoop INSTALL-WINDOWS.txt update-kenshicoop.ps1)
 (cd "$OUT/linux" && tar czf "$LIN_TGZ" KenshiCoop INSTALL-LINUX.txt update-kenshicoop.sh)
 
+# The kit zip is a RELEASE ASSET, not a leftover. Both INSTALL files tell players
+# the easy install is to run the updater, and both updaters resolve
+# KenshiCoop-kit*.zip from the GitHub release - they die with "no
+# KenshiCoop-kit*.zip asset found" without it. fork-4 shipped without it, so the
+# install path both READMEs recommend did not work. All three go up together.
+[ -f "$KIT_ZIP" ] || { echo "make_kit produced no kit zip at $KIT_ZIP" >&2; exit 1; }
+
 echo "windows: $WIN_ZIP"
 echo "linux:   $LIN_TGZ"
+echo "kit:     $KIT_ZIP   <- REQUIRED asset: the updaters download this one"
 echo "protocol $PROTO   dll $SHA"
