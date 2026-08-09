@@ -16,20 +16,41 @@ the desktop second instance, all of CT 203 — was this or its sibling, the bare
 prefix missing the VC++ 2010 runtime (`c0000135`). Both fixes are now encoded
 in `scripts/linux/launch_coop.sh`; the CT 203 recipe is below.
 
-**The first two-client session ran tonight.** Numbers and remaining P0 work are
-in `docs/ROADMAP.md` — that part is project state, not session state.
+**The first two-client session ran tonight, and then it was PLAYED.** The four
+defects that found are in `docs/ROADMAP.md` with causes and measured
+before/after — project state, not session state.
+
+**Where the remaining desync stands.** Much reduced, not gone. What is left is
+believed to be *load*, not a replication bug: the join drives the whole town
+while the host drives nothing (cell authority cannot split a cell both players
+stand in), and a frame-starved client publishes a lumpy stream, so the host's
+copy of the join's character is the one that suffers. Roadmap Phase 3b holds
+the four items that attack it. Two are designed in full and deliberately NOT
+built — read the task notes before starting either, because the obvious version
+of each is wrong:
+- **the time budget** must not skip an entry wholesale (`drivenChars_` is
+  rebuilt every tick, so a skipped body reads as *not driven* and the authority
+  pass suppresses it — an invisible solid body);
+- **the authority split** must split publish AND census together (splitting
+  publish alone leaves the reconciler switched off on the half you gave away:
+  double simulation).
 
 ---
 
 ## Repo state
 
-- Branch `linux-build`. Tonight's commits: items 47/48 (doc+comment
-  corrections), 45/46/49 (build: ENet pin+stamp, full-include-path header scan,
-  Windows DOA checks), the entity-batch receive clamp + `netlinktest`, and the
-  session-tooling/docs commit. Check `git log`; push state = whatever
-  `git status -sb` says.
-- Gate green after every change: `727 prototest / 17 tunneltest /
+- Branch `linux-build`, pushed. Tonight's commits, in order: roadmap items
+  47/48 (doc + comment corrections), 45/46/49 (ENet pin + stamp,
+  full-include-path header scan, Windows DOA checks), the entity-batch receive
+  clamp + `netlinktest`, the session tooling, then the played-session fixes —
+  inventory cadence, drive catch-up, mid-band keepalive, interp keepalive
+  handling, and the throttle/keepalive-wire/harness-capture batch.
+- Gate green after every change: `731 prototest / 17 tunneltest /
   46 netlinktest / 33 contract`, `RESULT: PASS`.
+- **The installed DLLs in both mods folders are one build BEHIND `HEAD`** — they
+  carry the keepalive but not the last two commits. Rebuild and reinstall before
+  the next session (`scripts/linux/build_plugin.sh Release`, copy
+  `build/Release/KenshiCoop.{dll,map}` into both `mods/KenshiCoop/`).
 - The `KenshiLib_deps` stash from the 0.4.0 bump is **dropped** (0.4.0 settled:
   two green gates, fork-7 built+installed+now session-proven).
 - `build_plugin_direct.ps1` gained DepsPin/ENet stamps + map check but has
@@ -83,16 +104,28 @@ container does not survive a fredj reboot unless started.
 Still running as root from 2026-08-08 (`/tmp/.ydotool_socket`, dies with
 reboot). Untouched tonight — the whole session was env-var-driven, no clicks.
 
+## Known crash, reproducible
+
+Talking to a **seated** NPC on the join crashed it twice (second attempt was
+fatal), at 2x game speed. Unhandled C++ exception `0xE06D7363` thrown inside
+the engine's dialogue path; **no KenshiCoop frame on the stack**, so the plugin
+did not throw — but the line before it in the log is
+`[census] FREEZE hand=... name='Holy Sentinel'`, i.e. we had suspended that
+NPC's AI, and the engine's dialogue state machine appears not to tolerate a
+frozen partner. Roadmap item 55; wants an interaction hold (a body in dialogue
+with the local player is exempt from freeze/park/cull until it ends, same latch
+shape as `xferLatch_`). Dump kept at `~/Kenshi-Join/crashDump1.0.65_x64.dmp`.
+
 ## Loose ends
 
-- [ ] Virgil: play the running session (or relaunch: `hostdirect` +
-      `KENSHICOOP_AUTOCONNECT=1 launch_coop.sh join`), then read both logs
-      against the `kenshicoop-logs` skill
-- [ ] Decide fork-8 (Phase 1 + clamp + netlinktest are all unreleased; wire
-      unchanged, protocol 54)
+- [ ] **Rebuild + reinstall the DLL** — both installs are one build behind HEAD
+- [ ] Play again and re-read both logs against the `kenshicoop-logs` skill;
+      relaunch is `launch_coop.sh hostdirect` then
+      `KENSHICOOP_AUTOCONNECT=1 launch_coop.sh join`
+- [ ] Decide fork-8 (everything since fork-7 is unreleased; wire unchanged,
+      protocol 54)
 - [ ] Decide CT 203 (Steam client / GOG / destroy)
 - [ ] Flip both `coop_config.json` back to `steam` before a brother session
-- [ ] `[inv] APPLY` ~14/s churn — first-session finding, roadmap P0 note
 - [ ] Windows: run `build_plugin_direct.ps1` + `verify.ps1` once on a real
       Windows machine (brother's?) to exercise the ported checks
 - [ ] Delete this file when the above are closed
