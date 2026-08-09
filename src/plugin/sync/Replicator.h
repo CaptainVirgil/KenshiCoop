@@ -619,6 +619,12 @@ public:
     // region from a weighted table with no exposed seed, so two clients in the
     // same biome diverge by construction - the state has to be pushed.
     void syncWeather(Inbound& in, NetLink& net, u32 ownerId, bool isHost);
+    // Dialogue relay (protocol 56). SYMMETRIC: a speech bubble spawns on
+    // whichever machine's AI ran the conversation, which is the host for world
+    // NPCs and either side for a player's own squad - so both ends publish what
+    // they saw said and show what they are told.
+    void syncDialogue(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId);
+    void setDialogueSync(bool v) { dialogueSync_ = v; }
     void setWeatherSync(bool v) { weatherSync_ = v; }
 
     // Game-clock sync master enable (KENSHICOOP_TIME_SYNC).
@@ -2386,6 +2392,7 @@ private:
     // timeSlew_ in its quiet writes so the slew and the consensus compose.
     bool          timeSync_;
     bool          weatherSync_;
+    bool          dialogueSync_;
     unsigned long weatherLastSendMs_;
     u32           weatherSeqOut_;
     u32           weatherSeqIn_;

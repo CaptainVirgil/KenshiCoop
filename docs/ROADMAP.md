@@ -12,10 +12,10 @@ the build commands; this file holds the plan.
 
 | | |
 |---|---|
-| Protocol | **55** — weather sync (2026-08-09) is the first wire change since fork-1 |
+| Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1 |
 | Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve) |
 | Local build | `fork-7` — first build against KenshiLib 0.4.0; installed on both the Steam install and `~/Kenshi-Join` |
-| Gate | 732 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
+| Gate | 733 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
 | Interop | fork-6 ↔ fork-7 **do** connect: the handshake compares `PROTOCOL_VERSION`, not the build label |
 
 fork-1 through fork-5 were dead on arrival (no `/GL`) and are withdrawn or
@@ -155,7 +155,7 @@ at ~900 KB/s); Kenshi's per-frame engine-call budget is.
 | # | Item |
 |---|---|
 | 56 | **Weather sync SHIPPED (protocol 55).** An earlier entry here called it blocked because `Weather.h` has no `_NV_` wrappers — wrong: those exist only to bypass a vtable, and `GetRealAddress` takes any non-virtual function pointer, which is how this codebase already resolves `Character::setDestination`. Host publishes the active biome region's weather at ~1 Hz, change-gated; identity travels as the GameData stringID. `Weather.h` itself is unincludable (duplicate `WeatherRegion` across two dump headers, plus missing forward declarations) so the facade uses local offset mirrors. **Unverified in game:** whether writing the instance fields + `requestUpdateEffects` is enough for the visuals to follow |
-| 54 | **Dialogue is never replicated.** There is no dialogue packet in `Wire.h` at all — the host sees dialogue because its engine runs that NPC's AI, while on the peer the NPC is a driven proxy with AI suspended. Needs engine research, new packets and a bump, so it belongs with item 28's batched bump. (The damage-splash half of this entry is **fixed**: the guard now draws its own floater from the amounts it was already holding, per swing, no wire change) |
+| 54 | **Dialogue relay SHIPPED (protocol 56).** Capture hooks `DialogueSpeechBubble::setText`/`setPosition` and correlates on the bubble pointer — a workaround for `speechBubbleList` being the one dialogue symbol KenshiLib does not export. Sends the world position rather than a speaker hand; the receiver attaches the text to the nearest character so it tracks the speaker, and drops the line when nothing is within 40 u. Symmetric and fire-and-forget. **Unverified in game:** whether the hooks fire for every speech path, and whether 40 u is the right catch radius |
 | 55 | **Dialogue with a frozen NPC crashes the client.** `censusFreezeAi` suspends a parked NPC's AI; starting dialogue with one throws an unhandled C++ exception inside the engine (`0xE06D7363`, no KenshiCoop frame on the stack). Reproduced twice on a seated NPC. Wants an interaction hold: a body in dialogue with the local player is exempt from freeze/park/cull until it ends, same latch shape as `xferLatch_` |
 | 37 | `gateShouldSend`'s effective resend interval is `max(minSendMs, resendMs)` — the throttle is evaluated before the resend. Latent: only money passes a non-zero `minSendMs` |
 | 38 | `CATCHUP_K` has zero stability headroom — `K·dt = 2.0 × 0.5 s = exactly 1.0` on the mid band. Not broken today; one band retune from a copy that walks through the source and back |

@@ -206,6 +206,12 @@ struct Config {
     // rain damages non-Skeletons and storms affect ranged combat.
     bool          weatherSync;
 
+    // Dialogue relay (KENSHICOOP_DIALOGUE_SYNC=0 disables; DEFAULT ON,
+    // protocol 56). A speech bubble spawns only on the machine whose AI ran the
+    // conversation, so the peer never sees a word said. Nothing upstream ever
+    // carried dialogue - it was never built rather than broken.
+    bool          dialogueSync;
+
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
     // apply no damage to DRIVEN bodies. Not because vitals "never cross the

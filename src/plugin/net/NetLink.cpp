@@ -218,6 +218,7 @@ void NetLink::queueFaction(const FactionPacket& pkt) { pushLocked(outCs_, outFac
 
 void NetLink::queueTime(const TimePacket& pkt) { pushLocked(outCs_, outTime_, pkt); }
 void NetLink::queueWeather(const WeatherPacket& pkt) { pushLocked(outCs_, outWeather_, pkt); }
+void NetLink::queueDialogue(const DialoguePacket& pkt) { pushLocked(outCs_, outDialogue_, pkt); }
 
 void NetLink::queueDoor(const DoorPacket& pkt) { pushLocked(outCs_, outDoor_, pkt); }
 
@@ -803,6 +804,13 @@ void NetLink::threadLoop() {
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &fa)
                             && inbound_) {
                             inbound_->pushFaction(fa.ownerId, fa);
+                        }
+                    } else if (type == PKT_DIALOGUE) {
+                        // A spoken line (protocol 56). Fire-and-forget event.
+                        DialoguePacket dp;
+                        if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &dp)
+                            && inbound_) {
+                            inbound_->pushDialogue(dp.ownerId, dp);
                         }
                     } else if (type == PKT_WEATHER) {
                         // Host-authoritative weather (protocol 55).
@@ -1419,6 +1427,18 @@ void NetLink::threadLoop() {
         LeaveCriticalSection(&outCs_);
         for (size_t i = 0; i < timePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&timePkts[i], sizeof(TimePacket),
+                                                 ENET_PACKET_FLAG_RELIABLE);
+            sendToPeer(out, CH_RELIABLE);
+        }
+
+        // Drain + send any spoken lines on CH_RELIABLE (protocol 56). An event,
+        // not state: sent once, never re-asserted.
+        std::vector<DialoguePacket> dlgPkts;
+        EnterCriticalSection(&outCs_);
+        dlgPkts.swap(outDialogue_);
+        LeaveCriticalSection(&outCs_);
+        for (size_t i = 0; i < dlgPkts.size(); ++i) {
+            ENetPacket* out = enet_packet_create(&dlgPkts[i], sizeof(DialoguePacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
             sendToPeer(out, CH_RELIABLE);
         }

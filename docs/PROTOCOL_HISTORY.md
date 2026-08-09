@@ -4,7 +4,7 @@
 existed in the tree, so **this file is a reconstruction from code archaeology**,
 not a recovered original. Read the preamble before trusting a row.
 
-Current `PROTOCOL_VERSION`: **55**.
+Current `PROTOCOL_VERSION`: **56**.
 
 > **Why it went missing, and why it will not again.** `Wire.h` used to point at
 > `resources/PROTOCOL_HISTORY.md`, and `resources/` is gitignored - so it named a
@@ -63,7 +63,7 @@ actually held in some commit.**
 Values `PROTOCOL_VERSION` has actually held, in order:
 
 ```
-1, 2, 3, 4, 11, 18, 23, 36, 37, 38, 39, 40, 41, 43, 44, 45, 48, 50, 51, 52, 53, 54, 55
+1, 2, 3, 4, 11, 18, 23, 36, 37, 38, 39, 40, 41, 43, 44, 45, 48, 50, 51, 52, 53, 54, 55, 56
 ```
 
 Values that **never existed** on this line: `5–10`, `12–17`, `19–22`, `24–35`,
@@ -411,3 +411,32 @@ that header and `PhysicsCollection.h`, and `Weather.h` uses `WeatherRegion`,
 local offset mirrors quoted from the dump, and re-declares `WeatherSystem` at
 GLOBAL scope (GetRealAddress resolves through the mangled name, so the namespace
 matters).
+
+
+## v56 — dialogue relay (2026-08-09)
+
+Adds `PKT_DIALOGUE` (49) / `DialoguePacket` (145 B). Both clients publish lines
+spoken locally and display lines the peer reports.
+
+**Why it never worked.** A `DialogueSpeechBubble` is spawned only on the machine
+whose AI ran the conversation, so the host sees dialogue the peer never does.
+Nothing upstream or in this fork ever carried it — not a regression, simply
+never built.
+
+**Capture hooks `setText` and `setPosition(Vector3)`** and correlates on the
+bubble pointer. That is a workaround for the one dialogue symbol KenshiLib does
+NOT export: `DialogueSpeechBubble::speechBubbleList`, the static set of live
+bubbles. Without it there is no way to ask what is currently displayed, so we
+catch each bubble as it is populated instead. Both halves must arrive before a
+line emits — the engine sets them in either order.
+
+**Position, not a speaker hand.** The capture point IS the placement call, and a
+world position needs no cross-machine identity resolution. The receiver attaches
+the text to the character nearest that spot so it tracks the speaker, and DROPS
+the line when nothing is within 40 u — our copy of that NPC may not exist, and
+an orphan caption in mid-air reads as a bug.
+
+**Symmetric and fire-and-forget.** Neither side is authoritative for speech, so
+both forward what they witnessed and skip their own echo. No seq, no change
+gate, no re-assert: a spoken line is an EVENT, and re-showing a stale one is
+worse than missing it.

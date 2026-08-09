@@ -42,7 +42,7 @@ Replicator::Replicator()
       xferScanMs_(0), nextTreatId_(1),
       invResentCount_(0), invResentRollupMs_(0),
       pcSampleN_(0), pcSampleMs_(0), midRowsMs_(0), splitAuthority_(false),
-      freezeSkipDriven_(0), weatherSync_(true), weatherLastSendMs_(0),
+      freezeSkipDriven_(0), weatherSync_(true), dialogueSync_(true), weatherLastSendMs_(0),
       weatherSeqOut_(1), weatherSeqIn_(0),
       weatherLastStrength_(0.0f), weatherLastEffect_(0.0f), weatherLastEnd_(0),
       weatherLastSeason_(0), weatherLastSeasonEnd_(0), weatherHave_(false),

@@ -1771,6 +1771,27 @@ bool writeDoorByHand(const unsigned int dHand[5], int wantOpen, int wantLocked,
 // current season table and does nothing when it cannot (a wrong weather is worse
 // than a stale one). All SEH-guarded; false means "could not read/apply", never
 // a partial write.
+// ---- Protocol 56: dialogue ---------------------------------------------------
+// Speech bubbles are LOCAL: the engine spawns one on the machine whose AI ran
+// the conversation, so the host sees dialogue the peer never does. There is no
+// dialogue packet upstream or in this fork - it was simply never built.
+//
+// Captured by hooking DialogueSpeechBubble::setText and ::setPosition and
+// correlating on the bubble pointer, because the static list of live bubbles is
+// the one dialogue symbol KenshiLib does NOT export. One row per bubble.
+struct DialogueLine {
+    float x, y, z;      // world position the bubble was placed at
+    char  text[128];    // what was said (truncated)
+};
+// Install the two capture hooks. False = dialogue relay silently off.
+bool installDialogueHooks();
+// Drain what has been said locally since the last call (host publishes these).
+unsigned int drainDialogue(DialogueLine* out, unsigned int maxOut);
+// Show a received line on THIS machine: finds the character nearest the given
+// position and floats the text over it, so it tracks the speaker as they move.
+// No-op when nothing is near enough - a bubble with no speaker is noise.
+void showDialogue(GameWorld* gw, float x, float y, float z, const char* text);
+
 struct WeatherRead {
     char  sid[48];        // current weather's GameData stringID ("" when none)
     float strength;

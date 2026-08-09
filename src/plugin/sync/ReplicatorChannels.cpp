@@ -2418,6 +2418,41 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
     if (!userActed) engine::reconcileVoteButtons();
 }
 
+void Replicator::syncDialogue(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId) {
+    std::deque<InboundDialogue> got;
+    in.drainDialogue(got);
+    if (!dialogueSync_) return;
+
+    // Publish whatever was said HERE since last tick. Symmetric by design: the
+    // bubble spawns wherever the AI ran, so neither side is authoritative for
+    // speech and both simply forward what they witnessed.
+    engine::DialogueLine lines[16];
+    unsigned int n = engine::drainDialogue(lines, 16);
+    for (unsigned int i = 0; i < n; ++i) {
+        DialoguePacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.type    = (u8)PKT_DIALOGUE;
+        pkt.ownerId = ownerId;
+        pkt.x = lines[i].x; pkt.y = lines[i].y; pkt.z = lines[i].z;
+        std::strncpy(pkt.text, lines[i].text, sizeof(pkt.text) - 1);
+        net.queueDialogue(pkt);
+        char b[200];
+        _snprintf(b, sizeof(b) - 1, "[dlg] SEND '%.100s'", pkt.text);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+
+    // Show what the peer witnessed. No de-dup and no ordering: a spoken line is
+    // an event, and the worst case is one line arriving twice rather than a
+    // stale caption being re-asserted forever.
+    for (std::deque<InboundDialogue>::iterator it = got.begin(); it != got.end(); ++it) {
+        if (it->pkt.ownerId == ownerId) continue; // our own echo
+        engine::showDialogue(gw, it->pkt.x, it->pkt.y, it->pkt.z, it->pkt.text);
+        char b[200];
+        _snprintf(b, sizeof(b) - 1, "[dlg] RECV '%.100s'", it->pkt.text);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+}
+
 void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
                              bool isHost) {
     std::deque<InboundWeather> got;

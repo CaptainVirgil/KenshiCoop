@@ -31,7 +31,7 @@ typedef double         f64;
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 55;
+const u16 PROTOCOL_VERSION = 56;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -82,7 +82,8 @@ enum PacketType {
     PKT_INV_XFER_ACK     = 45,// RELIABLE transfer verdict (protocol 50); InvXferAckPacket
     PKT_MONEY_DELTA      = 46,// RELIABLE join money-pool delta (join -> host, protocol 52); MoneyDeltaPacket
     PKT_DEED             = 47,// RELIABLE property-ownership row (protocol 54); DeedPacket
-    PKT_WEATHER          = 48 // RELIABLE host-authoritative weather state (protocol 55); WeatherPacket
+    PKT_WEATHER          = 48,// RELIABLE host-authoritative weather state (protocol 55); WeatherPacket
+    PKT_DIALOGUE         = 49 // RELIABLE spoken line + where it was said (protocol 56); DialoguePacket
 };
 
 // One-shot transition events carried on the RELIABLE channel. Continuous state
@@ -1082,6 +1083,28 @@ struct TimePacket {
 //
 // Host-authoritative and low rate (~1 Hz): a few dozen bytes, and the receiver
 // only writes when something actually changed.
+// ---- Protocol 56: dialogue ---------------------------------------------------
+// A speech bubble is spawned only on the machine whose AI ran the conversation,
+// so the peer never sees a word. Nothing upstream or in this fork ever carried
+// dialogue - it was not a regression, it was never built.
+//
+// Position rather than a speaker hand: the capture point is
+// DialogueSpeechBubble::setPosition, which is where the bubble is placed, and a
+// world position needs no cross-machine identity resolution. The receiver
+// attaches the text to the character nearest that spot, so it tracks the
+// speaker, and drops the line when nothing plausible is near - our copy of that
+// NPC may not exist, and an orphan caption in mid-air reads as a bug.
+//
+// Fire-and-forget: no seq, no gate. A spoken line is an EVENT - re-showing a
+// stale one would be worse than missing it - so this rides the reliable channel
+// once and is never re-asserted.
+struct DialoguePacket {
+    u8  type;        // = PKT_DIALOGUE
+    u32 ownerId;     // network player id of the sender
+    f32 x, y, z;     // where the bubble was placed
+    char text[128];  // what was said (truncated on capture)
+};
+
 struct WeatherPacket {
     u8  type;            // = PKT_WEATHER
     u32 ownerId;         // network player id of the sender (the host)
@@ -1614,6 +1637,7 @@ inline void wireSanitize(MedicalPacket& p) {
 inline void wireSanitize(FactionPacket& p)    { wireTerm(p.sid); }
 inline void wireSanitize(DeedPacket& p)       { wireTerm(p.ownerSid); }
 inline void wireSanitize(WeatherPacket& p)    { wireTerm(p.sid); }
+inline void wireSanitize(DialoguePacket& p)   { wireTerm(p.text); }
 inline void wireSanitize(BuildPlacePacket& p) { wireTerm(p.sid); }
 inline void wireSanitize(SpawnInfoPacket& p)  { wireTerm(p.charSid); wireTerm(p.facSid); }
 inline void wireSanitize(ProdPacket& p)       { wireTerm(p.outSid); }

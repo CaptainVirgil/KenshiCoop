@@ -23,6 +23,18 @@
 // is not needed.
 class WeatherSystem { public: static WeatherSystem* getInstance(); };
 
+// Minimal GLOBAL re-declaration of the engine's speech bubble, for the same
+// reason as WeatherSystem above: GetRealAddress resolves through the MANGLED
+// NAME, so the signatures must be spelled exactly as KenshiLib exports them.
+// kenshi/Dialogue.h is not included - nothing here needs its layout, only these
+// two entry points.
+namespace Ogre { class Vector3; }
+class DialogueSpeechBubble {
+public:
+    void setText(const std::string& text);
+    void setPosition(const Ogre::Vector3& position);
+};
+
 
 namespace coop {
 namespace engine {
@@ -1883,6 +1895,108 @@ bool applyWeather(const WeatherRead& in) {
     bool changed = false;
     if (!applyWeatherSeh(r, w, &in, &changed)) return false;
     return changed;
+}
+
+
+// ---- Protocol 56: dialogue capture + display ---------------------------------
+// Speech bubbles are local to whichever machine's AI ran the conversation, so
+// the peer never sees them. Capture is by hooking the two calls that populate a
+// bubble - setText and setPosition - and correlating on the bubble pointer,
+// because DialogueSpeechBubble::speechBubbleList (the static set of live
+// bubbles) is the one dialogue symbol KenshiLib does not export.
+namespace {
+
+typedef void (__fastcall* BubbleSetTextFn)(void* self, const std::string* text);
+typedef void (__fastcall* BubbleSetPosFn)(void* self, const Ogre::Vector3* pos);
+BubbleSetTextFn g_bubbleTextOrig = 0;
+BubbleSetPosFn  g_bubblePosOrig  = 0;
+
+struct PendingBubble { std::string text; float x, y, z; bool haveText, havePos, sent; };
+std::map<void*, PendingBubble> g_bubbles;   // main-thread only
+std::vector<DialogueLine>      g_dialogueOut;
+
+// A bubble is worth publishing once it has BOTH halves. The engine sets them in
+// either order, so the check runs from both hooks. Bounded: a runaway map here
+// would be a slow leak in a channel nobody is watching.
+void bubbleMaybeEmit(void* self) {
+    std::map<void*, PendingBubble>::iterator it = g_bubbles.find(self);
+    if (it == g_bubbles.end()) return;
+    PendingBubble& b = it->second;
+    if (!b.haveText || !b.havePos || b.sent) return;
+    b.sent = true;
+    if (g_dialogueOut.size() < 32) {
+        DialogueLine dl;
+        dl.x = b.x; dl.y = b.y; dl.z = b.z;
+        unsigned n = (unsigned)b.text.size();
+        if (n >= sizeof(dl.text)) n = sizeof(dl.text) - 1;
+        if (n) memcpy(dl.text, b.text.c_str(), n);
+        dl.text[n] = '\0';
+        g_dialogueOut.push_back(dl);
+    }
+    if (g_bubbles.size() > 64) g_bubbles.clear(); // bounded; a cleared map only
+                                                  // costs a repeat line at worst
+}
+
+void __fastcall bubbleSetText_hook(void* self, const std::string* text) {
+    if (self && text) {
+        PendingBubble& b = g_bubbles[self];
+        b.text = *text; b.haveText = true;
+        bubbleMaybeEmit(self);
+    }
+    g_bubbleTextOrig(self, text);
+}
+
+void __fastcall bubbleSetPos_hook(void* self, const Ogre::Vector3* pos) {
+    if (self && pos) {
+        PendingBubble& b = g_bubbles[self];
+        b.x = pos->x; b.y = pos->y; b.z = pos->z; b.havePos = true;
+        bubbleMaybeEmit(self);
+    }
+    g_bubblePosOrig(self, pos);
+}
+
+} // namespace
+
+bool installDialogueHooks() {
+    intptr_t tAddr = KenshiLib::GetRealAddress(&DialogueSpeechBubble::setText);
+    intptr_t pAddr = KenshiLib::GetRealAddress(
+        static_cast<void (DialogueSpeechBubble::*)(const Ogre::Vector3&)>(
+            &DialogueSpeechBubble::setPosition));
+    bool ok = true;
+    if (!tAddr || KenshiLib::AddHook(tAddr, (void*)&bubbleSetText_hook,
+                                     (void**)&g_bubbleTextOrig) != KenshiLib::SUCCESS)
+        ok = false;
+    if (!pAddr || KenshiLib::AddHook(pAddr, (void*)&bubbleSetPos_hook,
+                                     (void**)&g_bubblePosOrig) != KenshiLib::SUCCESS)
+        ok = false;
+    return ok;
+}
+
+unsigned int drainDialogue(DialogueLine* out, unsigned int maxOut) {
+    unsigned int n = 0;
+    for (size_t i = 0; i < g_dialogueOut.size() && n < maxOut; ++i, ++n)
+        out[n] = g_dialogueOut[i];
+    g_dialogueOut.clear();
+    return n;
+}
+
+void showDialogue(GameWorld* gw, float x, float y, float z, const char* text) {
+    if (!gw || !text || !text[0]) return;
+    // Attach to the character nearest the reported position so the text tracks
+    // the speaker as they walk, rather than hanging in the air. A line with no
+    // plausible speaker nearby is dropped: our copy of that NPC may simply not
+    // exist here, and a floating orphan caption reads as a bug.
+    Character* chars[64];
+    static EntityState st[64]; // main-thread only
+    unsigned int n = listNpcsWide(gw, 40.0f, chars, st, 64, 0, false);
+    Character* best = 0; float bestD2 = 1e18f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float dx = st[i].x - x, dy = st[i].y - y, dz = st[i].z - z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = chars[i]; }
+    }
+    if (!best || bestD2 > 40.0f * 40.0f) return;
+    floaterSpawn(best, text, 3); // neutral colour - speech, not damage
 }
 
 } // namespace engine
