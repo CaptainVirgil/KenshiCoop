@@ -100,6 +100,26 @@ Publishing unknown as absence makes the peer delete real bodies; the codebase ca
 truncated census "an ACTIVE falsehood". If a list can hit its cap, say so on the wire and
 have the receiver reconcile additively.
 
+### 6. Is anything ELSE writing this body?
+
+Added after a live session where two of OUR OWN mechanisms fought over the same
+NPC. `censusFreezeDivergedAi` calls `haltMovement()` every tick for a 20 s hold,
+`parkDivergedCopy` halts and teleports, and `applyRest`/`park` halt too — while
+`applyTargets` may be walk-ordering that same body, because `drivenChars_` is
+cleared and rebuilt every tick and the exemption never held. Measured: 97.6% of
+one NPC's active frames frozen, then 1008 consecutive clean frames the moment
+the hold expired. To the player that is "NPCs march in place".
+
+**Anything that halts, parks, teleports or suspends must ask `drivenChars_`
+first.** A body the owner is streaming has a position to be at; holding it still
+is the divergence the mechanism exists to prevent. Keep the latch armed and skip
+only the actuation, so the hold still expires on schedule.
+
+And when you command a speed, command one the body can reach. `currentSpeed` is
+what the engine integrates along the path — an unreachable figure makes it clamp
+and cover no ground, so a "catch-up" boost that is too large produces exactly the
+stutter it was meant to remove.
+
 ## Shapes that are already correct — copy these
 
 - **Event grants permission, stream actuates.** Knockout/death/revive is immune to the

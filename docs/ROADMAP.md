@@ -31,7 +31,7 @@ never play-tested with two humans.
 
 ### P0 — a two-client session: ACHIEVED 2026-08-09 (automated, one machine)
 
-Host + join, both fork-7, protocol 54, UDP loopback, zero clicks:
+Host + join, both fork-7, protocol 54 at the time, UDP loopback, zero clicks:
 `launch_coop.sh hostdirect` with `KENSHICOOP_AUTOCONNECT=1
 KENSHICOOP_SAVE=coop4`, then `KENSHICOOP_AUTOCONNECT=1 launch_coop.sh join`.
 The session did everything the doctrine promises: handshake + clock sync

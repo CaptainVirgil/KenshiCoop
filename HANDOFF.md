@@ -1,131 +1,99 @@
-# Handoff — 2026-08-09
+# Handoff — 2026-08-09 (early hours)
 
-**Disposable.** Session state, half-built things, and machine state outside the
-repo. Delete once the loose ends are closed. Durable things live in `CLAUDE.md`
-(doctrine, build) and `docs/ROADMAP.md` (plan — including the P0 result).
+**Disposable.** Session state, half-built things, machine state outside the
+repo, and traps that would cost the next session an hour. Delete once the loose
+ends close. Durable things live in `CLAUDE.md` (doctrine, build, the new
+channels) and `docs/ROADMAP.md` (plan).
 
 ---
 
 ## Read this first
 
-**The historic `0x40000015`-before-RE_Kenshi abort is solved.** It was never
-the game and never our plugin: Proton's lsteamclient bridge `_wassert`s
-(`steamclient_main.c:375, Expression: "!status"`) when it cannot dlopen the
-native `steamclient.so`. Every "dies before RE_Kenshi initialises" sighting —
-the desktop second instance, all of CT 203 — was this or its sibling, the bare
-prefix missing the VC++ 2010 runtime (`c0000135`). Both fixes are now encoded
-in `scripts/linux/launch_coop.sh`; the CT 203 recipe is below.
+**The fork was played by two clients for the first time, and it found more in
+one hour than every automated signal this project has.** All of it is fixed,
+gated and pushed. The details with measured before/after are in
+`docs/ROADMAP.md` — that part is project state, not session state.
 
-**The first two-client session ran tonight, and then it was PLAYED.** The four
-defects that found are in `docs/ROADMAP.md` with causes and measured
-before/after — project state, not session state.
-
-**Where the remaining desync stands.** Much reduced, not gone. What is left is
-believed to be *load*, not a replication bug: the join drives the whole town
-while the host drives nothing (cell authority cannot split a cell both players
-stand in), and a frame-starved client publishes a lumpy stream, so the host's
-copy of the join's character is the one that suffers. Roadmap Phase 3b holds
-the four items that attack it. Two are designed in full and deliberately NOT
-built — read the task notes before starting either, because the obvious version
-of each is wrong:
-- **the time budget** must not skip an entry wholesale (`drivenChars_` is
-  rebuilt every tick, so a skipped body reads as *not driven* and the authority
-  pass suppresses it — an invisible solid body);
-- **the authority split** must split publish AND census together (splitting
-  publish alone leaves the reconciler switched off on the half you gave away:
-  double simulation).
+**Nothing below has been seen in a running game.** The last build was gated
+(733 prototest / 17 tunneltest / 46 netlinktest / 33 contract) and installed,
+but the session ended before it was launched. Treat every item in "what to
+watch" as unverified.
 
 ---
 
 ## Repo state
 
-- Branch `linux-build`, pushed. Tonight's commits, in order: roadmap items
-  47/48 (doc + comment corrections), 45/46/49 (ENet pin + stamp,
-  full-include-path header scan, Windows DOA checks), the entity-batch receive
-  clamp + `netlinktest`, the session tooling, then the played-session fixes —
-  inventory cadence, drive catch-up, mid-band keepalive, interp keepalive
-  handling, and the throttle/keepalive-wire/harness-capture batch.
-- Gate green after every change: `731 prototest / 17 tunneltest /
-  46 netlinktest / 33 contract`, `RESULT: PASS`.
-- **The installed DLLs in both mods folders are one build BEHIND `HEAD`** — they
-  carry the keepalive but not the last two commits. Rebuild and reinstall before
-  the next session (`scripts/linux/build_plugin.sh Release`, copy
-  `build/Release/KenshiCoop.{dll,map}` into both `mods/KenshiCoop/`).
-- The `KenshiLib_deps` stash from the 0.4.0 bump is **dropped** (0.4.0 settled:
-  two green gates, fork-7 built+installed+now session-proven).
-- `build_plugin_direct.ps1` gained DepsPin/ENet stamps + map check but has
-  **never run on a real Windows machine** — that is the open half of parity.
+- Branch `linux-build`, pushed and current.
+- **Protocol is now 56** (was 54 all session, unchanged since fork-1). Two wire
+  changes: weather (55) and dialogue (56). Both ride the same unreleased cut, so
+  the cost is one hard update, not two.
+- Gate green after every change: `733 / 17 / 46 / 33`, `RESULT: PASS`.
+- Both installed DLLs match `build/Release` — verified by sha256.
+
+## What to watch on the next launch
+
+Relaunch is `scripts/linux/launch_coop.sh hostdirect` then
+`KENSHICOOP_AUTOCONNECT=1 scripts/linux/launch_coop.sh join`.
+
+| Watch | Signal | Meaning |
+|---|---|---|
+| Town NPCs marching in place | `[interp] .. haltDrv=N` | The freeze-vs-drive collision. Climbing = being prevented; 0 = gone |
+| Where the frame goes | `[budget] pub .. apply ..` | First per-frame cost numbers this project has had. `pub` = publish (authoring client), `apply` = drive |
+| Weather | `[weather] SEND` then `[weather] APPLY` | SEND with no APPLY = the sid did not resolve, line deliberately dropped |
+| Dialogue | `[dlg] SEND` / `[dlg] RECV` | RECV with no visible caption = nothing within 40 u of the reported spot |
+| Damage numbers | floaters on suppressed hits | Guard now draws what the skipped hit path would have |
+
+**The riskiest two, because they write engine state directly:**
+
+- **Weather** writes `WeatherInstance` fields at hardcoded offsets plus
+  `requestUpdateEffects`. Whether the *renderer* follows is unproven — the
+  engine's own `setupWeather` is private and was not called.
+- **Dialogue** hooks two `DialogueSpeechBubble` methods. Whether they catch
+  *every* speech path (shouts, "important" lines) is unproven.
+
+**Off by default, needs deliberate testing:** the hand-hash authority split.
+`KENSHICOOP_SPLIT_AUTHORITY=1` on **BOTH** clients — each computes the partition
+independently, so a one-sided enable has both claiming the same bodies. The A/B
+worth running is one session off, one on, comparing the `[budget]` numbers and
+whether the host starts driving (`drv>0` in its audit line).
 
 ## Machine state outside the repo
 
-### Desktop — the two-client session (was running when this was written)
-
-- Host: Steam install, launched via `launch_coop.sh hostdirect` (Proton
-  Experimental, prefix COPY at `~/.local/share/kenshicoop-host-prefix`, so the
-  real save tree was never written). Log: `<Kenshi>/KenshiCoop_host.log`.
-- Join: `~/Kenshi-Join`, prefix copy at `~/.local/share/kenshicoop-join-prefix`.
-  Log: `~/Kenshi-Join/KenshiCoop_join.log`.
-- Both configs sit on `"transport": "udp"` (`.bak-presolo` backups beside them).
+- Both installs sit on `"transport": "udp"` (`.bak-presolo` beside them).
   **Flip to `steam` before a session with the brother.**
-- Kill order if needed: kill the `RE_Kenshi/kenshi_x64.exe` wine processes BY
-  PID. `pkill -f` self-matches its own shell — it fired three times tonight;
-  use a `[k]` bracket pattern or exact PIDs, and remember wine cmdlines use
-  backslashes.
-- Seeded prefixes are disposable: the sentinel check reseeds them from the live
-  prefix whenever `mfc100u.dll` is missing.
+- Seeded Proton prefixes at `~/.local/share/kenshicoop-{host,join}-prefix`.
+  Disposable — the sentinel check reseeds from the live prefix when
+  `mfc100u.dll` is missing.
+- `ydotoold` still running as root from 2026-08-08 (`/tmp/.ydotool_socket`,
+  dies with a reboot). Untouched — the whole session was env-var driven.
+- **fredj CT 203** unchanged: launch chain proven (SLR4 pressure-vessel +
+  `proton runinprefix` + `~/.steam/sdk64` link), stops at Kenshi's own "Steam
+  dll error" because `SteamAPI_Init` needs a running Steam client. `onboot: 0`.
 
-### Traps found tonight (not in any doc before)
+## Traps found this session
 
-- **Relative exe path to `proton` = silent exit** one line in. Absolute only.
-- **Proton on the LIVE compatdata while Steam runs = same silent exit.** Use a
-  seeded copy.
-- **Runner must match the seeding prefix.** The old `tail -1` runner pick chose
-  UMU-Proton-9 against an 11.0 prefix — the "invalid version" corruption trap.
-- **Backgrounded gate + piped output can hang after PASS**: leftover toolchain
-  wine service processes (`services.exe`, `winedevice.exe`, `mspdbsrv.exe`)
-  inherit the pipe and never exit. Kill by exact PID; the result was fine.
-
-### fredj CT 203 (`kenshi-join`, 10.110.110.24) — one dialog short
-
-Working launch chain (script at `/root/launch_proton.sh` in the CT):
-`/opt/slr4/run -- /opt/proton-experimental/proton runinprefix ./kenshi_x64.exe`
-with `unset DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR=/run/user/0`,
-`~/.steam/sdk64/steamclient.so -> /opt/steamclient/linux64/steamclient.so`,
-prefix at `/opt/compatdata/233860` (copy of the desktop's), everything
-chowned `100000:100000` (unprivileged CT; rsync writes host-side uids).
-
-It ends at Kenshi's own **"Steam dll error"**: `SteamAPI_Init` needs a running
-Steam client and the CT has none. Decision (roadmap "Open decisions"): Steam
-login in the CT / DRM-free build / `pct destroy 203`. `onboot: 0` still —
-container does not survive a fredj reboot unless started.
-
-### ydotoold
-
-Still running as root from 2026-08-08 (`/tmp/.ydotool_socket`, dies with
-reboot). Untouched tonight — the whole session was env-var-driven, no clicks.
-
-## Known crash, reproducible
-
-Talking to a **seated** NPC on the join crashed it twice (second attempt was
-fatal), at 2x game speed. Unhandled C++ exception `0xE06D7363` thrown inside
-the engine's dialogue path; **no KenshiCoop frame on the stack**, so the plugin
-did not throw — but the line before it in the log is
-`[census] FREEZE hand=... name='Holy Sentinel'`, i.e. we had suspended that
-NPC's AI, and the engine's dialogue state machine appears not to tolerate a
-frozen partner. Roadmap item 55; wants an interaction hold (a body in dialogue
-with the local player is exempt from freeze/park/cull until it ends, same latch
-shape as `xferLatch_`). Dump kept at `~/Kenshi-Join/crashDump1.0.65_x64.dmp`.
+- **`pkill -f` self-matches its own shell.** Fired five times, twice after it
+  was written down, once killing two long gate builds. Bracket the pattern
+  (`pgrep -f "[k]enshi"`) or resolve PIDs first. Wine cmdlines use backslashes,
+  so forward-slash patterns silently miss.
+- **A relative exe path to `proton` exits silently** one line into wine init.
+  Absolute only.
+- **A second Proton session on the LIVE compatdata** exits the same silent way.
+  Seed a copy.
+- **The runner must match the seeding prefix** — an older Proton against an
+  11.0 prefix is the "invalid version" corruption trap.
+- **Backticks in a `git commit -m` heredoc get shell-substituted.** One commit
+  message lost a word that way and had to be amended.
 
 ## Loose ends
 
-- [ ] **Rebuild + reinstall the DLL** — both installs are one build behind HEAD
-- [ ] Play again and re-read both logs against the `kenshicoop-logs` skill;
-      relaunch is `launch_coop.sh hostdirect` then
-      `KENSHICOOP_AUTOCONNECT=1 launch_coop.sh join`
-- [ ] Decide fork-8 (everything since fork-7 is unreleased; wire unchanged,
-      protocol 54)
-- [ ] Decide CT 203 (Steam client / GOG / destroy)
-- [ ] Flip both `coop_config.json` back to `steam` before a brother session
+- [ ] Launch and work through "what to watch" above
+- [ ] Decide fork-8. Everything since fork-6 is unreleased and protocol is now
+      56, so it is a hard cut. **Item 28's census `truncated` flag should land
+      before the release** rather than waiting for a bump of its own — the bump
+      is already spent
+- [ ] Flip both configs back to `"transport": "steam"` for a brother session
+- [ ] Decide CT 203 (Steam client / GOG build / `pct destroy 203`)
 - [ ] Windows: run `build_plugin_direct.ps1` + `verify.ps1` once on a real
-      Windows machine (brother's?) to exercise the ported checks
+      Windows machine — the ported DOA checks have never executed there
 - [ ] Delete this file when the above are closed

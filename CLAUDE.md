@@ -292,6 +292,19 @@ violation.
   invisible because `[inv] SEND` only logs the content-change branch, and the
   serializer's own comment claimed the channel "stays quiet". Quiet is not silent: emit
   a rollup (`[inv] resent N in 60s`) so the real rate is readable in any log.
+- **A commanded speed the body cannot reach does not make it hurry - it makes it
+  stall.** `currentSpeed` is what the engine integrates a body along its path
+  with, so handing it an unreachable figure makes it clamp and cover no ground.
+  Measured: a 2.5x catch-up boost took a driven copy's zero-movement share of
+  active frames from 1% to 32%, and that stutter IS the teleporting the boost
+  was meant to fix. Caps are 1.5x for the order and 1.25x for the per-frame
+  mirror.
+- **Two writers on one body is still the bug, even when both writers are ours.**
+  The census freeze called `haltMovement()` every tick for 20 s while the drive
+  walk-ordered the same body, because `drivenChars_` is rebuilt every tick and
+  the exemption never held. One Holy Sentinel sat frozen for 97.6% of its active
+  frames, then tracked 1008 consecutive frames cleanly once the hold expired.
+  Anything that halts, parks or teleports must ask `drivenChars_` first.
 - **A speed SETTING is not a measured velocity.** `EntityState::cSpeed` is the owner's
   `CharMovement::currentSpeed`; the engine translates a body faster than that (slope and
   other modifiers land outside it) — measured 64.7 u/s actual against 43.4 reported. A
@@ -353,6 +366,38 @@ Two players standing in one cell means the host wins it (`[cell] MAP cells=1 slo
 24,22=0`), so the host authors every NPC and drives none, while the join drives every
 NPC and authors none. There is no spatial split to make when both players occupy the
 same space.
+
+## Channels added 2026-08-09 (protocol 55 + 56)
+
+Both were "never built" rather than broken, and both were called infeasible
+before being checked properly - the same mistake twice in one session.
+
+- **Weather (55).** Kenshi rolls weather per BIOME REGION from a weighted table
+  with no exposed seed, so two clients in one biome diverge by construction.
+  Host publishes the active region at ~1 Hz, change-gated; identity travels as
+  the weather's **GameData stringID** (pointers differ between processes), and
+  an id the receiver cannot resolve is DROPPED rather than guessed.
+- **Dialogue (56).** A speech bubble spawns only on the machine whose AI ran the
+  conversation. Capture hooks `DialogueSpeechBubble::setText`/`setPosition` and
+  correlates on the bubble pointer - a workaround for `speechBubbleList` being
+  the one dialogue symbol KenshiLib does NOT export. Sends a world position, not
+  a speaker hand; the receiver attaches the text to the nearest character and
+  drops the line if nothing is within 40 u. Symmetric, fire-and-forget.
+
+**The lesson both taught: `_NV_` wrappers exist only to bypass a VTABLE.**
+`KenshiLib::GetRealAddress` is a template over any non-virtual function pointer,
+which is how this plugin already resolves `Character::setDestination` and
+`GameWorld::getCharactersWithinSphere`. "No `_NV_` in the header" proves nothing
+about reachability - check `KenshiLib.lib`'s exported symbols instead
+(`strings -a KenshiLib.lib | grep <Class>`). Two subsystems were wrongly written
+off on that reasoning before the check was run.
+
+**Trap - `kenshi/Weather.h` cannot be included** in the engine prelude: the dump
+defines `class WeatherRegion` in BOTH it and `PhysicsCollection.h`, and
+`Weather.h` uses `WeatherRegion`/`Weather`/`Season` before declaring them. The
+facade reads through local offset mirrors instead. Minimal re-declarations of
+engine classes must sit at **global scope** - `GetRealAddress` resolves through
+the mangled name, so a namespace changes the symbol.
 
 ## Plan
 
