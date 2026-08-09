@@ -146,6 +146,32 @@ vclink /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG $LTCG \
   kenshilib.lib OgreMain_x64.lib MyGUIEngine_x64.lib ws2_32.lib winmm.lib \
   user32.lib kernel32.lib advapi32.lib shell32.lib ole32.lib
 
+# Loadability check: is this DLL one the game will actually accept?
+#
+# The build succeeding proves nothing about that. A plugin compiled without /GL
+# links perfectly and then dies at startup on a KenshiLib assertion, because
+# `&GameWorld::_NV_mainLoop_GPUSensitiveStuff` resolved to a LOCAL definition in
+# our own module instead of to KenshiLib's stub. Five releases shipped that way.
+#
+# The map answers it without launching anything: the symbol must appear as
+# __imp_ (an import from KenshiLib.dll) and must NOT appear as a definition.
+if [ -f "$OUT/KenshiCoop.map" ]; then
+    HOOKSYM='_NV_mainLoop_GPUSensitiveStuff'
+    if ! grep -q "__imp_.*$HOOKSYM" "$OUT/KenshiCoop.map"; then
+        echo "FATAL: $HOOKSYM is not imported from KenshiLib in this build." >&2
+        echo "       The plugin would assert in KenshiLib::GetRealAddress at startup." >&2
+        echo "       Almost always: whole program optimization (/GL + /LTCG) is missing." >&2
+        rm -f "$OUT/KenshiCoop.dll"
+        exit 1
+    fi
+    if grep -qE "^ [0-9]{4}:[0-9A-Fa-f]{8} +\?$HOOKSYM@" "$OUT/KenshiCoop.map"; then
+        echo "FATAL: $HOOKSYM has a LOCAL definition in this build - see above." >&2
+        rm -f "$OUT/KenshiCoop.dll"
+        exit 1
+    fi
+    echo "loadable: $HOOKSYM resolves through KenshiLib's import"
+fi
+
 # Only stamp AFTER a successful link, so an interrupted or failed build does not
 # convince the next run that its objects match these flags.
 printf '%s' "$STAMP_NOW" > "$STAMP"

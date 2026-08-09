@@ -76,6 +76,8 @@ re-run.
 | `error LNK2005: ... already defined` on ENet symbols | stale objects from an older naming scheme in `build/*/obj` | `rm -rf build/`; the link list is explicit, not a glob, so this should not recur |
 | Windows and Linux Release DLLs differ in content | the Linux script is not honouring `<ExcludedFromBuild>` | fix the vcxproj parsing, not the symptom |
 
+| Assertion box at launch: `Incorrect address in KenshiLib::GetRealAddress()`, `Function address: KenshiCoop.dll+0x...` | The DLL was built without `/GL` + `/LTCG`, so KenshiLib's member-function stubs became local functions and `&GameWorld::_NV_mainLoop_GPUSensitiveStuff` points into our own module. | The vcxproj asks for `<WholeProgramOptimization>` in its `Label="Configuration"` `<PropertyGroup>` — outside the `<ItemDefinitionGroup>` every other flag lives in. Both scripts read it from the project; if you are running a modified script, make sure it still does. Verify without launching: `grep _NV_mainLoop_GPUSensitiveStuff build/Release/KenshiCoop.map` must show `__imp_...`, an import, not a local definition. |
+
 ## Windows without a VS2010 install
 
 Use `scripts\build_plugin_direct.ps1 -Config Release -Toolchain <root>`, not

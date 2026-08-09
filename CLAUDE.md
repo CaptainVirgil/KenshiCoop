@@ -119,6 +119,26 @@ Saves are never touched: they live in `AppData\Local\kenshi\save` (inside the Pr
 on Linux), a different tree from `mods/`. Both updaters assert the path they resolved really
 is `<Kenshi>/mods/KenshiCoop` before deleting anything.
 
+**Trap — the vcxproj hides one setting outside `<ItemDefinitionGroup>`.**
+`<WholeProgramOptimization>` lives in the `Label="Configuration"`
+`<PropertyGroup>`, not with the other compiler and linker settings, and it is
+**load-bearing**: without `/GL` + `/LTCG`, KenshiLib's member-function stubs are
+emitted as ordinary local functions, so `&GameWorld::_NV_mainLoop_GPUSensitiveStuff`
+resolves inside `KenshiCoop.dll`, `KenshiLib::GetRealAddress` asserts, and the game
+shows an assertion box and dies before the plugin finishes loading. Both build
+scripts read it out of the project now — do not hardcode it, and do not drop it.
+
+Check a suspect DLL without launching anything:
+
+```
+grep _NV_mainLoop_GPUSensitiveStuff build/Release/KenshiCoop.map
+```
+
+`__imp_...` (an import from KenshiLib.dll) is correct. A bare
+`?_NV_mainLoop_GPUSensitiveStuff@GameWorld@@QEAAXM@Z` with an address is a local
+definition, and that build will assert on startup. This is also why the kit ships
+the `.map`.
+
 **Deps are pinned to `e75769b`.** KenshiLib **v0.4.0 breaks the plugin**: it moved
 `kenshi/CombatClass.h` under `kenshi/combat/` and added a second, byte-identical
 `enum BuildingDesignation`. Do not bump the pin casually.
