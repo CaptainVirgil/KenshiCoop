@@ -150,10 +150,20 @@ Signals that do not exist upstream, and what each means when you see it.
 | `[furn] SHACKLE RELEASE occ=..` | The stream stopped asserting `BODY_CHAINED`, so the local copy was unchained. This direction did not exist before — a caged prisoner's shackle emits no event either way, so a stale batch could re-lock one permanently. |
 | `[save] REJECT begin: peer sent an unusable save name` | A peer's save name failed validation. It selects a directory that gets deleted, so this is refused rather than sanitised. |
 | Panel: `Version mismatch: your friend is on protocol vN…` | The rejection is now surfaced instead of retried silently forever. |
+| `[caps] N of 17 enabled features are missing their engine capability` | Printed once at startup. **`0` is the healthy line — read it first.** Any other number means a `[caps] WARNING` line above names a feature that will no-op in complete silence, which is otherwise undiagnosable: nothing errors, the feature simply never happens. |
+| `[caps] WARNING <x>Sync is ON but the '<cap>' engine capability did not resolve` | That specific feature is dead in this build. It reports rather than disabling the feature, because the capability table is fail-closed and could be wrong in the safe direction. |
+| `unknown packet type=N len=M total=K` | The two clients are not running the same build, or the stream is being corrupted. There is **no other symptom** for either — this line is the whole diagnostic. Rate-limited: once per distinct type, plus a 10 s rollup. |
+| `[ko] RELEASE hand=..` | A KO latch was cleared because the owner's stream kept reporting the body upright and no `EVT_REVIVE` ever arrived. Occasional is fine. A stream of them means revives are being lost, which is worth chasing. |
+| `[trust] .. koRel=N koExp=M` | `koRel` is the cumulative count of the above. `koExp` counts latched `targets_` entries dropped after ten minutes with no stream at all — non-zero means bodies are being abandoned mid-latch, which is normal after travel and suspicious while stationary. |
+| `[build] MINT-RETRY OK key=.. try=N` | A building the peer placed could not be minted here on the first attempt (usually an unloaded zone) and succeeded on retry N. Purely informational. |
+| `[build] MINT-RETRY GIVEUP key=.. sid='..'` | **Player-visible failure.** That building will never appear on this client. The sid is on the line; it usually means the template does not exist in this install. |
+| `[authority] suppress MIGRATE REFUSED hand=.. (sid witness missing/disagrees)` | A hidden body's hand changed but its template sid did not match what was recorded when it was hidden, so the hide was dropped and the body restored instead of being moved onto what may be a different NPC. Rare; a run of them means bodies are being recycled underneath the suppression set. |
+| `[role] panel role is X; log renamed to ..` | The panel role differed from the configured one and the log file was renamed to match. If it says `COULD NOT be renamed`, the file name is wrong but logging continues at the old path. |
 
 Healthy-session expectations after the fork's fixes: `mid=` should climb well past 48,
-`staleMs` should stay small, `parks` should not reach five figures, and the `[door]`
-channel should not alternate RECV/SEND on one hand.
+`staleMs` should stay small, `parks` should not reach five figures, the `[door]`
+channel should not alternate RECV/SEND on one hand, `[caps]` should read `0 of 17`, and
+there should be no `unknown packet type` lines at all.
 
 ## Cross-referencing the two logs
 

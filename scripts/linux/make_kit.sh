@@ -57,6 +57,13 @@ cat > "$OUT/KenshiCoop/coop_config.default.json" <<'JSON'
   //
   // "doorEchoHoldMs": 5000  how long to stay quiet about a door after your friend
   //                      reports its state.
+  //
+  // "koReleaseDebounceMs": 3000  how long the incoming stream must keep
+  //                      showing a knocked-out body UPRIGHT before this client
+  //                      releases the knockout itself. It exists because the
+  //                      "they got up" event can go missing. Longer than the
+  //                      heals above on purpose - this overrides a reliable
+  //                      event rather than repairing a lost one. Do NOT set 0.
 }
 JSON
 

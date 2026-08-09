@@ -53,12 +53,23 @@ embedded PDB path. Both scripts link objects in vcxproj source order — `/OPT:I
 depends on link order, so an alphabetical object list silently changes `.text`. See the
 `kenshicoop-build` skill for the comparison procedure and the Windows VM harness.
 
-The gate builds both configurations and runs `prototest` (612 checks: exact packed
-sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp
-buffer, the save-transfer receiver) and `tunneltest` (17 checks: ENet over the Steam
-socket hooks under loss and the 1200 B datagram ceiling), both under Wine on Linux.
+The gate builds both configurations and runs `prototest` (exact packed sizes and field
+offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp buffer, the
+save-transfer receiver, the drive's band/convergence arithmetic, the change-gate table,
+wire string termination, the targets_ age-out predicate) and `tunneltest` (ENet over the
+Steam socket hooks under loss and the 1200 B datagram ceiling), both under Wine on Linux.
 It launches no game. `Contract.Tests.ps1` runs too if a PowerShell host is installed;
-on Linux that means `pwsh`, and it is skipped rather than failed when absent.
+on Linux that means `pwsh`, and it is skipped rather than failed when absent — it also
+carries the source-drift checks a C++ test cannot do, such as verifying that every
+`char[]` in `Wire.h` is named by a `wireSanitize` overload.
+
+Check counts are deliberately NOT written down here. They move every time a test is
+added, and a stale number in a context file is worse than no number — run the gate and
+read the total it prints.
+
+Both gates delete their test binaries before rebuilding. A build that fails otherwise
+leaves the PREVIOUS binary on disk, the run step executes it, and the gate reports a
+green suite for code that does not compile. That happened on 2026-08-08.
 
 `Harness` (the default) includes the scenario runner. `Release` is the player build and
 excludes `test/Scenario*.cpp` and `game/EngineProbe.cpp`.
@@ -176,6 +187,25 @@ violation.
   channel entirely on the join whenever presence authority is off.
 - **Frame counts are not time.** `SUPPRESS_AFTER_FRAMES` and friends make behaviour depend
   on frame rate; `docs/REPLICATION_PITFALLS.md` §1 says stop writing them.
+- **A latch is a hold against a dropped batch, not memory that outlives the stream.** It
+  exists so a body stays down when one lossy sample reads upright. Give every latch a
+  second release path from the continuous stream and a horizon after which it expires —
+  `koLatched` had neither, so a missing `EVT_REVIVE` pinned a body down for the session
+  and its map entry never died.
+- **The owner's word outranks a local divergence.** When the stream says a body is queued
+  and this client's copy has independently engaged, the stream wins. Ordering a ternary
+  the other way round is all it took to make `COMBAT_WAIT_DIST` unreachable.
+- **A refusal is not a verdict.** A mint/place/apply that the engine declines usually means
+  "not here, not yet" (an unloaded zone), not "never". Retain the intent and retry on a
+  bounded schedule, and log the give-up — a silent permanent failure is unfixable from a
+  bug report.
+- **Validate untrusted floats before they reach the engine.** Use `!(v >= 0.0f)`, not
+  `v < 0.0f`: NaN fails every comparison, so ordinary clamps decline to fire and pass it
+  straight through. `SpeedPacket.speed` reaches the sim clock rate.
+- **Do the safety thing where everything funnels, not at each call site.** Wire string
+  termination was a rule to remember 23 times and was forgotten 5 times; it now lives in
+  `readPacket`. Where a hand-written list remains (the `wireSanitize` overloads), a
+  contract test reads the source and fails when the list falls behind.
 
 ## Build loop
 
@@ -199,12 +229,6 @@ in `SyncTuning.h` — was arithmetic rather than measurement.
 versus inferred — read it before any protocol change. A 12-dimension audit (2026-08-08)
 produced a ranked backlog; the significant unfixed items are:
 
-- **Truncated NPC census is broadcast as complete**, so the peer culls real bodies.
-- **Unbounded growth** over a long session: KO/death-latched `targets_` entries are
-  immortal, `invRecv_` retains ~10 KB per container ever seen, the save/load queues are
-  never drained on the opposite role, and `resetSession` misses six members.
-- **Peer trust**: packets are dispatched before the handshake completes, save receive does
-  no size accounting, and fixed-size wire `char[]` fields are read as C strings.
 - **The 20 Hz near band has no change gate** — a stationary NPC costs exactly what a
   sprinting one does. The largest remaining bandwidth win, and deliberately not taken
   blind: it changes what the peer receives for a body that is not moving, which feeds
@@ -213,15 +237,47 @@ produced a ranked backlog; the significant unfixed items are:
 - **`applyTargets` (~1700 lines) is still one function.** The extraction is safe in
   principle but needs a test that can see the sync layer, which does not exist yet.
 - **A stub-engine harness** would make most of `sync/` testable headlessly; the audit
-  rated it the largest available coverage win.
+  rated it the largest available coverage win. `NetLink.cpp` is the cheap first step — it
+  includes only `NetLink.h`, `SteamP2P.h`, `CoopLog.h` and the CRT, and `tunneltest`
+  already links ENet the same way, so its receive-side bounds checks could be tested for
+  real rather than modelled.
+- **The capability report does not gate.** `configureReplicator` warns when an enabled
+  feature's `CAP_*` did not resolve but does not disable it, because `capEvaluate` is
+  fail-closed and could turn off something that works. Needs one real sighting of a
+  `[caps] WARNING` on a healthy install before it becomes a gate.
+- **The Steam friend-picker is unreachable dead code**, but `SteamInvite.cpp` also holds
+  `onP2PSessionRequest -> steamp2p::accept()` and the only `SteamAPI_RunCallbacks` pump in
+  the process — both load-bearing for every Steam connection. Extract those into
+  `SteamP2P` and verify on two machines before deleting anything.
+- **`CATCHUP_K` has no stability headroom.** `K*dt = 2.0 x 0.5 s = exactly 1.0` on the mid
+  band; a further band widening that slows the re-issue cadence makes the catch-up gain
+  unstable and the copy walks through the source and back.
+- **`gateShouldSend`'s effective resend interval is `max(minSendMs, resendMs)`** — the
+  throttle is evaluated before the resend, so a channel configured the other way round
+  silently loses its safety-resend cadence. Latent: only money passes a non-zero
+  `minSendMs` today.
 
 ## Diagnosing a live session
 
 Logs are `<Kenshi>/KenshiCoop_*.log`, one per client, flushed per line. The `kenshicoop-logs`
 skill has the field glossary and the parse snippets; start there rather than reading raw.
 
-Note: the log filename reflects the **panel Role**, not the negotiated one — a file named
-`_host.log` may be the join's. Confirm with `[net] connected to host; sent HELLO`.
+The filename follows the role actually chosen in the F2 panel: pressing Connect renames
+the log if the panel role differs from the configured one, and logs the rename. (It used
+to reflect only the CONFIGURED role, so a `_host.log` could be the join's. If you are
+reading an older log, confirm the role with `[net] connected to host; sent HELLO`.)
+
+Lines worth knowing about, all added after the first play session:
+
+| Line | Means |
+|---|---|
+| `[caps] WARNING <x>Sync is ON but ...` | this build could not resolve that engine capability; the feature will no-op silently. `[caps] 0 of 17` is the healthy case |
+| `[ko] RELEASE hand=...` | a KO latch was cleared by the owner's stream reporting the body upright, because no `EVT_REVIVE` arrived. Climbing `koRel` in `[trust]` means revives are going missing |
+| `[trust] ... koRel=N koExp=N` | `koExp` counts latched entries dropped because the owner stopped streaming them for ten minutes |
+| `[build] MINT-RETRY OK/GIVEUP` | a building the peer placed could not be minted here at first. GIVEUP means it will never appear — the sid and key are on the line |
+| `[authority] suppress MIGRATE REFUSED` | a hidden body's hand changed but its template sid did not match, so the hide was dropped rather than moved onto a possibly-different body |
+| `unknown packet type=N` | version skew or a corrupted stream. There is no other symptom for either |
+| `[role] panel role is X; log renamed to ...` | see above |
 
 ## Secrets, machine context
 

@@ -71,8 +71,11 @@ are also in `<Kenshi>\mods\KenshiCoop\kit.json` if you need them later.
 ## 4. Play
 
 1. Launch Kenshi. In the **Mods** menu, tick **KenshiCoop**. (Do this once; it sticks.)
-2. Press **F2**. The Co-op panel opens — at the main menu as well as in-game.
-3. Both of you click **Copy my Steam ID** and send it to the other over Discord.
+2. Press **F2**. The Co-op panel opens — at the main menu as well as in-game. F2 only
+   works while Kenshi is the focused window, so it will not fire while you are alt-tabbed
+   into Discord or a browser.
+3. Both of you click **Copy my Steam ID** and send it to the other over Discord. The row
+   confirms `copied to clipboard` for a few seconds, so you can tell it worked.
 4. Copy the ID your friend sent you, then click **Paste friend's Steam ID**. The panel
    shows the last four digits of what it captured — check those against what they sent.
    This is per-session and is not saved, so re-paste after every Kenshi restart.
@@ -105,15 +108,27 @@ into a second squad so the joining player has a crew.
 | "The co-op plugin has not started", or F2 does nothing | RE_Kenshi did not load the plugin. | Check KenshiCoop is ticked in the Mods menu. Search `<Kenshi>\RE_Kenshi_log.txt` for `KenshiCoop`. Reinstalling RE_Kenshi usually fixes it. |
 | `protocol mismatch` in the log | You are on different builds. | Both re-run the updater, then compare the build label and protocol number before trying again. |
 | Won't connect over Steam | One Steam is offline, or an ID is wrong. | Both Steam clients must be running and **not** in offline mode. Each of you must have pasted the *other* person's ID. Look for `[steam] session ... active=1` in the log. |
-| `Your Steam ID: (Steam not running)` | The plugin cannot see Steam. | Start Steam, then restart Kenshi. |
+| `Your Steam ID: (no Steam - start Steam, then RESTART Kenshi)` | The plugin cannot see Steam. | Steam has to be running **before** Kenshi launches — the game reads it once at startup, so starting Steam now and pressing Connect again will not help. Close Kenshi, start Steam, launch Kenshi. |
+| `CLIPBOARD REFUSED` after pressing Copy | Another app is holding the clipboard. | Close whatever is clipboard-managing (some password managers and clipboard-history tools do this) and press Copy again. |
+| A building your friend placed never appears | Your copy of that zone was not loaded when the placement arrived. | It retries by itself for ten minutes. If it still never shows, the log has `[build] MINT-RETRY GIVEUP` with the item's name. |
 | "clipboard was not a Steam ID" | You copied something else. | Have your friend click **Copy my Steam ID** again and resend. |
 | Updater: "Kenshi is running" | The game still has the DLL open. | Close Kenshi completely, including any hung `kenshi_x64.exe`, then re-run. |
 
 **The log** is `<Kenshi>\KenshiCoop_host.log` or `KenshiCoop_join.log`, written line by
-line as you play. One warning: the filename comes from whatever **Role** the panel was
-set to, not the role actually negotiated. A file called `_host.log` can easily be the
-joining player's. Confirm by looking for `[net] connected to host; sent HELLO` — that
-line only appears in the join's log.
+line as you play, and the name follows the **Role** you actually pressed Connect with —
+if you switch role in the panel, the log is renamed to match. The previous run is kept
+alongside as `.prev`, so relaunching after a crash does not destroy the log of the crash.
+
+If you are sending a log in after something went wrong, these lines are the ones worth
+pointing at:
+
+- `[caps] WARNING ...` — this build could not reach part of the game engine, and whichever
+  feature it names will silently do nothing. `[caps] 0 of 17` is the healthy line.
+- `unknown packet type=...` — the two of you are not running the same build, or the
+  connection is corrupting data.
+- `[build] MINT-RETRY GIVEUP` — a building that will never appear on this machine.
+- `[ko] RELEASE` — a knocked-out body was un-pinned because the other player's game never
+  told this one it had got up. A few is normal; a stream of them is not.
 
 ## What to expect
 
