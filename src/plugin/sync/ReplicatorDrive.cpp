@@ -1795,18 +1795,29 @@ void Replicator::applyTargets(GameWorld* gw) {
             // no-mirror behavior (the engine picks their clip from the locomotion
             // it actually performs); mirroring an NPC here would fight that.
             //
-            // Mirror `spd`, NOT out.cSpeed. This write lands on currentSpeed and
-            // desiredSpeed every frame, so passing the raw streamed setting here
-            // CLOBBERED the catch-up speed computed above the same frame it was
-            // set - the boost existed in the walkTo call and was erased before
-            // the copy ever moved on it. That is why catchupK looked inert for
-            // squad bodies while working for NPCs, and why the only visible
-            // convergence mechanism was the teleport. `spd` is capped at 2.5x
-            // and the near band's K*dt is 0.1 (mid band's 1.0 is the one with no
-            // stability headroom), so the gain is inside its stable range here.
-            if (isSquad)
-                engine::applyMotion(c, true, spd,
+            // Mirror a boosted speed, NOT the raw out.cSpeed. This write lands
+            // on currentSpeed and desiredSpeed every frame, so passing the raw
+            // streamed setting here CLOBBERED the catch-up speed computed above
+            // the same frame it was set - the boost existed in the walkTo call
+            // and was erased before the copy ever moved on it. That is why
+            // catchupK looked inert for squad bodies while working for NPCs.
+            //
+            // But mirror it CAPPED WELL BELOW walkTo's 2.5x. currentSpeed is
+            // what the engine integrates the body along its path with, and
+            // handing it a figure the character cannot actually achieve makes
+            // it stall against its own clamp: measured live, mirroring the full
+            // boost (~184 u/s on a 73 u/s character) took the copy's
+            // zero-movement share of active frames from 1% to 32%, and that
+            // stutter IS the teleporting it was supposed to fix - the body
+            // stalls, falls behind, and the snap gate collects it. 1.25x is
+            // enough to close a gap over a few seconds while staying inside
+            // what the engine will deliver.
+            if (isSquad) {
+                float mirrorCap = srcSpeed * 1.25f;
+                float mirrorSpd = (spd > mirrorCap) ? mirrorCap : spd;
+                engine::applyMotion(c, true, mirrorSpd,
                                     out.cMotionX, out.cMotionY, out.cMotionZ);
+            }
         } else {
             // At rest, task-authoritative: reproduce the host's sit/idle pose
             // at the same fixture, else quiet + park. Bar patrons sit
