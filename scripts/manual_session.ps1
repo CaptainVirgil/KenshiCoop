@@ -10,10 +10,11 @@
     KENSHICOOP_SAVE         - save both clients auto-load
     KENSHICOOP_TEST_SECONDS - forced 0 here (NO self-exit; you close the windows)
     KENSHICOOP_SCENARIO     - forced empty (normal co-op tick, no scenario)
-    KENSHICOOP_AUTOSPAWN    - host only: spawn N distinct squad members once
-  Those spawned units get fresh hands (not in the join's own squad), so the join
-  renders them as proxies - exercising the cross-client squad-render path on a
-  single shared save, no second save needed.
+  (There used to be a KENSHICOOP_AUTOSPAWN here that spawned N units on the host so
+  the join would render them as proxies. Upstream 476c078 deleted the code and the
+  engine primitive it called; this script kept advertising it for a month, printing
+  a count and telling the operator to watch for bodies that never appeared. If that
+  render path needs exercising, use -Inhabit or two distinct saves.)
 
   Host runs from the Steam install; join from the Kenshi-Join install. With
   -Sync the host save is mirrored into the join install first.
@@ -27,7 +28,7 @@
   powershell -ExecutionPolicy Bypass -File scripts\manual_session.ps1 -TitleScreen
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\manual_session.ps1 -Save "c" -AutoSpawn 5 -SkipBuild -Sync
+  powershell -ExecutionPolicy Bypass -File scripts\manual_session.ps1 -Save "c" -SkipBuild -Sync
 
 .EXAMPLE
   # Long-run visual pop/snap inspection: 'zoom' save (outside town, camera far
@@ -48,7 +49,6 @@ param(
     # DIFFERENT save (with its own characters) so the two squads have distinct
     # hands and fully render each other - including the player-controlled leaders.
     [string]$JoinSave = "",
-    [int]$AutoSpawn = 3,
     # Host-only recruit helper (KENSHICOOP_AUTORECRUIT=N seconds): N s after
     # gameplay settles, the host ONCE programmatically recruits the nearest
     # non-player world NPC via the same PlayerInterface::recruit the dialog
@@ -58,11 +58,18 @@ param(
     # Inhabit mode: both clients load the SAME save (so NPC sync works) but each
     # OWNS a different subset of the shared squad. Default split: host owns the
     # leader (index 0), join inhabits everyone else (~0). Overridable via
-    # -HostOwn/-JoinOwn (KENSHICOOP_OWN_INDICES: "0", "~0", "1,2", ""=own all).
-    # Forces shared save + no autospawn.
+    # -HostOwn/-JoinOwn -> KENSHICOOP_OWN_SQUAD, a CSV of squad-member ranks
+    # ("0", "1", "1,2"; "" = the role default, host {0} / join {1}).
+    #
+    # The variable used to be named KENSHICOOP_OWN_INDICES here, which NOTHING in
+    # the plugin has ever read - so the partition was silently discarded on every
+    # run, and -Inhabit still reported OK because its log check greps a line that
+    # is printed unconditionally. The old "~0" default ("all except 0") was never
+    # supported either: OwnRanks.h is a digit scanner, so "~0" parses to {0} - the
+    # exact opposite. Use explicit ranks.
     [switch]$Inhabit,
     [string]$HostOwn = "0",
-    [string]$JoinOwn = "~0",
+    [string]$JoinOwn = "1",
     # Push-save-on-connect test: launch the JOIN with NO save so it sits at the
     # main menu (Continue / New Game / ...). The host loads $Save and, on the
     # join's connect, bakes + announces its live world (LOAD_GO); the join loads
@@ -115,14 +122,21 @@ param(
     # in the host census. Makes pops and ghosts self-explaining on screen
     # (pair with -Save zoom for long-run wide-camera inspection).
     [switch]$DebugMarkers,
-    # Presence authority (KENSHICOOP_CELL_AUTH=1 on both clients, protocol 49):
-    # each side claims the 4608 u zone cells its own squad tabs are standing in
-    # and AUTHORS the NPC census there, instead of the host authoring everywhere.
-    # Split the pair across two towns and the join keeps its own population
-    # instead of having it culled and re-minted from the host's stream. OFF by
-    # default (fail-open to host authority); this is the switch that arms it.
+    # Presence authority (KENSHICOOP_CELL_AUTH, protocol 49): each side claims the
+    # 4608 u zone cells its own squad tabs are standing in and AUTHORS the NPC
+    # census there, instead of the host authoring everywhere. Split the pair
+    # across two towns and the join keeps its own population instead of having it
+    # culled and re-minted from the host's stream.
+    #
+    # SHIPS ON as of v0.47 (Config.cpp: envOr("KENSHICOOP_CELL_AUTH","1") != "0"),
+    # so this switch TURNS IT OFF. It used to be -CellAuth, arming a feature that
+    # defaulted off; the default flipped and the switch did not, so for several
+    # versions BOTH positions evaluated ON and no manual session could A/B it -
+    # while the banner claimed authority was off. Any repro filed as a
+    # "cellAuth-off baseline" before 2026-08-08 was recorded with it armed.
+    #
     # Pair with -DebugMarkers to see the handover on screen.
-    [switch]$CellAuth,
+    [switch]$NoCellAuth,
     # Record where you walk (KENSHICOOP_TRACK_MOVE=1): one [track] line per squad
     # tab per second, with position, cell and whether it is moving. Log-only.
     # Use it to capture a route for a scenario to follow: the cell claims a session
@@ -190,7 +204,6 @@ if ($JoinSave -eq "") { $JoinSave = $Save }
 
 if ($Inhabit -or $JoinFromMenu) {
     $JoinSave  = $Save   # shared save: NPC resolve-by-hand needs identical hands
-    $AutoSpawn = 0       # inhabit drives EXISTING squad members, not spawned ones
 }
 
 # Title-screen mode boots both clients to the main menu (no auto-load), so no
@@ -223,7 +236,6 @@ if ($TitleScreen) {
     Write-Host "  host save:  $Save"
     Write-Host "  join save:  $JoinSave"
 }
-Write-Host "  autospawn:  $AutoSpawn (host only)"
 Write-Host "  self-exit:  OFF (close the windows yourself when done)"
 if ($TitleScreen) {
     Write-Host "  NOTE: pick the SAME save on both clients (NPC sync is resolve-by-hand)."
@@ -305,7 +317,7 @@ if ($Sync -and $TitleScreen) {
 }
 
 function Set-CoopEnv {
-    param([string]$Mode, [string]$SaveName, [int]$Spawn, [string]$Own = "")
+    param([string]$Mode, [string]$SaveName, [string]$Own = "")
     $env:KENSHICOOP_MODE         = $Mode
     # Manual sessions run BOTH clients on this one machine (same Steam account), so
     # they must use direct-UDP loopback: a same-machine Steam P2P session can't
@@ -327,8 +339,7 @@ function Set-CoopEnv {
     $env:KENSHICOOP_SAVE         = $SaveName
     $env:KENSHICOOP_TEST_SECONDS = "0"     # manual: never self-exit
     $env:KENSHICOOP_SCENARIO     = ""      # manual: no scenario
-    $env:KENSHICOOP_AUTOSPAWN    = "$Spawn"
-    $env:KENSHICOOP_OWN_INDICES  = $Own    # inhabit partition ("" = own all)
+    $env:KENSHICOOP_OWN_SQUAD    = $Own    # inhabit partition ("" = role default)
     # Host-only one-shot world spawn for baking a deterministic test scene.
     $env:KENSHICOOP_SETUP        = if ($Mode -eq "join") { "" } else { $SetupScene }
     # Host-only auto-recruit (N s after gameplay): recruit nearest world NPC.
@@ -346,7 +357,9 @@ function Set-CoopEnv {
     # Presence authority MUST match on both clients: each side publishes claims and
     # reads the peer's, so one side alone would author its cells while the other
     # went on enforcing host authority over the same bodies.
-    $env:KENSHICOOP_CELL_AUTH    = if ($CellAuth) { "1" } else { "" }
+    # "" leaves the shipped default (ON) in force; only "0" disables. Setting "1"
+    # for the armed case would be a no-op that hides a future default flip.
+    $env:KENSHICOOP_CELL_AUTH    = if ($NoCellAuth) { "0" } else { "" }
     # Track on BOTH: each client can only see its own tabs' true positions, and
     # the interesting comparison is what the two logs say about the same walk.
     $env:KENSHICOOP_TRACK_MOVE   = if ($TrackMove) { "1" } else { "" }
@@ -380,8 +393,8 @@ $hostOwnEnv = if ($Inhabit -or $JoinFromMenu) { $HostOwn } else { "" }
 $joinOwnEnv = if ($Inhabit -or $JoinFromMenu) { $JoinOwn } else { "" }
 
 $hostSaveName = if ($TitleScreen) { "" } else { $Save }
-Write-Host "Launching HOST ($(if ($TitleScreen) { '<main menu - no save>' } else { "save $Save" }), autospawn $AutoSpawn) ..."
-Set-CoopEnv -Mode "host" -SaveName $hostSaveName -Spawn $AutoSpawn -Own $hostOwnEnv
+Write-Host "Launching HOST ($(if ($TitleScreen) { '<main menu - no save>' } else { "save $Save" })) ..."
+Set-CoopEnv -Mode "host" -SaveName $hostSaveName -Own $hostOwnEnv
 $hostPid = Start-PastLauncher -Exe $hostExe -WorkDir $HostDir
 if ($hostPid -eq 0) { throw "Host failed to get past the launcher." }
 
@@ -392,7 +405,7 @@ if (-not $NoJoin) {
     # host's push-on-connect pulls it into the world.
     $joinSaveName = if ($JoinFromMenu -or $TitleScreen) { "" } else { $JoinSave }
     Write-Host "Launching JOIN (save $(if ($JoinFromMenu -or $TitleScreen) { '<main menu - no save>' } else { $JoinSave })) ..."
-    Set-CoopEnv -Mode "join" -SaveName $joinSaveName -Spawn 0 -Own $joinOwnEnv
+    Set-CoopEnv -Mode "join" -SaveName $joinSaveName -Own $joinOwnEnv
     $joinPid = Start-PastLauncher -Exe $joinExe -WorkDir $JoinDir
     if ($joinPid -eq 0) { Write-Warning "Join failed to get past the launcher; host is up alone." }
 }
@@ -412,7 +425,6 @@ if ($TitleScreen) {
     Write-Host "  preset for loopback). The host then pushes its world and the join loads in"
     Write-Host "  straight from the menu - no save needed on the join. Close windows when done."
 } else {
-    Write-Host "  The host spawns $AutoSpawn squad members a few seconds after gameplay starts."
     Write-Host "  Select them on the HOST and move them around; watch the JOIN render and"
     Write-Host "  follow them. Close both windows when you're done (no auto-exit)."
 }

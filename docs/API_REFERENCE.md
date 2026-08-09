@@ -791,8 +791,9 @@ Read once in `startPlugin()`; no recompile needed to change role/behavior.
 - `KENSHICOOP_TEST_SECONDS` — if >0, self-exit (via `TerminateProcess`) this many seconds after gameplay starts (default `0` = never). Used by the test runner.
 - `KENSHICOOP_LOG` — path to the dedicated coop log (default `KenshiCoop_host.log` / `KenshiCoop_join.log`).
 - `KENSHICOOP_SCENARIO` — name of a compiled scenario to run after load (default empty = normal co-op tick).
-- `KENSHICOOP_AUTOSPAWN` — host-only manual-validation helper: spawn N distinct-hand units into the squad once after gameplay settles.
-- `KENSHICOOP_OWN_INDICES` — squad ownership partition for the inhabit model: `""` = own all (default); `"0"` = own only index 0; `"~0"` = own all except 0; `"1,3"` = own indices 1 and 3.
+- `KENSHICOOP_OWN_SQUAD` (alias `KENSHICOOP_OWN_RANK`) — squad ownership partition for the inhabit model. **CSV of unsigned squad-member ranks only**: `"0"`, `"1"`, `"1,3"`. `""` = the role default (host `{0}`, join `{1}`), *not* "own all". There is no negation syntax — `OwnRanks.h` is a digit scanner, so a `"~0"` written for "all except 0" parses to `{0}`, the exact opposite. Verify a run took it by reading `ownership ranks = {...}` in the client's log.
+
+*(Removed: `KENSHICOOP_AUTOSPAWN` — upstream `476c078` deleted the feature and the engine primitive behind it. `KENSHICOOP_OWN_INDICES` — never read by any code; the variable above is the one that works.)*
 
 ---
 
