@@ -1496,6 +1496,65 @@ void Replicator::publishBuilds(const SyncContext& ctx) {
     }
 }
 
+// How often a refused building mint is retried, and how many times before this
+// client gives up on it.
+//
+// placeBuildingAt refuses for reasons that are almost always TEMPORARY on the
+// receiving side - the target zone is not streamed in here yet being the obvious
+// one - and PLACE is a one-shot edge, so without a local retry the first refusal
+// was final. The player-visible symptom is the plainest possible: you build
+// something and the other player never sees it, for the rest of the session.
+//
+// 5 s x 120 is ten minutes, which covers a zone load and a walk across it. It
+// terminates rather than retrying forever because a refusal CAN be permanent (a
+// template this install does not have), and an engine world-spawn attempt every
+// 5 s forever, per refused building, is not free. The give-up is logged: a
+// silent permanent failure is what this whole change is about.
+static const unsigned long BUILD_MINT_RETRY_MS  = 5000;
+static const unsigned int  BUILD_MINT_RETRY_MAX = 120;
+
+void Replicator::retryRefusedBuilds(GameWorld* gw, unsigned long now) {
+    for (std::map<Key, PeerBuild>::iterator it = peerBuilds_.begin();
+         it != peerBuilds_.end(); ++it) {
+        PeerBuild& pb = it->second;
+        if (pb.minted || pb.removed || !pb.haveAnn) continue;
+        if (pb.retryTick != 0 && (now - pb.retryTick) < BUILD_MINT_RETRY_MS) continue;
+        pb.retryTick = now;
+        ++pb.retries;
+
+        const BuildPlacePacket& p = pb.ann;
+        int rc = engine::placeBuildingAt(gw, p.sid, p.x, p.y, p.z, p.yaw,
+                                         /*completed*/false, pb.localHand);
+        if (rc == 1) {
+            pb.minted  = 1;
+            pb.haveAnn = false;   // nothing left to retry
+            Key lk; lk.t = pb.localHand[0]; lk.c = pb.localHand[1];
+            lk.cs = pb.localHand[2]; lk.i = pb.localHand[3]; lk.s = pb.localHand[4];
+            mintByLocal_[lk] = it->first;
+            char b[240];
+            _snprintf(b, sizeof(b) - 1,
+                      "[build] MINT-RETRY OK key=%u.%u.%u.%u.%u sid='%s' try=%u "
+                      "local=%u.%u.%u.%u.%u",
+                      p.key[0], p.key[1], p.key[2], p.key[3], p.key[4],
+                      p.sid, pb.retries,
+                      pb.localHand[0], pb.localHand[1], pb.localHand[2],
+                      pb.localHand[3], pb.localHand[4]);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            continue;
+        }
+        if (pb.retries >= BUILD_MINT_RETRY_MAX) {
+            pb.haveAnn = false;   // stop paying for it; the entry stays a tombstone
+            char b[224];
+            _snprintf(b, sizeof(b) - 1,
+                      "[build] MINT-RETRY GIVEUP key=%u.%u.%u.%u.%u sid='%s' "
+                      "tries=%u rc=%d - this building will not appear here",
+                      p.key[0], p.key[1], p.key[2], p.key[3], p.key[4],
+                      p.sid, pb.retries, rc);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+        }
+    }
+}
+
 void Replicator::applyBuilds(const SyncContext& ctx) {
     GameWorld* gw = ctx.gw; Inbound& in = *ctx.in;
     // Announcements first (same-channel ordered-reliable means a STATE row
@@ -1511,8 +1570,21 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
         if (p.sid[0] == '\0') continue;
         Key k; k.t = p.key[0]; k.c = p.key[1]; k.cs = p.key[2];
         k.i = p.key[3]; k.s = p.key[4];
-        if (peerBuilds_.find(k) != peerBuilds_.end())
-            continue; // already minted (or mint already refused) - dedupe
+        std::map<Key, PeerBuild>::iterator ex = peerBuilds_.find(k);
+        if (ex != peerBuilds_.end()) {
+            // Minted or tombstoned: genuine dedupe, nothing to do.
+            if (ex->second.minted || ex->second.removed) continue;
+            // Refused earlier and the placer is announcing it again (a
+            // connect-edge resync). That is fresh evidence the building still
+            // exists over there, so it buys a full new round of attempts rather
+            // than being swallowed by the dedupe - which is what used to happen,
+            // and why a refused mint was permanent.
+            memcpy(&ex->second.ann, &p, sizeof(ex->second.ann));
+            ex->second.haveAnn   = true;
+            ex->second.retryTick = 0;
+            ex->second.retries   = 0;
+            continue;
+        }
         PeerBuild& pb = peerBuilds_[k];
         // Mint INCOMPLETE always: the placer's STATE rows drive progress from
         // here (a real UI placement starts at 0 anyway).
@@ -1525,6 +1597,12 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
             Key lk; lk.t = pb.localHand[0]; lk.c = pb.localHand[1];
             lk.cs = pb.localHand[2]; lk.i = pb.localHand[3]; lk.s = pb.localHand[4];
             mintByLocal_[lk] = k;
+        } else {
+            // Retain the announcement so retryRefusedBuilds can try again.
+            memcpy(&pb.ann, &p, sizeof(pb.ann));
+            pb.haveAnn   = true;
+            pb.retryTick = 0;
+            pb.retries   = 0;
         }
         char b[240];
         _snprintf(b, sizeof(b) - 1,
@@ -1536,6 +1614,11 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
                   pb.localHand[3], pb.localHand[4]);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
+    // Before the STATE rows, because a mint that succeeds on retry should be able
+    // to take this tick's progress row rather than wait another one. Runs every
+    // tick regardless of whether any PLACE arrived - the whole point is that the
+    // placer is NOT going to announce it again.
+    retryRefusedBuilds(gw, nowMs());
     for (std::deque<InboundBuildState>::iterator it = states.begin();
          it != states.end(); ++it) {
         const BuildStatePacket& p = it->pkt;
@@ -1585,8 +1668,17 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
         Key k; k.t = p.key[0]; k.c = p.key[1]; k.cs = p.key[2];
         k.i = p.key[3]; k.s = p.key[4];
         std::map<Key, PeerBuild>::iterator f = peerBuilds_.find(k);
-        if (f == peerBuilds_.end() || !f->second.minted || f->second.removed)
-            continue; // never minted here or already gone - nothing to remove
+        if (f == peerBuilds_.end() || f->second.removed)
+            continue; // unknown key or already gone - nothing to remove
+        if (!f->second.minted) {
+            // Never minted here, and now the placer has torn it down. There is
+            // nothing to destroy, but a pending retry must stop: otherwise this
+            // client spends ten minutes trying to place a building that no
+            // longer exists on the machine that owns it.
+            f->second.haveAnn = false;
+            f->second.removed = true;
+            continue;
+        }
         PeerBuild& pb = f->second;
         pb.removed = true;
         bool ok = engine::destroyBuildingByHand(gw, pb.localHand);

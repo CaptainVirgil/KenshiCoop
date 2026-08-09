@@ -453,6 +453,10 @@ public:
     // setConstructionProgress via that map (per-key seq guard drops stale
     // rows; unknown keys are skipped silently).
     void applyBuilds(const SyncContext& ctx);
+    // Re-attempt building mints that placeBuildingAt refused. PLACE is a one-shot
+    // edge, so without this the first refusal - usually just an unloaded zone -
+    // was final and the building never appeared on this client.
+    void retryRefusedBuilds(GameWorld* gw, unsigned long now);
 
     // Placed-building sync master enable (KENSHICOOP_BUILD_SYNC).
     void setBuildSync(bool v) { buildSync_ = v; }
@@ -1849,7 +1853,22 @@ private:
         unsigned int localHand[5];
         int minted; u32 seqSeen;
         bool removed; // proxy destroyed on a REMOVE: tombstone (rows skip)
-        PeerBuild() : minted(0), seqSeen(0), removed(false) { memset(localHand, 0, sizeof(localHand)); }
+        // A refused mint used to be indistinguishable from a tombstone: the entry
+        // existed, minted stayed 0, the PLACE dedupe skipped every later row, and
+        // the building never appeared on this client again. But PLACE is a
+        // one-shot edge - the placer does not re-send it - and the likeliest
+        // reason placeBuildingAt refuses is that the target zone is not loaded
+        // here yet, which is temporary. So the announcement is RETAINED and the
+        // mint is retried locally; see BUILD_MINT_RETRY_MS in ReplicatorChannels.
+        BuildPlacePacket ann;
+        bool          haveAnn;    // ann holds a mint worth retrying
+        unsigned long retryTick;  // when the last attempt ran (0 = never)
+        unsigned int  retries;    // attempts so far, against BUILD_MINT_RETRY_MAX
+        PeerBuild() : minted(0), seqSeen(0), removed(false),
+                      haveAnn(false), retryTick(0), retries(0) {
+            memset(localHand, 0, sizeof(localHand));
+            memset(&ann, 0, sizeof(ann));
+        }
     };
     std::map<Key, OwnBuild>  ownBuilds_;
     std::map<Key, PeerBuild> peerBuilds_;
