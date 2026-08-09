@@ -15,45 +15,61 @@ the build commands; this file holds the plan.
 | Protocol | 54 (unchanged since fork-1 — nothing on the wire has moved) |
 | Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve) |
 | Local build | `fork-7` — first build against KenshiLib 0.4.0; installed on both the Steam install and `~/Kenshi-Join` |
-| Gate | 727 prototest / 17 tunneltest / 33 contract, green |
+| Gate | 727 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
 | Interop | fork-6 ↔ fork-7 **do** connect: the handshake compares `PROTOCOL_VERSION`, not the build label |
 
 fork-1 through fork-5 were dead on arrival (no `/GL`) and are withdrawn or
 superseded; fork-5 was deleted outright, tag included.
 
-**Never play-tested with two humans.** Every gameplay fix in fork-6/7 is verified
-by unit tests, a launched game, and log evidence — not by two people playing.
+**First two-client session ran 2026-08-09** — automated, one machine, UDP
+loopback, save transfer + drive + authority all live (see P0 below). Still
+never play-tested with two humans.
 
 ---
 
 ## The one thing that gates everything else
 
-### P0 — a two-client session
+### P0 — a two-client session: ACHIEVED 2026-08-09 (automated, one machine)
 
-Nothing else in this file changes a player's experience as much as finding out
-what actually breaks with two clients talking. Three routes, in cost order:
+Host + join, both fork-7, protocol 54, UDP loopback, zero clicks:
+`launch_coop.sh hostdirect` with `KENSHICOOP_AUTOCONNECT=1
+KENSHICOOP_SAVE=coop4`, then `KENSHICOOP_AUTOCONNECT=1 launch_coop.sh join`.
+The session did everything the doctrine promises: handshake + clock sync
+(offset 0 on loopback), host auto-baked the save and pushed it (256 files /
+19.3 MB in 9.1 s, CRC clean), join committed and auto-loaded it, then live
+replication — drive (`PARKED→MID`), pose orders, authority restores, trust
+gating, inventory, camera hints. `[caps] 0 of 17` on both sides; zero
+`[ko] RELEASE`, zero `MINT-RETRY GIVEUP`, zero `unknown packet` in session one.
 
-1. **The brother, over Steam.** The only route that exercises the Steam P2P
-   tunnel. Also the only one that yields a second machine's `[engine] CAPS` line.
-   Blocks nothing else; needs him online.
-2. **Two clients on this machine, UDP loopback.** The 2026-08-08 "second
-   instance will not start" mystery is solved: the join launch minted a BARE
-   Proton prefix — no VC++ 2010 runtime (instant `c0000135` death before
-   RE_Kenshi logs a line) and no steamclient wiring (the lsteamclient bridge
-   `_wassert`s, which is the `0x40000015` abort). `launch_coop.sh` now seeds
-   the join prefix from the host's proven one (reflink copy, `mfc100u.dll` is
-   the sentinel). See the handoff for the probe state.
-3. **CT 203 on fredj as the join.** The launch chain is proven mechanically
-   (SLR4 pressure-vessel + `proton runinprefix` + `~/.steam/sdk64` link — the
-   handoff has the full recipe) and ends at Kenshi's own **"Steam dll error"**:
-   `SteamAPI_Init` needs a *running* Steam client, and the container has none.
-   **Blocked on a decision**: log a Steam client in inside CT 203 (account
-   conflicts with the desktop), use a DRM-free Kenshi build if owned, or
-   accept route 2 instead and destroy the container.
+**The number nothing had ever measured:** steady state with the save loaded,
+host `out≈166 KB/s in≈118 KB/s` (join mirrors it). The near-band change-gate
+decision below now has its real-session baseline.
 
-What to read afterwards, either way — the log signals are listed in the
-`kenshicoop-logs` skill, and `[net] bandwidth out=/in=` is the number nothing has
-ever measured in a real session.
+**First-session finding:** `[inv] APPLY` repeats identically ~14/s on BOTH
+sides (~2100 lines in 2.5 min) — the inventory snapshot channel looks
+ungated. Judge against `gateShouldSend` before the next tuning pass.
+
+What unblocked it (was: "second instance will not start"): the join launch
+minted a BARE Proton prefix — no VC++ 2010 runtime (`c0000135` before
+RE_Kenshi logs a line) and no steamclient wiring (the lsteamclient bridge
+`_wassert` is the historic `0x40000015` abort). `launch_coop.sh` now seeds
+both direct-launch prefixes from the live one (reflink; `mfc100u.dll` is the
+sentinel), pins the runner to Proton Experimental, and passes the exe path
+absolute (relative dies silently one line into Proton).
+
+Still open, in cost order:
+
+1. **A PLAYED session** — two humans, or one human driving both windows. The
+   automated session proves transport, handshake, save transfer and the drive;
+   it does not prove gameplay feel. Log signals: the `kenshicoop-logs` skill.
+2. **The brother, over Steam.** The only route that exercises the Steam P2P
+   tunnel and yields a second machine's `[engine] CAPS`. Flip both configs
+   back to `"transport": "steam"` first — both sit on `udp` today.
+3. **CT 203 on fredj.** Launch chain proven end-to-end (SLR4 pressure-vessel +
+   `proton runinprefix` + `~/.steam/sdk64` link; recipe in the handoff), and
+   stops exactly one dialog short: Kenshi's own **"Steam dll error"** —
+   `SteamAPI_Init` wants a *running* Steam client and the container has none.
+   Decision in "Open decisions" below.
 
 ---
 
