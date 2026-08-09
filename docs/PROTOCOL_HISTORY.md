@@ -196,7 +196,12 @@ optimism.
 `len >= sizeof(T)` and `memcpy`s exactly `sizeof(T)` bytes. Note the asymmetry
 this already gives you for free: a **longer** packet is accepted and its tail
 ignored, a **shorter** one is dropped. That is precisely the tolerance an
-append-only change needs, in the newer-sender → older-receiver direction.
+append-only change needs, in the newer-sender → older-receiver direction —
+**but it is a Path-B property only.** A Path-A packet's trailing arrays start
+at `data + sizeof(header)`, so a byte appended to a Path-A *header* lands
+between the header and the arrays and shifts every element read; it does not
+fall into an ignored tail. The census flag in §"Next bump worth spending" is
+the worked example of how destructive that gets.
 
 ### 4.2 Safe candidates
 
@@ -359,8 +364,19 @@ sacrificed rows in the 25% margin the peer does not cull against. That narrows t
 window; it does not close it. If the body count inside the peer's own cull radius
 exceeds the cap, real bodies are still declared absent and no ordering can help.
 
-Closing it needs one bit on the wire — a `truncated` flag in `NpcCensusHeader`, with the
-receiver suppressing culls for that beat. `NpcCensusHeader` is 7 bytes and has been
-byte-identical since v36, so this is an **append**, the cheap kind: an older receiver
-ignores the trailing byte and behaves exactly as it does today. Costs a bump, and every
-player must update the same day, which is the only reason it has not been done.
+Closing it needs one bit on the wire — a `truncated` flag, with the receiver
+suppressing culls for that beat. It is **not** the cheap append it looks like:
+`PKT_NPC_CENSUS` is a Path-A packet, so a byte appended to `NpcCensusHeader`
+sits between the header and the trailing arrays. An old receiver still parses
+the header correctly (type/ownerId/count offsets are unchanged), still passes
+`len >= need` — the appended byte is exactly one byte of slack — and then reads
+every hand and position one byte early. Garbage keys arrive at 1 Hz and are
+stamped fresh, so the STALE fail-open (which would *disable* wide culling)
+never fires, and the wide pass judges every real local NPC against a set
+containing no real keys. The "safe append" is a mass-cull of the loaded area.
+
+Carry the flag in **bit 15 of the existing u16 `count`** instead: `sizeof`
+stays 7, an old receiver sees `count > NPC_CENSUS_MAX`, drops the packet, and
+its census goes STALE — fail-safe rather than fail-destructive. Costs a bump
+either way, and every player must update the same day, which is the only
+reason it has not been done.
