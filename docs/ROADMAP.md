@@ -36,12 +36,20 @@ what actually breaks with two clients talking. Three routes, in cost order:
 1. **The brother, over Steam.** The only route that exercises the Steam P2P
    tunnel. Also the only one that yields a second machine's `[engine] CAPS` line.
    Blocks nothing else; needs him online.
-2. **Two clients on this machine, UDP loopback.** `setup_join_install.sh` +
-   `launch_coop.sh` are written and the clone exists. **Blocked**: the second
-   instance will not start — see the handoff for the exact state.
-3. **CT 203 on fredj as the join.** Half-built, see the handoff. Real two-machine
-   UDP over the LAN, no second Steam account, and a permanently available second
-   client. Most valuable, most remaining work.
+2. **Two clients on this machine, UDP loopback.** The 2026-08-08 "second
+   instance will not start" mystery is solved: the join launch minted a BARE
+   Proton prefix — no VC++ 2010 runtime (instant `c0000135` death before
+   RE_Kenshi logs a line) and no steamclient wiring (the lsteamclient bridge
+   `_wassert`s, which is the `0x40000015` abort). `launch_coop.sh` now seeds
+   the join prefix from the host's proven one (reflink copy, `mfc100u.dll` is
+   the sentinel). See the handoff for the probe state.
+3. **CT 203 on fredj as the join.** The launch chain is proven mechanically
+   (SLR4 pressure-vessel + `proton runinprefix` + `~/.steam/sdk64` link — the
+   handoff has the full recipe) and ends at Kenshi's own **"Steam dll error"**:
+   `SteamAPI_Init` needs a *running* Steam client, and the container has none.
+   **Blocked on a decision**: log a Steam client in inside CT 203 (account
+   conflicts with the desktop), use a DRM-free Kenshi build if owned, or
+   accept route 2 instead and destroy the container.
 
 What to read afterwards, either way — the log signals are listed in the
 `kenshicoop-logs` skill, and `[net] bandwidth out=/in=` is the number nothing has
@@ -49,28 +57,16 @@ ever measured in a real session.
 
 ---
 
-## Phase 1 — correctness of the record (cheap, do first)
+## Open decisions (cheap, need Virgil)
 
-Everything here is a doc or a script saying something untrue about the code. All
-were found by an adversarial audit on 2026-08-08 and each survived an independent
-verification pass. Costs are minutes to low hours; none needs a game.
-
-**The instruction surface was audited and corrected on 2026-08-08** — `CLAUDE.md`,
-all three `.claude/skills`, `README.md`, `Wire.h`'s header comment, and the four
-docs with dead `resources/` pointers. Item 44 is closed by that pass. What is left
-below is the *code* half of 45/46 and the two wire claims in 47.
-
-| # | Item | Why it matters |
-|---|---|---|
-| 45 | Widen the incremental rebuild's header scan | **Docs corrected; code not.** The scan is still 34 headers of the 11,576 on the include path, so a KenshiLib or ENet header change rebuilds nothing. `CLAUDE.md` now says so and tells you to pass `KC_REBUILD=1` by hand — widening the scan removes the footgun |
-| 46 | Port the Linux-only build features to Windows | The parity *claim* is corrected everywhere; the *gap* remains. `DepsPin.h` stamping and the map-based loadability check exist only in `build_plugin.sh`, so the dead-on-arrival class that produced fork-1..5 is still uncovered on Windows |
-| 47 | Two wire claims that are actively wrong | The doc-rot half is done (BUILD_SETUP restored from upstream `30bf8ea`, `resources/` pointers repointed). Left: growing `NpcCensusHeader` is documented as a safe append and is a **mass-cull**; `ENTITY_BATCH_MAX` is called a receive-side bound and is not enforced (`hdr.count` is a `u8`, the loop runs to 255) |
-| 48 | Two comments backwards about their own mechanism | The Ogre shims and the damage guard. **Keep both behaviours** — the risk is a credibility cascade where someone disproves the stated reason and deletes working code |
-| 49 | ENet revision recorded nowhere | It is compiled into every shipped kit. On-disk is 17 commits past `v1.3.18`, and those commits include bounds checks in the untrusted packet parser. The documented recipe reproduces a *different, less hardened* network stack |
-
-Also here: **detach the GitHub fork** (cosmetic — AGPL attribution stays either
-way; 41 commits ahead, 0 behind, upstream dormant) and decide whether to keep
-`fork-7` or cut `fork-8` after Phase 1 lands.
+- **Release fork-8, or hold.** Phase 1 (items 44–49) landed 2026-08-08/09:
+  instruction audit, ENet pin + stamp, full-include-path header scan, the
+  Windows DOA checks, the wire-claim corrections, and the entity-batch
+  receive clamp with `netlinktest` pinning it. fork-7 predates all of it and
+  was never released. None of it changes the wire (protocol stays 54).
+- **Detach the GitHub fork** (cosmetic — AGPL attribution stays either way;
+  upstream dormant).
+- **CT 203**: Steam-client decision above, or `pct destroy 203`.
 
 ---
 
@@ -78,12 +74,12 @@ way; 41 commits ahead, 0 behind, upstream dormant) and decide whether to keep
 
 | # | Item |
 |---|---|
-| 27 | Stub-engine harness for `sync/`, then extract `applyTargets` (~1700 lines) behind it. `NetLink.cpp` is the cheap first step — it includes only `NetLink.h`, `SteamP2P.h`, `CoopLog.h` and the CRT, and `tunneltest` already links ENet the same way |
+| 27 | Stub-engine harness for `sync/`, then extract `applyTargets` (~1700 lines) behind it. The first step shipped 2026-08-09: `netlinktest` links the real `NetLink.cpp` over an in-memory socket-hook pipe and pins the receive-side bounds ladder (handshake gate, batch len/count, census cap, unknown-type survival), wired into both gates. Extend the same shape toward `sync/` |
 
-The audit handed this phase its first concrete target: `ENTITY_BATCH_MAX` is
-documented as a receive-side bound and is not enforced (`hdr.count` is a `u8` and
-the loop runs to 255). One token at `NetLink.cpp:593` fixes it — receive-side
-only, no wire change — but it wants a test that can see the receive path.
+The audit's first concrete target is closed: `hdr.count <= ENTITY_BATCH_MAX`
+is enforced at the batch receive arm (receive-side only, no wire change), and
+the test that demanded it watched the unclamped receiver accept 255 entities
+per packet before the clamp shipped.
 
 ---
 

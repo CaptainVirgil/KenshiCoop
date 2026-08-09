@@ -6,7 +6,7 @@
   pure units), the transport layer (tunneltest - ENet over the Steam socket
   hooks, under loss and at the 1200 B datagram ceiling), and the PowerShell
   harness contract fixtures (manifest schema, scenario drift, oracle registry,
-  verdict rule) into a single PASS/FAIL. Same four sections as the Linux twin,
+  verdict rule) into a single PASS/FAIL. Same sections as the Linux twin,
   scripts/linux/verify.sh.
 
   Requires NO Kenshi launch and NO KenshiCoop.dll - only the two standalone
@@ -100,6 +100,31 @@ if ($tunnelOk) {
 }
 if (-not $tunnelOk) { $overall = $false }
 
+# ---- 2b. NetLink receive path (netlinktest: real NetLink.cpp, hooked pipe) -----
+Write-Host ""
+Write-Host "############################################################"
+Write-Host "# verify: NetLink receive path (netlinktest)"
+Write-Host "############################################################"
+$netlinktest = Join-Path $repoRoot "dist\netlinktest.exe"
+$netlinkOk = $true
+if (-not $SkipBuild) {
+    Remove-Item -LiteralPath $netlinktest -Force -ErrorAction SilentlyContinue
+    Write-Host "=== build netlinktest ==="
+    & cmd.exe /c "`"$scriptDir\build_netlinktest.cmd`""
+    if ($LASTEXITCODE -ne 0) { Write-Host "NETLINK RECEIVE: FAIL (build failed, exit $LASTEXITCODE)"; $netlinkOk = $false }
+}
+if ($netlinkOk) {
+    if (Test-Path $netlinktest) {
+        & $netlinktest
+        $netlinkOk = ($LASTEXITCODE -eq 0)
+        Write-Host ("NETLINK RECEIVE: " + $(if ($netlinkOk) { "PASS" } else { "FAIL (exit $LASTEXITCODE)" }))
+    } else {
+        Write-Host "NETLINK RECEIVE: FAIL - dist\netlinktest.exe not found (run without -SkipBuild)"
+        $netlinkOk = $false
+    }
+}
+if (-not $netlinkOk) { $overall = $false }
+
 # ---- 3. PowerShell contract / drift fixtures (zero game) -----------------------
 Write-Host ""
 Write-Host "############################################################"
@@ -153,6 +178,7 @@ Write-Host ""
 Write-Host "================= VERIFY SUMMARY ================="
 Write-Host ("  unit layer (prototest):   " + $(if ($unitOk) { "PASS" } else { "FAIL" }))
 Write-Host ("  transport (tunneltest):   " + $(if ($tunnelOk) { "PASS" } else { "FAIL" }))
+Write-Host ("  netlink recv (netlinktest): " + $(if ($netlinkOk) { "PASS" } else { "FAIL" }))
 Write-Host ("  contract fixtures:        " + $(if ($fixOk)  { "PASS" } else { "FAIL" }))
 Write-Host ("  oracle fixtures:          " + $(if ($oracleOk) { "PASS" } else { "FAIL" }))
 Write-Host ("OVERALL: " + $(if ($overall) { "PASS" } else { "FAIL" }))

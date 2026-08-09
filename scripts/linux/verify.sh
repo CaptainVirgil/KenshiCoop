@@ -52,7 +52,7 @@ step "build plugin (Harness)"  ./scripts/linux/build_plugin.sh Harness
 # Otherwise a build error leaves the PREVIOUS binary on disk, the run step
 # executes it, and the gate reports a green test suite for code that does not
 # compile - which is exactly what happened on 2026-08-08.
-rm -f "$REPO/dist/prototest.exe" "$REPO/dist/tunneltest.exe"
+rm -f "$REPO/dist/prototest.exe" "$REPO/dist/tunneltest.exe" "$REPO/dist/netlinktest.exe"
 
 if step "build prototest" ./scripts/linux/build_prototest.sh; then
     step "prototest"           run_exe "$REPO/dist/prototest.exe"
@@ -63,6 +63,11 @@ if step "build tunneltest" ./scripts/linux/build_tunneltest.sh; then
     step "tunneltest"          run_exe "$REPO/dist/tunneltest.exe"
 else
     printf '  SKIP  tunneltest (its build failed)\n'
+fi
+if step "build netlinktest" ./scripts/linux/build_netlinktest.sh; then
+    step "netlinktest"         run_exe "$REPO/dist/netlinktest.exe"
+else
+    printf '  SKIP  netlinktest (its build failed)\n'
 fi
 
 PS_HOST="$(command -v pwsh || command -v powershell || true)"

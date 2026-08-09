@@ -590,7 +590,13 @@ void NetLink::threadLoop() {
                                 sizeof(EntityBatchHeader) + (unsigned)hdr.count * sizeof(EntityState);
                             // Drop batches from a superseded session (protocol 44)
                             // before they reach the WAN-sim queue / interp buffers.
-                            if (len >= need && acceptEpoch(hdr.ownerId, hdr.epoch)) {
+                            // count cap mirrors the census arm: no sender emits more
+                            // than ENTITY_BATCH_MAX (the Steam cap is smaller), so an
+                            // over-cap count is a malformed or hostile stream - drop
+                            // the batch whole, same as a short one. hdr.count is a u8;
+                            // without this the loop accepted up to 255 per packet.
+                            if (len >= need && hdr.count <= ENTITY_BATCH_MAX &&
+                                acceptEpoch(hdr.ownerId, hdr.epoch)) {
                                 const enet_uint8* p = ev.packet->data + sizeof(EntityBatchHeader);
                                 for (unsigned i = 0; i < hdr.count; ++i) {
                                     EntityState e;

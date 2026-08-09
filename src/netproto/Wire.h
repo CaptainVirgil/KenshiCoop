@@ -419,12 +419,12 @@ struct EntityBatchHeader {
 
 // 17 * sizeof(EntityState) + header stays comfortably under a 1400 B datagram
 // (v35: one entity of headroom traded for the sendMs stamp; v44: +epoch).
-// Raw-UDP sender chunk size, sender-side only TODAY: the receiver's gates are
-// len >= need and the epoch check, and hdr.count is a u8, so a peer can ship
-// up to 255 entities per batch and every one is delivered (in-bounds - the
-// len >= need check covers each read - but 15x this cap). Enforcing it at the
-// receive site is the roadmap's Phase 2 first target; it is receive-side
-// only, so it needs no protocol bump.
+// Raw-UDP sender chunk size AND the receive-side cap: the batch arm drops a
+// packet whose hdr.count exceeds this, the same way the census arm drops an
+// over-NPC_CENSUS_MAX count. Receive-side only, so no protocol bump; both
+// sender caps (this and the Steam one below) sit at or under it, so mixed
+// caps interoperate. Pinned by netlinktest, which watched the unclamped
+// receiver accept 255 entities per packet before the clamp shipped.
 const unsigned int ENTITY_BATCH_MAX = 17;
 
 // Steam sender chunk size: the Steam P2P transport clamps ENet's MTU to

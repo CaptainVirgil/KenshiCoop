@@ -82,13 +82,16 @@ the same Linux build. See the `kenshicoop-build` skill for the comparison proced
 **The Linux gate builds both configurations**; the Windows gate does not build the plugin
 at all (`verify.ps1` says so itself: "Requires NO Kenshi launch and NO KenshiCoop.dll").
 That matters more than it sounds — the guard that refuses to emit a DLL whose main-loop
-hook is not an import lives *inside* the plugin build, so the entire dead-on-arrival class
-that produced fork-1..fork-5 is uncovered on Windows. Both gates run `prototest` (exact packed sizes and field
-offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp buffer, the
-save-transfer receiver, the drive's band/convergence arithmetic, the change-gate table,
-wire string termination, the targets_ age-out predicate) and `tunneltest` (ENet over the
-Steam socket hooks under loss and the 1200 B datagram ceiling), both under Wine on Linux.
-It launches no game. `Contract.Tests.ps1` runs too if a PowerShell host is installed;
+hook is not an import lives *inside* the plugin build (and, since 2026-08-08, in
+`build_plugin_direct.ps1`'s post-link checks too), so a Windows `verify.ps1` PASS still
+says nothing about a DLL nobody built with the direct script. Both gates run `prototest`
+(exact packed sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`,
+the interp buffer, the save-transfer receiver, the drive's band/convergence arithmetic,
+the change-gate table, wire string termination, the targets_ age-out predicate),
+`tunneltest` (ENet over the Steam socket hooks under loss and the 1200 B datagram
+ceiling), and `netlinktest` (the REAL `NetLink.cpp` receive path over an in-memory
+socket-hook pipe: the handshake gate, the entity-batch len/count caps, the census cap,
+unknown-type survival), all under Wine on Linux. It launches no game. `Contract.Tests.ps1` runs too if a PowerShell host is installed;
 on Linux that means `pwsh`, and it is skipped rather than failed when absent — it also
 carries the source-drift checks a C++ test cannot do, such as verifying that every
 `char[]` in `Wire.h` is named by a `wireSanitize` overload.
@@ -328,10 +331,9 @@ produced a ranked backlog; the significant unfixed items are:
 - **`applyTargets` (~1700 lines) is still one function.** The extraction is safe in
   principle but needs a test that can see the sync layer, which does not exist yet.
 - **A stub-engine harness** would make most of `sync/` testable headlessly; the audit
-  rated it the largest available coverage win. `NetLink.cpp` is the cheap first step — it
-  includes only `NetLink.h`, `SteamP2P.h`, `CoopLog.h` and the CRT, and `tunneltest`
-  already links ENet the same way, so its receive-side bounds checks could be tested for
-  real rather than modelled.
+  rated it the largest available coverage win. The cheap first step is done —
+  `netlinktest` links the real `NetLink.cpp` and pins the receive-side bounds checks —
+  and the pattern to extend toward `sync/` is in `scripts/linux/build_netlinktest.sh`.
 - **The capability report does not gate.** `configureReplicator` warns when an enabled
   feature's `CAP_*` did not resolve but does not disable it, because `capEvaluate` is
   fail-closed and could turn off something that works. Needs one real sighting of a
