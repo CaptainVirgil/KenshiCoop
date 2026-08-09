@@ -452,11 +452,18 @@ void Replicator::publishStats(GameWorld* gw, NetLink& net, u32 ownerId) {
     for (std::set<Key>::const_iterator it = ownHands_.begin(); it != ownHands_.end(); ++it) {
         const Key& k = *it;
         unsigned int hand[5] = { k.t, k.c, k.cs, k.i, k.s };
+        // Throttle BEFORE the engine read, not after: readStatsByHand resolves
+        // the hand and walks the stat block, and it ran at frame rate (~60 Hz)
+        // only for the result to be dropped by a 1 Hz gate on the next line.
+        // Same pattern this file already states at "Stamp the probe before
+        // doing it: the engine read below is the cost being throttled."
+        // Output is unchanged - nothing between the old read and this test
+        // fed the test.
+        StatsPub& sp = statsPub_[k];
+        if (sp.lastSendMs != 0 && (now - sp.lastSendMs) < MIN_SEND_MS) continue;
         engine::StatsRead sr;
         if (!engine::readStatsByHand(hand, &sr) || !sr.valid) continue;
         u32 h = statsHash(sr);
-        StatsPub& sp = statsPub_[k];
-        if (sp.lastSendMs != 0 && (now - sp.lastSendMs) < MIN_SEND_MS) continue;
         if (h == sp.hash && (now - sp.lastSendMs) < RESEND_MS) continue;
         bool changed = (h != sp.hash);
         sp.hash = h; sp.lastSendMs = now;

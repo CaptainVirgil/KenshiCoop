@@ -342,10 +342,22 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
                 // steady-state of ~43 KB/s.
                 if (buf[n].cMoving == 0 && buf[n].cSpeed <= 0.25f) {
                     if (stillSent >= stillQuota) continue;
+                    // Decide against the SLICE, not the frame, and re-include
+                    // for the whole slice window. setOwnedEntities overwrites
+                    // the published buffer every render frame while the net
+                    // thread samples it only every 50 ms, so a row that appears
+                    // on ONE frame reaches the wire about one time in three at
+                    // 60 fps. The movers are safe from this by accident - the
+                    // cursor only advances per slice, so the same bodies are
+                    // re-selected on every frame of the window - and the
+                    // keepalive has to be made safe on purpose. Same failure
+                    // the slice-cadence comment above was written to fix.
                     std::map<Key, unsigned long>::iterator sit = midStillMs_.find(mk);
-                    if (sit != midStillMs_.end() &&
-                        (nowPub - sit->second) < MID_STILL_KEEPALIVE_MS) continue;
-                    midStillMs_[mk] = nowPub;
+                    const unsigned long lastSent = (sit != midStillMs_.end()) ? sit->second : 0;
+                    const bool sentThisSlice = (sit != midStillMs_.end() && lastSent == midSliceMs_);
+                    if (!sentThisSlice && lastSent != 0 &&
+                        (midSliceMs_ - lastSent) < MID_STILL_KEEPALIVE_MS) continue;
+                    midStillMs_[mk] = midSliceMs_;
                     ++stillSent;
                 }
                 ++n;

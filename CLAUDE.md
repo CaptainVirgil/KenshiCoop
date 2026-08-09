@@ -333,9 +333,15 @@ asymmetry between the two logs:
 
 | | host | join |
 |---|---|---|
+| `extrap/lerp` | ~4% | 20%+ |
 | `jit` | 7.8 ms | 167–200 ms |
 | `delay` | 86 ms | 320–777 ms |
-| `extrap/lerp` | ~4% | 20%+ |
+
+**`extrap/lerp` is the signal; `jit` and `delay` are not.** `jit` measures deviation in
+the *sender's* cadence (ring times are send-stamped), so a rotating mid band reads high
+by construction and says nothing about this client's frames — `ReplicatorDrive.cpp` says
+so in its own comment. `delay` is derived from `jit`. Read the extrapolation share and
+treat the other two as context.
 
 A starved client publishes a **lumpy stream**, so the *other* client's copy of its
 character accrues gap and hard-snaps, while its own copy of the peer tracks fine. That
