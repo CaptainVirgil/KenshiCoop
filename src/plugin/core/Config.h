@@ -180,13 +180,17 @@ struct Config {
 
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
-    // apply no damage to DRIVEN bodies - Kenshi's medical model is local-only,
-    // so cosmetic damage would diverge forever. The guard set is "every body
-    // this client drives": peer world-NPC copies on the join; peer SQUAD-member
-    // copies on the host (extended 2026-07-06 after phase-1 player_combat
-    // measured the host copy of a join victim bleeding 40+ while join copies
-    // stayed 0). Outcomes stay owner-authoritative (KO/death/revive events).
-    // "0" is the escape hatch.
+    // apply no damage to DRIVEN bodies. Not because vitals "never cross the
+    // wire" - PKT_MEDICAL streams them, default ON - but because the guard is
+    // what KEEPS that stream authoritative: it blocks the per-frame local hits
+    // the change-gated stream could not out-write, preserves the only-deviates-
+    // upward invariant TreatmentPacket's first-aid detection needs, and is the
+    // protocol-45 capture point for join-dealt damage. The guard set is "every
+    // body this client drives": peer world-NPC copies on the join; peer
+    // SQUAD-member copies on the host (extended 2026-07-06 after phase-1
+    // player_combat measured the host copy of a join victim bleeding 40+ while
+    // join copies stayed 0). Outcomes stay owner-authoritative (KO/death/revive
+    // events). "0" is the escape hatch.
     bool          damageGuard;
 
     // Peer-ready scenario arming (KENSHICOOP_ARM_TIMEOUT_MS). A scenario's clock

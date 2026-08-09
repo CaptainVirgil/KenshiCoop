@@ -1213,13 +1213,17 @@ unsigned int aiSuspendCount();
 bool         installTaskSelectSpikeHook();
 void         setTaskSelectSpike(bool on);
 
-// Join-side damage suppression (the "cosmetic fights are actually cosmetic"
+// Damage suppression, BOTH sides (the "cosmetic fights are actually cosmetic"
 // guard): detour Character::hitByMeleeAttack so that, for bodies in the guarded
 // set, a locally-simulated melee hit applies NO damage (returns HIT_MISSED
-// without running the engine's hit path). Kenshi's medical model is entirely
-// LOCAL (blood/limbs/bleed never cross the wire), so without this the join's
-// cosmetic copy of a host-authoritative fight accumulates real local damage that
-// nothing reconciles - a body could bleed toward a death the host never had.
+// without running the engine's hit path). The ENGINE never moves a driven
+// copy's vitals on its own (spikes 21-27), and our PKT_MEDICAL stream (default
+// ON) is what reconciles blood/limbs/bleed - but the guard stays load-bearing
+// three ways: the change-gated stream cannot out-write per-frame local hits
+// between snapshots; TreatmentPacket's race-free first-aid detection depends on
+// driven-copy state only ever deviating UPWARD (a local hit breaks it); and the
+// hook is the protocol-45 capture point where join-dealt damage is recorded for
+// the host to apply authoritatively.
 // Same pattern as the AI-suspend detour: pointer-compared set, rebuilt each tick
 // on the main thread, hook installed once.
 bool         installDamageGuardHook();

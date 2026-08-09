@@ -1222,16 +1222,19 @@ bool __fastcall setCurrentAction_hook(CharBody* self, Tasker* t) {
     return g_setActionOrig(self, t);
 }
 
-// Join-side damage guard. Character::hitByMeleeAttack is where a landed melee
-// swing applies its Damages to the victim (wounds, blood loss, KO math). On the
-// join, fights involving host-authoritative bodies are COSMETIC - intent
-// replication makes the copies swing at each other so the fight renders, but the
-// outcome (KO/death) arrives from the host as reliable events. Without this
-// detour the cosmetic swings apply REAL local damage to the join's copies, and
-// Kenshi's medical model is local-only (spikes 21-27: blood/limbs/bleed never
-// cross the wire), so that damage silently diverges forever. For guarded victims
-// we skip the engine's hit path entirely and report HIT_MISSED - no damage, no
-// wound, no local KO; posture/outcome remain host-authoritative.
+// Damage guard (BOTH sides since 2026-07-06). Character::hitByMeleeAttack is
+// where a landed melee swing applies its Damages to the victim (wounds, blood
+// loss, KO math). Fights involving peer-authoritative bodies are COSMETIC -
+// intent replication makes the copies swing at each other so the fight renders,
+// but the outcome (KO/death) arrives as reliable events. The ENGINE never moves
+// a driven copy's vitals on its own (spikes 21-27); our PKT_MEDICAL stream
+// (default ON) is what reconciles them now, and this detour is what keeps that
+// stream authoritative: local hits land per-frame and the change-gated stream
+// cannot out-write them between snapshots, TreatmentPacket's race-free
+// first-aid detection depends on driven-copy state only deviating upward, and
+// this hook is the protocol-45 capture point for join-dealt damage. For guarded
+// victims we skip the engine's hit path entirely and report HIT_MISSED - no
+// damage, no wound, no local KO; posture/outcome remain owner-authoritative.
 // Same safety shape as periodicUpdate_hook: 'self' is only compared as a key.
 typedef HitMaterialType (__fastcall* HitByMeleeFn)(
     Character* self, CutDirection dir, Damages& damage, Character* who,
