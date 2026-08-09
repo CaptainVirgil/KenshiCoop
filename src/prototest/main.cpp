@@ -1838,7 +1838,11 @@ static DriveAction driveDecide(const DriveTuning& t, float drift, float srcVel,
                                unsigned long overBandMs, bool snapCooled) {
     const bool correctFight = localFighting && !wrongLocalTgt;
     const float softBand  = hostWaiting ? t.combatWait : t.combatSoft;
-    const float leaveBand = correctFight ? t.combatSnap : softBand;
+    // hostWaiting first: the owner calling the body slot-QUEUED outranks this
+    // client's copy having independently engaged. See the note in ReplicatorDrive.
+    const float leaveBand = hostWaiting  ? t.combatWait
+                          : correctFight ? t.combatSnap
+                                         : softBand;
     const bool sustained  = (drift > t.combatSnap) &&
                             overBandMs >= t.combatConvergeMs;
     const bool trueLeave  = !hostWaiting &&
@@ -1951,14 +1955,28 @@ static void testDriveBands() {
                       NOWARP, 0, COOLED) == DA_SLIDE &&
           driveDecide(t, t.combatWait - 0.5f, 0.0f, IDLE, RIGHTTGT, WAITING,
                       NOWARP, 0, COOLED) == DA_HOLD);
-    // ...but only while it is not ALSO fighting locally. leaveBand takes the
-    // correct-fight branch first, so the tighter wait band is unreachable for a
-    // copy that has independently engaged while the host copy is still queued.
-    // Pinned as the CODE reads, which is not what the comment above
-    // COMBAT_WAIT_DIST reads ("a queued body should not wander") - see the report.
-    CHECK("the wait band does not apply to a copy that is itself fighting",
+    // ...INCLUDING when this copy has independently engaged. That is the case the
+    // band exists for: the owner says the body is queued and standing still, our
+    // copy picked its own fight, and the divergence is ours - so the owner's word
+    // wins and the copy converges rather than claiming a fighting copy's 20 u of
+    // footwork. This check was originally written the other way round, pinning the
+    // code as it read; the order in leaveBand was the bug, and both moved together.
+    CHECK("the wait band applies even to a copy that is itself fighting",
           driveDecide(t, t.combatWait + 0.5f, 0.0f, FIGHTING, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_SLIDE);
+    CHECK("a fighting copy under a waiting owner still holds inside the wait band",
+          driveDecide(t, t.combatWait - 0.5f, 0.0f, FIGHTING, RIGHTTGT, WAITING,
                       NOWARP, 0, COOLED) == DA_HOLD);
+    // The tight band must not leak into the ordinary engaged case - a real fight
+    // owns its footwork to the churn ceiling, which is the whole reason
+    // combatSnapDist_ is 20 u and not 3.
+    CHECK("an engaged owner still lets a correct fight own its footwork",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_HOLD &&
+          driveDecide(t, t.combatSnap - 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_HOLD &&
+          driveDecide(t, t.combatSnap + 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_SLIDE);
 
     // (7) The per-body snap cooldown. A warp that cannot stick - stale interp, a
     // staggered body - must not re-fire every frame; while it is cooling the copy

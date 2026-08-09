@@ -1063,7 +1063,23 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // spikes converge - they never warp.
                 bool correctFight = localFighting && !wrongLocalTgt;
                 float softBand  = hostWaiting ? COMBAT_WAIT_DIST : combatSoftDist_;
-                float leaveBand = correctFight ? combatSnapDist_ : softBand;
+                // hostWaiting is tested FIRST, and the order is the whole fix.
+                // This used to read `correctFight ? combatSnapDist_ : softBand`,
+                // which took the correct-fight branch before the waiting band could
+                // ever apply - so the tighter COMBAT_WAIT_DIST was unreachable in
+                // exactly the case it was written for. The owner reporting a body
+                // as slot-QUEUED is a statement about that body; this client's copy
+                // having independently picked a fight is a local divergence, and it
+                // was being allowed to claim a fighting copy's 20 u of footwork.
+                // A body that should be standing still wandered most of a screen
+                // from where its owner had it, and the constant's own comment says
+                // the opposite ("a queued body should not wander").
+                //
+                // trueLeave already honoured hostWaiting, so the warp was never the
+                // problem - only the slide band was.
+                float leaveBand = hostWaiting  ? COMBAT_WAIT_DIST
+                                : correctFight ? combatSnapDist_
+                                               : softBand;
                 if (drift > combatSnapDist_) {
                     if (d.combatOverTick == 0) d.combatOverTick = now;
                 } else {
