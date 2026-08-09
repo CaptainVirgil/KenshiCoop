@@ -259,6 +259,17 @@ player's report resolves to a function.
 which means any earlier claim about what a channel costs — including the ~40 KB/s figure
 in `SyncTuning.h` — was arithmetic rather than measurement.
 
+## Plan
+
+`docs/ROADMAP.md` is the ordered plan: what is left, in what order, and what has
+been closed with a decision so it is not reopened. `HANDOFF.md`, when it exists,
+is disposable session state - half-built things and machine state outside the
+repo.
+
+**The single gating item is a two-client session.** Every gameplay fix shipped so
+far is verified by unit tests, a launched game and log evidence - never by two
+people playing.
+
 ## Known open work
 
 `docs/PROTOCOL_HISTORY.md` reconstructs the wire versions and marks what is evidenced
