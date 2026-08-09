@@ -1195,13 +1195,20 @@ unsigned int Replicator::attentionAnchors(GameWorld* gw, const float* raw,
 
 void Replicator::rebuildClaimedCells() {
     claimedCells_.clear();
+    contestedCells_.clear();
     for (std::map<std::pair<u32, u32>, CellClaim>::const_iterator it = claimSlots_.begin();
          it != claimSlots_.end(); ++it) {
         std::pair<int, int> cell(it->second.cx, it->second.cz);
         u32 owner = it->first.first;
         std::map<std::pair<int, int>, u32>::iterator ex = claimedCells_.find(cell);
         if (ex == claimedCells_.end()) claimedCells_[cell] = owner;
-        else if (owner == (u32)CELL_OWNER_HOST) ex->second = owner;  // host wins ties
+        else {
+            // Two claimants on one cell. The host still wins the verdict, so
+            // everything that reads claimedCells_ is unchanged; record the tie
+            // so the per-body split knows this is a cell worth sharing out.
+            if (ex->second != owner) contestedCells_.insert(cell);
+            if (owner == (u32)CELL_OWNER_HOST) ex->second = owner;  // host wins ties
+        }
     }
     // Remember it, so walking out of a cell does not hand it to the host.
     for (std::map<std::pair<int, int>, u32>::const_iterator it = claimedCells_.begin();
@@ -1223,10 +1230,45 @@ u32 Replicator::authorityFor(GameWorld* gw, float x, float z) const {
     return (u32)CELL_OWNER_HOST;
 }
 
+u32 Replicator::authorityForBody(GameWorld* gw, float x, float z,
+                                 const Key& k) const {
+    const u32 cellOwner = authorityFor(gw, x, z);
+    if (!splitAuthority_ || !cellAuth_) return cellOwner;
+    if (contestedCells_.empty()) return cellOwner;
+    int cx = 0, cz = 0;
+    if (!engine::cellAt(gw, x, z, &cx, &cz)) return cellOwner;
+    if (contestedCells_.find(std::make_pair(cx, cz)) == contestedCells_.end())
+        return cellOwner;
+    // Contested: both players are standing here, so the cell verdict hands one
+    // client the whole town and the other nothing. Split by a hash of the hand
+    // instead. The hand is save-stable, so both clients compute the SAME answer
+    // for the same body without exchanging anything, and because the partition
+    // is by identity rather than by position it has no boundary for a body to
+    // walk across - which is what makes it free of the handoff churn that
+    // spatial authority has to damp with dwell counters.
+    //
+    // Only the two-player case is modelled: ids are 0 (host) and 1 (join),
+    // matching resolveOwnRanks. FNV-1a over the five hand words.
+    u32 h = 2166136261u;
+    h = (h ^ k.t)  * 16777619u;
+    h = (h ^ k.c)  * 16777619u;
+    h = (h ^ k.cs) * 16777619u;
+    h = (h ^ k.i)  * 16777619u;
+    h = (h ^ k.s)  * 16777619u;
+    return (h & 1u) ? 1u : (u32)CELL_OWNER_HOST;
+}
+
 bool Replicator::authorHoldsBody(GameWorld* gw, u32 localId, const Key& k,
                                  Character* c, float x, float z) {
     if (!cellAuth_) return false;
-    u32 owner = authorityFor(gw, x, z);
+    // Body-aware: inside a contested cell this can hand the body to whichever
+    // client the hash picked, which is exactly what LICENSES the suppression
+    // machinery below to run on the half we gave away. Splitting the publish
+    // duty without splitting this would leave a body that the peer streams
+    // reading as ours - so parkDivergedCopy, the freeze and suppression would
+    // all stand down while the peer wrote it, and the local AI would simulate
+    // it at the same time. Split both, or split neither.
+    u32 owner = authorityForBody(gw, x, z, k);
     // Ours to author, or nobody's we have heard from: either way this body is
     // not ours to judge. The second case matters as much as the first - a cell
     // whose owner has sent no census is unspoken-for, not empty, and treating

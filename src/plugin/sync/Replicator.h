@@ -1145,6 +1145,12 @@ private:
     // publish cost on whichever client authors the town.
     std::vector<EntityState>  midRows_;
     unsigned long             midRowsMs_;
+    bool                      splitAuthority_;
+    // Cells claimed by MORE THAN ONE client this rebuild. rebuildClaimedCells
+    // resolves those to the host; the body split reads this to know where that
+    // tie-break happened, because a cell only one client stands in has nothing
+    // to share out.
+    std::set<std::pair<int, int> > contestedCells_;
     unsigned int              midCursor_;  // start of the CURRENT slice
     unsigned long             midSliceMs_; // last slice advance (50 ms cadence:
                                            // the slice must persist across a
@@ -2304,6 +2310,23 @@ public:
     bool weAuthor(GameWorld* gw, u32 localId, float x, float z) const {
         return authorityFor(gw, x, z) == localId;
     }
+    // Same question for a BODY, which can be split by hand inside a contested
+    // cell (see splitAuthority_). Positions with no body - doors above all -
+    // must keep using weAuthor: a door is a fixed object each engine mutates
+    // for its own characters, and splitting the describer is what produced the
+    // flapping bar door.
+    u32 authorityForBody(GameWorld* gw, float x, float z, const Key& k) const;
+    bool weAuthorBody(GameWorld* gw, u32 localId, float x, float z,
+                      const Key& k) const {
+        return authorityForBody(gw, x, z, k) == localId;
+    }
+    // Split world-NPC duty by hand inside a CONTESTED cell (default OFF,
+    // KENSHICOOP_SPLIT_AUTHORITY=1). Cell authority partitions work by SPACE,
+    // so two players in one cell means one client authors the whole town and
+    // the other authors none - one machine pays every publish, the other pays
+    // every drive. A hash of the save-stable hand splits that with no spatial
+    // boundary, and therefore no handoff churn.
+    void setSplitAuthority(bool on) { splitAuthority_ = on; }
 private:
     // Recompute claimedCells_ from claimSlots_. Host wins a contested cell.
     void rebuildClaimedCells();

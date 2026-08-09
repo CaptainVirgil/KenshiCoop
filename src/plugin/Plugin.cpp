@@ -2496,6 +2496,15 @@ void installEngineDetours() {
         coopLog("[trust] divergence-gated authority ON (default; KENSHICOOP_GATE_AUTHORITY=0 disables)");
     }
 
+    // Hand-hash split of world-NPC duty inside a contested cell. BOTH clients
+    // must run the same setting: each computes the partition independently from
+    // the shared hand, so a one-sided enable makes both claim the same bodies.
+    if (g_cfg.splitAuthority) {
+        g_repl.setSplitAuthority(true);
+        coopLog("[cell] contested-cell authority SPLIT by hand hash "
+                "(KENSHICOOP_SPLIT_AUTHORITY=1; BOTH clients must match)");
+    }
+
     // Damage guard (BOTH sides, DEFAULT ON): locally-simulated melee hits on
     // driven bodies are suppressed (HIT_MISSED) so cosmetic fights cannot diverge
     // the local-only medical model. The guard set is "every body this client

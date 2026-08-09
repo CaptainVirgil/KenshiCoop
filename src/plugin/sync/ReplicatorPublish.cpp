@@ -237,7 +237,8 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             unsigned long cNow = nowMs();
             unsigned int kept = 0;
             for (unsigned int i = 0; i < got; ++i) {
-                if (!weAuthor(gw, ownerId, buf[n + i].x, buf[n + i].z)) continue;
+                if (!weAuthorBody(gw, ownerId, buf[n + i].x, buf[n + i].z,
+                                  keyOf(buf[n + i]))) continue;
                 // The peer's census is the other half of incumbent-holds. weAuthor
                 // asks a question about OUR copy's position, and two copies of one
                 // fighting NPC drift apart far enough to answer it differently on
@@ -951,7 +952,11 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         // get to make it about cells we own. Without this the two clients would
         // each broadcast the whole overlapping walk and each cull the other's
         // bodies against it.
-        if (cellAuth_ && !weAuthor(gw, ownerId, states[i].x, states[i].z)) {
+        // Body-aware, and in LOCKSTEP with the near/mid capture gates: the
+        // census is the existence claim behind the peer's culling, so if we
+        // stop STREAMING a body we must also stop CLAIMING it - otherwise the
+        // peer's suppression stands down on a body nobody is writing.
+        if (cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z, k)) {
             ++nNotMine;
             continue;
         }
@@ -999,7 +1004,8 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
             }
             if (best < 0.0f || best <= MID_NEAR_EDGE) continue; // near tier
             // Same ownership rule as the near band: we drive what we author.
-            if (cellAuth_ && !weAuthor(gw, ownerId, states[i].x, states[i].z)) continue;
+            if (cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z,
+                                           keyOf(states[i]))) continue;
             if (cellAuth_ && nPeerAnch > 0 &&
                 !observedByPeer(keyOf(states[i]), peerAnch, nPeerAnch,
                                 states[i].x, states[i].y, states[i].z)) continue;

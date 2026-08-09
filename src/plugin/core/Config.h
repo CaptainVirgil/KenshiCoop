@@ -178,6 +178,18 @@ struct Config {
     // the drive the same tick. Doctrine 18 in INTENT_REPLICATION.md.
     bool          gateAuthority;
 
+    // Split world-NPC duty by a hash of the hand inside a CONTESTED cell
+    // (KENSHICOOP_SPLIT_AUTHORITY=1; DEFAULT OFF). Cell authority partitions
+    // work by SPACE, so two players standing in one cell hands the whole town
+    // to one client - measured live: the host authored all 216 NPCs and drove
+    // none, the join drove all 216 and authored none, and the loaded client's
+    // frame budget is what the other one's stream quality depends on. A hash of
+    // the save-stable hand splits the same set with no spatial boundary and
+    // therefore no handoff churn. Default off because it changes who is
+    // authoritative for a body mid-session; both clients must agree on the
+    // setting or each will claim bodies the other also claims.
+    bool          splitAuthority;
+
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
     // apply no damage to DRIVEN bodies. Not because vitals "never cross the
