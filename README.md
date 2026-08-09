@@ -160,14 +160,20 @@ The kit's `README.txt` has the full setup + troubleshooting list.
 
 ## Building
 
-The plugin must be compiled with the **Visual C++ 2010 (v100) x64 toolset** (a
-KenshiLib requirement). Full toolchain setup, gotchas, and install steps are in
-[docs/BUILD_SETUP.md](docs/BUILD_SETUP.md). Short version, once prerequisites
-are in place:
+The plugin must be compiled with the **Visual C++ 2010 (v100) x64 toolset**. This is not
+a preference: the vendored headers pin members at literal Kenshi.exe offsets that assume a
+40-byte `std::string` (VC10; VS2015+ is 32), and the DLL exchanges `std::string` with the
+game itself across MSVCP100/MSVCR100. A newer MSVC **links cleanly and then reads the game
+8 bytes off**; mingw fails at link. See the `kenshicoop-build` skill for the full detail.
+
+Short version, once prerequisites are in place — two paths, both maintained:
 
 ```bash
-cmd //c scripts/build_plugin.cmd
+scripts/linux/build_plugin.sh Release        # Linux, via a Wine-hosted v100 toolchain
+powershell -File scripts\build_plugin_direct.ps1 -Config Release   # Windows, no VS2010 needed
 ```
+
+`scripts\build_plugin.cmd` (MSBuild) also works but needs a genuine VS2010 install.
 
 Dependencies are fetched, not committed:
 

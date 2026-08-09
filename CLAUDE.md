@@ -9,8 +9,26 @@ This is a **hard fork** of `nhoral/KenshiCoop` (`upstream` remote). We diverge f
 stay merge-compatible on purpose: file layout and protocol numbering track upstream so his
 ongoing work can be cherry-picked. `origin` is `CaptainVirgil/KenshiCoop`.
 
-C++03 only — KenshiLib requires the **VC++ 2010 (v100) x64** toolset, so no C++11, no
-`<cstdint>`, no `std::thread`, no scoped enums, no smart pointers.
+**VC++ 2010 RTM (v100) x64 is mandatory**, and the reason is not the one this file
+used to give. `KenshiLib.lib` is a pure import library — no `.drectve`, no
+`FAILIFMISMATCH`, no `DEFAULTLIB` — and MSVC name mangling is toolset-invariant, so a
+**modern MSVC build links cleanly** and then reads the game wrong. The real coupling is
+`sizeof(std::string)`: 40 bytes in VC10, 32 in VS2015+, and the vendored headers pin
+members at literal game offsets that assume 40 (`kenshi/Character.h`: `sex` at 0x610 →
+`nameTag` at 0x638). `movement` (0x640) and `body` (0x648) sit after it and are
+dereferenced directly, so under a 32-byte string every one of those reads lands 8 bytes
+early. The DLL also exchanges `std::string` with **Kenshi.exe itself** across
+MSVCP100/MSVCR100. mingw fails loudly at link; modern MSVC fails **silently at runtime**.
+
+What the toolset actually forbids: no `<thread>`/`<mutex>`/`<atomic>` (not shipped with
+it), no `enum class` (`_MSC_VER` 1600). `_HAS_CPP0X` is on and `<cstdint>`, `<memory>`,
+`<tuple>` and `<type_traits>` all exist — `<stdint.h>` is already compiled into the
+shipping plugin via KenshiLib's own `core/Functions.h`. **Prefer plain C++03 style for
+consistency**, but do not treat the wider ban as a constraint the compiler enforces; it
+does not, and pretending otherwise cost this project a piece of fork-lore.
+
+The "no `std::thread`" half is load-bearing for a different reason: all game mutation
+happens on the main thread, and not having threads available is what keeps it that way.
 
 ---
 
@@ -44,16 +62,29 @@ Then, on either OS:
 
 | | Linux | Windows |
 |---|---|---|
-| plugin | `scripts/linux/build_plugin.sh [Harness\|Release\|Debug]` | `scripts\build_plugin_direct.ps1` (no VS2010 needed) or `scripts\build_plugin.cmd` (needs one) |
+| plugin | `scripts/linux/build_plugin.sh [Harness\|Release]` | `scripts\build_plugin_direct.ps1` (no VS2010 needed) or `scripts\build_plugin.cmd` (needs one) |
 | gate | `scripts/linux/verify.sh` | `scripts\verify.ps1` |
 
-**The two paths are verified to agree.** Built from the same commit they produce identical
-`.text`, `.data`, `.pdata` and `.reloc`; `.rdata` differs only by the aligned length of the
-embedded PDB path. Both scripts link objects in vcxproj source order — `/OPT:ICF` folding
-depends on link order, so an alphabetical object list silently changes `.text`. See the
-`kenshicoop-build` skill for the comparison procedure and the Windows VM harness.
+**The two paths agreed when last compared, at `5a7902d` (2026-08-08), and that proof is
+now stale.** Built from the same commit they produced identical `.text`, `.data`, `.pdata`
+and `.reloc`, with `.rdata` differing only by the aligned length of the embedded PDB path.
+Both scripts link objects in vcxproj source order — `/OPT:ICF` folding depends on link
+order, so an alphabetical object list silently changes `.text`.
 
-The gate builds both configurations and runs `prototest` (exact packed sizes and field
+Since that proof, two changes landed on the **Linux script only**: the generated
+`DepsPin.h` stamp (`36ed9fb`, `37812ee`) and the map-based loadability check (`857a780`).
+`grep -c DEPS_PIN scripts/build_plugin_direct.ps1` returns 0 against 7 for the shell
+script, and the stamp changes a string literal's length, so the artifacts no longer match.
+No automated parity gate exists, and no Windows-built DLL has ever shipped — both
+`dist/release-fork-6/{win,linux}` DLLs are the same Linux build. Porting those two
+features to `build_plugin_direct.ps1` is roadmap item 46. See the `kenshicoop-build` skill
+for the comparison procedure.
+
+**The Linux gate builds both configurations**; the Windows gate does not build the plugin
+at all (`verify.ps1` says so itself: "Requires NO Kenshi launch and NO KenshiCoop.dll").
+That matters more than it sounds — the guard that refuses to emit a DLL whose main-loop
+hook is not an import lives *inside* the plugin build, so the entire dead-on-arrival class
+that produced fork-1..fork-5 is uncovered on Windows. Both gates run `prototest` (exact packed sizes and field
 offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`, the interp buffer, the
 save-transfer receiver, the drive's band/convergence arithmetic, the change-gate table,
 wire string termination, the targets_ age-out predicate) and `tunneltest` (ENet over the
@@ -247,9 +278,16 @@ violation.
 
 Both build scripts are **incremental**: a translation unit is skipped when its object
 is newer than its source, so a no-op rebuild is under a second and a one-file edit is
-about one. Touching **any** header forces a full rebuild — deliberately, because the
-headers here are load-bearing and a source-only check would skip a TU a header change
-invalidated. `KC_REBUILD=1` forces a full rebuild.
+about one. Touching any header **under `src/` or `third_party/vc10_compat`** forces a full
+rebuild — deliberately, because those headers are load-bearing and a source-only check
+would skip a TU a header change invalidated.
+
+**That scan is 34 headers; the include path handed to `cl.exe` carries 11,576.** A
+KenshiLib or ENet header change rebuilds NOTHING, so the documented post-checkout ritual
+(`patch_vendored_headers.sh` rewrites 164 vendored headers) is a silent stale-object
+generator, and applying or reverting the ENet socket-hook patch is invisible to it. **Pass
+`KC_REBUILD=1` by hand after touching anything under `third_party/`** — the KenshiLib 0.4.0
+bump only built correctly because it was. Widening the scan is roadmap item 45.
 
 The log keeps one previous run as `.prev`, so relaunching after a crash no longer
 destroys the log of the crash. The kit ships `KenshiCoop.map`, so a crash address in a

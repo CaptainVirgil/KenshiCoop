@@ -45,9 +45,15 @@ window expires against the very sample it was meant to wait out. Use the `healDu
 in `ReplicatorDrive.cpp`: it requires both the elapsed window *and* `interp.newestMs()` to
 have advanced. Found the hard way — the first version of these debounces was time-only.
 
-Five heals exist (carry, furniture ENTER, chained fall-through, shackle relock, bed
-fast-exit). If you add a sixth, it needs both halves, and it needs resetting on every path
-that makes the condition moot — a `*SeeTick` left armed is a heal that never fires again.
+**Do not trust a list of the heals here — it went stale within hours of being written.**
+The roster is `grep -n healDue src/plugin/sync/ReplicatorDrive.cpp`. Every heal that reads
+the delayed stream must go through it, must reset on every path that makes the condition
+moot (a `*SeeTick` left armed is a heal that never fires again), and needs both halves.
+
+One known exception, and it is a live instance of the very pattern warned about above: the
+bed **fast-exit** does not use `healDue()`. It gates on `furnEnterHoldMs`, an absolute
+wall-clock deadline stamped once at pickup — time-only, with no stream-progress term.
+Treat it as debt, not as the example to copy.
 
 ### 3. Who authors this?
 

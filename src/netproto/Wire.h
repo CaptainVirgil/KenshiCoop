@@ -1,9 +1,15 @@
 // KenshiCoop unified wire protocol (clean rebuild, v1).
 //
-// Compiled by the VS2010 (v100) plugin only. Keep it plain C++03: no <cstdint>
-// reliance, no constexpr, no scoped enums, no STL on the wire. Wire format is
-// packed, little-endian; x86-64 is little-endian on both ends so we send the
-// struct bytes directly.
+// Compiled by the VS2010 (v100) plugin only, and by prototest. The constraints
+// that are actually enforced here: NO STL on the wire, self-defined fixed-width
+// typedefs (so a struct's layout never depends on a header's choices), packed and
+// little-endian - x86-64 is little-endian on both ends, so the struct bytes go out
+// directly. No constexpr and no scoped enums, because _MSC_VER is 1600.
+//
+// The old note also banned <cstdint>. That was never a real constraint - the
+// toolchain ships it, and KenshiLib's own core/Functions.h includes <stdint.h>
+// unconditionally, so it is already in every translation unit here. The typedefs
+// below exist to keep the WIRE self-describing, not because <cstdint> is absent.
 
 #ifndef KENSHICOOP_WIRE_H
 #define KENSHICOOP_WIRE_H

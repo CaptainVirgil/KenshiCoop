@@ -5,9 +5,27 @@ description: Build, package and install KenshiCoop.dll on Linux (Wine-hosted VC+
 
 # Building KenshiCoop
 
-KenshiLib exports C++ classes, so the MSVC ABI must match Kenshi's own compiler: **VC++
-2010 (v100), x64**. No substitutes — mingw and modern MSVC both produce an ABI that
-cannot link against `KenshiLib.lib`.
+**VC++ 2010 RTM (v100), x64. No substitutes** — but not for the reason this file used to
+give, and the wrong reason is dangerous because anyone who checks it concludes the rule is
+stale.
+
+`KenshiLib.lib` is a pure import library: no `.drectve`, no `FAILIFMISMATCH`, no
+`DEFAULTLIB`, so there is no `detect_mismatch` record and no LNK2038 path. MSVC mangled
+names are toolset-invariant. **A modern-MSVC build links cleanly.** It then reads the game
+wrong: `sizeof(std::string)` is 40 bytes under VC10 and 32 under VS2015+, and the vendored
+headers pin members at literal game offsets assuming 40 — `kenshi/Character.h` has `sex` at
+0x610 and `nameTag` at 0x638, and `movement` (0x640) / `body` (0x648) follow it and are
+dereferenced directly. Under a 32-byte string every one of those reads lands 8 bytes early.
+The DLL also exchanges `std::string` with **Kenshi.exe itself** across MSVCP100/MSVCR100,
+so the coupling is to the game binary, not to `KenshiLib.lib`.
+
+mingw fails loudly at link (Itanium mangling never matches). Modern MSVC fails **silently
+at runtime**, which is worse than a link error.
+
+Zero-build check that settles it:
+`ls ~/.local/share/kenshicoop-toolchain/VS10/VC/include/{cstdint,memory,thread}` — the
+first two exist, the third does not. `<cstdint>` and smart pointers are *available*; the
+real bans are `<thread>`/`<mutex>`/`<atomic>` and `enum class`.
 
 `src/plugin/KenshiCoop.vcxproj` is authoritative for sources, per-configuration exclusions
 and flags. Both build paths read from it; keep them in sync.
@@ -18,7 +36,15 @@ and flags. Both build paths read from it; keep them in sync.
 |---|---|---|
 | `Release` | player build; `test/Scenario*.cpp` and `game/EngineProbe.cpp` excluded | anything handed to a player |
 | `Harness` (default) | Release plus the scenario runner and probes | scenario/regression runs |
-| `Debug` | unoptimized, debug CRT | stepping |
+| ~~`Debug`~~ | **does not build — do not use** | — |
+
+`Debug` is broken three independent ways and is not worth fixing: the vcxproj has no
+`<WholeProgramOptimization>` for it (so no `/GL`, so the loadability gate deletes the DLL),
+two TUs fail outright with C2712, and `/D_DEBUG` flips `_ITERATOR_DEBUG_LEVEL` 0→2, which
+adds 8 bytes to every `std::string`/`vector`/`deque` member — exactly the offsets the
+vendored headers pin to literal game addresses. **Do not "fix" it by adding
+`WholeProgramOptimization` to the Debug PropertyGroup**: that clears the gate and leaves
+the offset mismatch, i.e. a DLL that loads and reads the game wrong. Use `Harness`.
 
 ## Linux
 
@@ -47,7 +73,9 @@ scripts/linux/build_plugin.sh Release     # -> build/Release/KenshiCoop.dll
 scripts\build_plugin.cmd Release
 ```
 
-Needs Windows SDK 7.1 + KB2519277 for the v100 compiler, VS2022 Build Tools for MSBuild,
+Needs Windows SDK 7.1 for the v100 compiler and VS2022 Build Tools for MSBuild.
+(KB2519277 is **no longer obtainable** — Microsoft took it offline. `setup_toolchain.sh`
+patches the one `<deque>` defect it fixed; see the failure table below.)
 and the same two dependency steps (`git lfs pull`, then the header patch — the patch is a
 no-op on a tree already patched from Linux).
 
@@ -112,7 +140,13 @@ source order for this reason — it is what makes the two artifacts comparable a
 
 ## Verifying the two builds agree
 
-Proven on 2026-08-08 at commit `5a7902d`, and repeatable:
+**The last proof is stale.** It held at `5a7902d` (2026-08-08); since then the generated
+`DepsPin.h` stamp and the map-based loadability check landed on the **Linux script only**
+(`grep -c DEPS_PIN scripts/build_plugin_direct.ps1` → 0, against 7 for the shell script),
+and the stamp changes a string literal's length. No Windows-built DLL has ever shipped.
+Port those two features across before trusting a fresh comparison — roadmap item 46.
+
+The procedure itself is still correct:
 
 ```bash
 # same commit both sides, then compare PE sections

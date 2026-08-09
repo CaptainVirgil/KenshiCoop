@@ -343,14 +343,7 @@ Named so the table above is not mistaken for complete.
 4. Run the gate (`scripts/linux/verify.sh` or `scripts\verify.ps1`) and ship a kit
    to both players: a mismatch is a hard connection reject.
 
-**Step 3 cannot currently be honoured.** `resources/` is gitignored, so this file
-is not in any commit and "in the same commit" is not something the repo can hold
-you to. Until that is resolved one of two ways — move the document somewhere
-tracked and repoint `Wire.h:23-27`, or accept that it is a personal working note
-and stop `Wire.h` from promising it — every future bump risks re-creating the hole
-this reconstruction just filled. The reconstruction was possible only because
-`Wire.h` and `prototest` are unusually well commented and the git history is
-intact; a repurpose landed without a comment would leave no trace at all.
+Nothing mechanically gates step 3: `prototest` asserts the `PROTOCOL_VERSION` literal, not the §3 row. Keeping them together is a discipline, not a check.
 
 ---
 
