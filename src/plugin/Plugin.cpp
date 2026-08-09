@@ -2048,12 +2048,15 @@ void coopUiDisconnect() {
 // Which KenshiLib is actually serving us at runtime, and which one we compiled
 // against.
 //
-// These are NOT the same thing and never have been. The plugin builds against the
-// deps checkout pinned at e75769b (tag v0.1) because later headers moved
-// kenshi/CombatClass.h and duplicated an enum - but the DLL that resolves our
-// member-function stubs at runtime is whatever RE_Kenshi ships, currently 0.4.0.
-// Three minor versions of unmanaged ABI drift, working by stability rather than by
-// design, and until now nothing recorded which one a player was on.
+// They are aligned now - both KenshiLib 0.4.0 - but they were not for this fork's
+// entire history, and nothing recorded the pair. The build was pinned at v0.1 while
+// the DLL resolving our member-function stubs was whatever RE_Kenshi shipped: three
+// minor versions of unmanaged drift, held together by the stub ABI happening to be
+// stable rather than by anyone checking.
+//
+// Alignment is not permanent - RE_Kenshi updates on its own schedule and a player
+// can be on a KenshiLib newer than the one this DLL was built against at any time.
+// So the pair is still logged, and still compared.
 //
 // This does not refuse to run on an unexpected version. It has no basis to: the
 // combination usually works, and refusing would strand players on a newer

@@ -56,7 +56,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
-    <IncludePath>$(KENSHILIB_DIR)\Include;$(KENSHILIB_DIR)\Include\ogre;$(BOOST_INCLUDE_PATH);$(ProjectDir)..\..\third_party\enet\enet\include;$(IncludePath)</IncludePath>
+    <IncludePath>$(KENSHILIB_DIR)\Include;$(KENSHILIB_DIR)\Include\kenshi;$(KENSHILIB_DIR)\Include\ogre;$(BOOST_INCLUDE_PATH);$(ProjectDir)..\..\third_party\enet\enet\include;$(IncludePath)</IncludePath>
     <LibraryPath>$(KENSHILIB_DIR)\Libraries\;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

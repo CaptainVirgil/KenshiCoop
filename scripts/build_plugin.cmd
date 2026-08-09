@@ -56,7 +56,7 @@ REM Headers: VC10 CRT + Win SDK 7.1 + vc10_compat ammintrin.h shim + our deps.
 REM ...\Include\ogre is needed because the vendored ogre math headers include
 REM each other by bare name ("OgreVector3.h"); vc10_compat also shims the
 REM missing OgreConfig.h/OgrePlatformInformation.h that chain pulls in.
-set "INCLUDE=%VC%\include;%SDK%\Include;%REPO%\third_party\vc10_compat;%KL%\KenshiLib\Include;%KL%\KenshiLib\Include\ogre;%KL%\boost_1_60_0;%ENET%"
+set "INCLUDE=%VC%\include;%SDK%\Include;%REPO%\third_party\vc10_compat;%KL%\KenshiLib\Include;%KL%\KenshiLib\Include\kenshi;%KL%\KenshiLib\Include\ogre;%KL%\boost_1_60_0;%ENET%"
 
 REM Libs: VC10 x64 CRT + Win SDK 7.1 x64 + KenshiLib (kenshilib.lib, OgreMain_x64.lib).
 set "LIB=%VC%\lib\amd64;%SDK%\Lib\x64;%KL%\KenshiLib\Libraries"

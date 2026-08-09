@@ -53,13 +53,17 @@ no-op on a tree already patched from Linux).
 
 ## Dependencies
 
-`third_party/KenshiLib_deps` is a separate checkout, **pinned to `e75769b`**, gitignored.
+`third_party/KenshiLib_deps` is a separate checkout, **pinned to `b566d74`**
+(KenshiLib 0.4.0 — the version RE_Kenshi actually ships), gitignored.
 `third_party/enet/enet` is a clone of lsalzman/enet with the two patches in
 `third_party/enet/patches/` applied.
 
-**KenshiLib v0.4.0 breaks the plugin.** It moved `kenshi/CombatClass.h` under
-`kenshi/combat/` and introduced a duplicate `enum BuildingDesignation`. Stay on the pin
-unless you are deliberately porting.
+This used to be pinned at `e75769b` with the note *"v0.4.0 breaks the plugin"*. It did
+not: the move of `kenshi/CombatClass.h` under `kenshi/combat/` cost one include line plus
+one include-path entry, and the "duplicate `enum BuildingDesignation`" predates the pin
+entirely — `patch_vendored_headers.sh` has always deduped it (`git -C
+third_party/KenshiLib_deps grep -c 'enum BuildingDesignation' <any ref>` returns 2 at
+every revision). Building against v0.1 while running 0.4.0 was the actual risk.
 
 After any deps checkout, **both** `fetch_lfs.sh` and `patch_vendored_headers.sh` must
 re-run.
@@ -69,7 +73,8 @@ re-run.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot open include file: 'boost/unordered_map.hpp'` | `boost.zip` is still an LFS pointer, or was never unzipped | `scripts/linux/fetch_lfs.sh third_party/KenshiLib_deps` then `unzip -o boost.zip` in `boost_1_60_0/` |
-| `Cannot open include file: 'kenshi/CombatClass.h'` | deps are on v0.4.0, not the pin | `git -C third_party/KenshiLib_deps checkout -f e75769b`, then both post-checkout steps |
+| `Cannot open include file: 'kenshi/CombatClass.h'` | deps are on the OLD v0.1 pin | `git -C third_party/KenshiLib_deps checkout b566d74`, then both post-checkout steps. Do NOT go back to `e75769b` — that is the stale pin, and the header lives at `kenshi/combat/CombatClass.h` from 0.4.0 on. |
+| `Cannot open include file: 'Enums.h'` from inside `kenshi/combat/CombatClass.h` | `KenshiLib/Include/kenshi` is missing from the include path | 0.4.0 headers sit in subdirectories but include siblings relative to `kenshi/`. All four entry points must carry it: `vcenv.sh`, `build_plugin_direct.ps1`, `build_plugin.cmd`, `KenshiCoop.vcxproj`. |
 | `error C2011: 'BuildingDesignation' : 'enum' type redefinition` | header patch not applied | `scripts/linux/patch_vendored_headers.sh` |
 | Same, or every type in a header defined twice, only under Wine | `#pragma once` does not dedup — Wine returns the same header as `Z:\...\Foo\Bar.h` and `z:\...\foo/bar.h` | same patch; it converts to include guards |
 | `error C2027: use of undefined type 'CraftingItem'` in `<deque>` | SDK 7.1's RTM CRT forces `sizeof(value_type)` at class scope via `_EEM_DS`/`_EEN_DS`; `CraftingBuilding` holds a `std::deque<CraftingItem>` with the type forward-declared | `setup_toolchain.sh` patches it out (equivalent to KB2519277, which Microsoft has taken offline) |
