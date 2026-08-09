@@ -169,7 +169,8 @@ Two useful facts for whoever picks this up:
 
 ## Loose ends
 
-- [ ] `git push origin linux-build` (7 commits)
+- [x] ~~push~~ — done, `origin/linux-build` is current
+- [x] ~~instruction audit~~ — done; `CLAUDE.md`, all three skills, README, `Wire.h` and four docs corrected (roadmap item 44 closed)
 - [ ] Decide: release fork-7, or fold Phase 1 in and cut fork-8
 - [ ] Restore `"transport": "steam"` in both installs before a Steam session
 - [ ] Drop the `KenshiLib_deps` stash once 0.4.0 is settled
