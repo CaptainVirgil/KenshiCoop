@@ -1138,6 +1138,13 @@ private:
     // at all; this stamps the periodic full sample that keeps it held rather
     // than released to local AI. Pruned in publishOwned (bounded growth).
     std::map<Key, unsigned long> midStillMs_;
+    // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
+    // slice cursor advances (50 ms), then re-emitted on every render frame:
+    // the scan behind it costs a full captureNpcByHand per body and used to run
+    // 3-4x per slice producing the identical answer, which is most of the
+    // publish cost on whichever client authors the town.
+    std::vector<EntityState>  midRows_;
+    unsigned long             midRowsMs_;
     unsigned int              midCursor_;  // start of the CURRENT slice
     unsigned long             midSliceMs_; // last slice advance (50 ms cadence:
                                            // the slice must persist across a

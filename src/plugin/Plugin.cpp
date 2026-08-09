@@ -1157,6 +1157,40 @@ static coop::SyncContext replCtx(GameWorld* gw) {
 // host additionally streams world NPCs. Ingest received targets BEFORE the engine
 // tick so apply targets are current. worldLive is sampled ONCE pre-engine by the
 // caller (see the comment there); every channel is gated by its own Config knob.
+// Per-frame cost of the plugin's two replication stages, rolled up every 5 s.
+//
+// A NEW log prefix on purpose: the existing lines are parsed by the PowerShell
+// oracles and their field lists are API. Reports the mean and the WORST frame
+// of the window for each stage, plus how many frames in the window blew a 2 ms
+// budget - the mean hides exactly the spikes that are felt as a stutter, and
+// the worst frame alone cannot say how often it happens.
+//
+// Publish cost lands on whichever client AUTHORS the bodies in interest; apply
+// cost lands on whichever DRIVES them. With both players in one cell those are
+// the same client for the whole town, which is why one machine can stutter
+// while the other is idle.
+static void logTickBudget(unsigned long pubUs, unsigned long appUs) {
+    static unsigned long winMs = 0, frames = 0, over = 0;
+    static unsigned long pubSum = 0, pubMax = 0, appSum = 0, appMax = 0;
+    const unsigned long now = coop::wallClockMs();
+    if (winMs == 0) winMs = now;
+    ++frames;
+    pubSum += pubUs; appSum += appUs;
+    if (pubUs > pubMax) pubMax = pubUs;
+    if (appUs > appMax) appMax = appUs;
+    if (pubUs + appUs > 2000ul) ++over;
+    if ((now - winMs) < 5000ul || frames == 0) return;
+    char b[200];
+    _snprintf(b, sizeof(b) - 1,
+        "[budget] pub avg=%luus max=%luus apply avg=%luus max=%luus "
+        "frames=%lu over2ms=%lu",
+        pubSum / frames, pubMax, appSum / frames, appMax, frames, over);
+    b[sizeof(b) - 1] = '\0';
+    coop::logLine(b);
+    winMs = now; frames = 0; over = 0;
+    pubSum = pubMax = appSum = appMax = 0;
+}
+
 void tickReplicatePublish(GameWorld* gw, bool worldLive) {
     if (worldLive) {
         g_repl.ingest(g_inbound);
@@ -1759,7 +1793,14 @@ void mainLoop_hook(GameWorld* gw, float dt) {
 
     // Replication publish (pre-engine, worldLive-gated): ingest received targets,
     // then stream every owned channel so applied state is current this tick.
+    //
+    // Timed. The plugin's per-frame cost scales with how many bodies are in
+    // interest, and until now NOTHING measured it - which left "the game
+    // stutters" as an argument rather than a number. Whichever client authors
+    // a town pays the publish side; whichever drives it pays the apply side.
+    const unsigned long tPub0 = coop::monoUs();
     tickReplicatePublish(gw, worldLive);
+    const unsigned long tPub1 = coop::monoUs();
 
     // Coordinated save + load (protocols 31/32): run under g_gameStarted (NOT
     // worldLive) so they keep pumping DURING a world swap - they only touch net
@@ -1775,7 +1816,10 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     // Replication apply (post-engine): our transform is the last word the renderer
     // samples. Re-checks gameplayLive so a swap STARTED by this engine tick skips
     // apply (its caches are now stale; the reset runs next tick's reload edge).
+    const unsigned long tApp0 = coop::monoUs();
     tickReplicateApply(gw, worldLive);
+    const unsigned long tApp1 = coop::monoUs();
+    logTickBudget(tPub1 - tPub0, tApp1 - tApp0);
 
     // Coordinated load deferred-signal backstop: if the LOADGAME signal stalls
     // past the grace window, pump SaveManager::execute() once from end-of-tick.

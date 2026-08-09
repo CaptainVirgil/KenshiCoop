@@ -291,9 +291,11 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // guaranteed on the wire: quota/10th of the list every 50 ms = each
         // mid NPC at ~2 Hz, deterministically.
         unsigned long nowPub = nowMs();
+        bool sliceAdvanced = false;
         if (midSliceMs_ == 0 || (nowPub - midSliceMs_) >= 50) {
             midSliceMs_ = nowPub;
             midCursor_ += quota; // linear cursor, index mod size below
+            sliceAdvanced = true;
         }
         // Bound the SCAN, not just the send. The stationary skip below deliberately
         // does not consume quota, so a field of parked NPCs walks the whole band -
@@ -308,8 +310,28 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // standing NPCs can never crowd out the movers this band exists for.
         unsigned int stillQuota = quota / 4;
         if (stillQuota == 0) stillQuota = 1;
+        // Scan ONCE PER SLICE, not once per render frame.
+        //
+        // The cursor only advances on the 50 ms net tick, so at 60 fps this
+        // loop used to run three times per slice and produce the identical
+        // answer twice over - and it is not a cheap answer: every scanned body
+        // costs a captureNpcByHand, which is unconditionally FULL (13-15 engine
+        // calls), and scanBudget is quota*4. That is thousands of engine calls
+        // per frame on whichever client authors the town, which is the HOST
+        // whenever both players stand in one cell. It shows up as the host's
+        // own local NPCs stuttering - bodies the plugin never drives and cannot
+        // desync, starved by the plugin's publish cost instead.
+        //
+        // Caching the emitted rows for the slice window is safe by the same
+        // argument the slice cadence itself rests on: a row is at most 50 ms
+        // old on a body the band streams at ~2 Hz. It also makes the keepalive
+        // decision naturally once-per-slice.
+        if (sliceAdvanced || midRowsMs_ == 0) {
+        midRows_.clear();
         unsigned int tried = 0, added = 0, stillSent = 0;
-        while (tried < scanBudget && added < quota && n < MAX_PUBLISH) {
+        EntityState row;
+        while (tried < scanBudget && added < quota &&
+               (nearEnd + midRows_.size()) < MAX_PUBLISH) {
             const Key mk = midBand_[(midCursor_ + tried) % sz].k;
             ++tried;
             bool dup = false;
@@ -317,7 +339,7 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
                 dup = buf[i].hIndex == mk.i && buf[i].hSerial == mk.s;
             if (dup) continue;
             if (engine::captureNpcByHand(gw, mk.i, mk.s, mk.t, mk.c, mk.cs,
-                                         &buf[n])) {
+                                         &row)) {
                 // Movers first (Phase 2 refinement, run 112835): streaming every
                 // stationary far NPC every tick fed the join a whole town to
                 // drive and starved Kenshi's character-update budget.
@@ -340,30 +362,29 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
                 // owner says it is instead of releasing it to wander. Costs
                 // ~180 bodies / 1.5 s x 79 B = ~9 KB/s against a measured
                 // steady-state of ~43 KB/s.
-                if (buf[n].cMoving == 0 && buf[n].cSpeed <= 0.25f) {
+                // Now decided once per slice (the scan itself is), so the row
+                // simply persists in the cache for the whole 50 ms window and
+                // is guaranteed to be in whichever frame the net thread samples.
+                if (row.cMoving == 0 && row.cSpeed <= 0.25f) {
                     if (stillSent >= stillQuota) continue;
-                    // Decide against the SLICE, not the frame, and re-include
-                    // for the whole slice window. setOwnedEntities overwrites
-                    // the published buffer every render frame while the net
-                    // thread samples it only every 50 ms, so a row that appears
-                    // on ONE frame reaches the wire about one time in three at
-                    // 60 fps. The movers are safe from this by accident - the
-                    // cursor only advances per slice, so the same bodies are
-                    // re-selected on every frame of the window - and the
-                    // keepalive has to be made safe on purpose. Same failure
-                    // the slice-cadence comment above was written to fix.
                     std::map<Key, unsigned long>::iterator sit = midStillMs_.find(mk);
                     const unsigned long lastSent = (sit != midStillMs_.end()) ? sit->second : 0;
-                    const bool sentThisSlice = (sit != midStillMs_.end() && lastSent == midSliceMs_);
-                    if (!sentThisSlice && lastSent != 0 &&
+                    if (lastSent != 0 &&
                         (midSliceMs_ - lastSent) < MID_STILL_KEEPALIVE_MS) continue;
                     midStillMs_[mk] = midSliceMs_;
                     ++stillSent;
                 }
-                ++n;
+                midRows_.push_back(row);
                 ++added;
             }
         }
+        midRowsMs_ = nowPub;
+        }
+        // Emit the cached slice every frame: setOwnedEntities overwrites the
+        // published snapshot each time, and the net thread samples whichever
+        // frame it lands on.
+        for (unsigned int r = 0; r < (unsigned int)midRows_.size() && n < MAX_PUBLISH; ++r)
+            buf[n++] = midRows_[r];
         // The map is keyed by hand and the band is rebuilt every census, so
         // without a prune it accumulates one entry per NPC ever seen - the same
         // unbounded-growth shape InvRecv::seenMs was added to fix. Drop entries

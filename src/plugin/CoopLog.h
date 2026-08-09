@@ -35,6 +35,18 @@ unsigned long wallClockMs();
 // KENSHICOOP_FAKE_CLOCK_SKEW_MS (join only) BEFORE logInit. 0 = real clock.
 void logSetFakeSkewMs(long skewMs);
 
+// Monotonic MICROSECOND counter, for measuring work INSIDE one frame.
+//
+// Deliberately separate from wallClockMs() and never expressed in terms of it.
+// unsigned long is 32-bit under MSVC x64, so a microsecond counter wraps about
+// every 71 minutes - harmless for sub-frame deltas under unsigned subtraction,
+// and fatal for the ms deltas this codebase compares over minutes (30 s target
+// age-out, 60 s inventory forget, 60 s keepalive prune). Microseconds because
+// the thing being measured is a budget of one or two MILLIseconds; GetTickCount
+// (~15 ms granularity, the only clock Plugin.cpp had) cannot see it at all.
+// Thread-safe.
+unsigned long monoUs();
+
 // Append one INFO/ERROR line (timestamped, tagged) and flush. Thread-safe.
 void logLine(const char* msg);
 void logErrLine(const char* msg);

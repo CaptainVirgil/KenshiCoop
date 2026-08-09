@@ -57,6 +57,31 @@ unsigned long wallClockMs() {
 
 void logSetFakeSkewMs(long skewMs) { g_fakeSkewMs = skewMs; }
 
+unsigned long monoUs() {
+    // QueryPerformanceCounter, reduced to microseconds against a first-call
+    // origin so the value stays small and the 32-bit wrap is ~71 minutes of
+    // uptime rather than an arbitrary boundary. Only ever used for deltas
+    // within a frame, where unsigned subtraction makes the wrap harmless.
+    static LARGE_INTEGER freq;
+    static LARGE_INTEGER origin;
+    static int inited = 0;
+    if (!inited) {
+        if (!QueryPerformanceFrequency(&freq) || freq.QuadPart == 0) {
+            inited = -1;               // no QPC: report 0 and let callers no-op
+        } else {
+            QueryPerformanceCounter(&origin);
+            inited = 1;
+        }
+    }
+    if (inited != 1) return 0ul;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    // Scale before dividing by frequency, but in 64-bit so a multi-hour uptime
+    // cannot overflow the intermediate.
+    __int64 ticks = now.QuadPart - origin.QuadPart;
+    return (unsigned long)((ticks * 1000000i64) / freq.QuadPart);
+}
+
 void logInit(const char* path, const char* modeTag) {
     if (g_init) return;
     InitializeCriticalSection(&g_cs);
