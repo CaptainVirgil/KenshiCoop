@@ -1731,13 +1731,32 @@ void Replicator::applyTargets(GameWorld* gw) {
                 float lead = vlen * leadSec;
                 tx += vx / vlen * lead; ty += vy / vlen * lead; tz += vz / vlen * lead;
             }
+            // The commanded speed is built against the source's MEASURED
+            // translation, not its speed SETTING. out.cSpeed is
+            // CharMovement::currentSpeed as captured on the owner, and the
+            // engine moves a body faster than that setting (slope and other
+            // modifiers land outside currentSpeed): the first live two-client
+            // session (2026-08-09) measured srcVel=64.7 against cSpeed=43.4 on
+            // a running player character - a 1.5x deficit. A copy commanded at
+            // 43 never catches a source doing 65, so the gap ratcheted to the
+            // ~78 u snap gate every ~4 s and teleported. No lead distance can
+            // fix that; only a speed that beats the source can.
+            float srcSpeed = (vlen > out.cSpeed) ? vlen : out.cSpeed;
+            float spd = srcSpeed + gapNewest * catchupK_;
+            float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+            float cap = base * 2.5f;
+            if (spd > cap) spd = cap;
+            // Re-issue distance scales with speed. A fixed 1.0 u against a lead
+            // point that advances ~1.1 u per frame at 65 u/s re-orders EVERY
+            // frame, restarting the engine's path plan every frame - exactly the
+            // stutter the block comment above warns about, and it costs the copy
+            // part of even the speed it does have. ~150 ms of travel keeps the
+            // destination fresh without the restart.
+            float reissueDist = REISSUE_DIST;
+            if (vlen * 0.15f > reissueDist) reissueDist = vlen * 0.15f;
             float moved = d.haveDest ? dist3(tx, ty, tz, d.dx, d.dy, d.dz)
-                                     : (REISSUE_DIST + 1.0f);
-            if (moved > REISSUE_DIST) {
-                float spd = out.cSpeed + gapNewest * catchupK_;
-                float base = (out.cSpeed > 1.0f) ? out.cSpeed : 12.0f;
-                float cap = base * 2.5f;
-                if (spd > cap) spd = cap;
+                                     : (reissueDist + 1.0f);
+            if (moved > reissueDist) {
                 engine::walkTo(c, tx, ty, tz, spd);
                 if (isSquad) ++walkReissueSquad_;
                 else         ++walkReissueNpc_;
@@ -1755,8 +1774,18 @@ void Replicator::applyTargets(GameWorld* gw) {
             // setDesiredSpeed on the CharMovement path, so they keep the
             // no-mirror behavior (the engine picks their clip from the locomotion
             // it actually performs); mirroring an NPC here would fight that.
+            //
+            // Mirror `spd`, NOT out.cSpeed. This write lands on currentSpeed and
+            // desiredSpeed every frame, so passing the raw streamed setting here
+            // CLOBBERED the catch-up speed computed above the same frame it was
+            // set - the boost existed in the walkTo call and was erased before
+            // the copy ever moved on it. That is why catchupK looked inert for
+            // squad bodies while working for NPCs, and why the only visible
+            // convergence mechanism was the teleport. `spd` is capped at 2.5x
+            // and the near band's K*dt is 0.1 (mid band's 1.0 is the one with no
+            // stability headroom), so the gain is inside its stable range here.
             if (isSquad)
-                engine::applyMotion(c, true, out.cSpeed,
+                engine::applyMotion(c, true, spd,
                                     out.cMotionX, out.cMotionY, out.cMotionZ);
         } else {
             // At rest, task-authoritative: reproduce the host's sit/idle pose
