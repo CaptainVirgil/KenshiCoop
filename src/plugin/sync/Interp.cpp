@@ -59,7 +59,30 @@ void EntityInterp::push(const EntityState& e, unsigned long nowMs, unsigned long
     // A long unstreamed gap (interest boundary, publish rotation) is not
     // JITTER - clamp the sample so one multi-second hole doesn't blow the
     // estimate (measured: jit=1923 ms after a boundary NPC returned).
-    if (lastArrival_ != 0) {
+    //
+    // A KEEPALIVE is not cadence evidence. The publisher ships a stationary
+    // mid-band body one sample every MID_STILL_KEEPALIVE_MS purely so the peer
+    // knows where and how it is standing; that heartbeat says nothing about how
+    // fast this body is streamed when it MOVES. Folding it into the EMA drags
+    // the cadence to the 500 ms clamp, and renderDelay multiplies that by
+    // cadenceDelayK - measured delay 320 -> 777 ms the first session the
+    // keepalive shipped, with the body then rendering that far in the past the
+    // moment it started walking again. Skip the estimator when the body has not
+    // MOVED since the previous sample; still stamp lastArrival_, or the next
+    // real sample computes its interval against a stale mark and lands as one
+    // huge spike.
+    //
+    // Judged by position, not by the cMoving/cSpeed flags. A flag can lie in
+    // both directions - a body shoved or park-teleported reports not-moving
+    // while its position changes, and one walking into a wall reports moving
+    // while it does not - and position is the thing being interpolated.
+    bool stationary = false;
+    if (count_ > 0) {
+        const Snap& prevS = at(count_ - 1);
+        float mdx = e.x - prevS.x, mdy = e.y - prevS.y, mdz = e.z - prevS.z;
+        stationary = (mdx * mdx + mdy * mdy + mdz * mdz) <= 0.0004f; // ~2 cm
+    }
+    if (lastArrival_ != 0 && !stationary) {
         float interval = (float)(nowMs - lastArrival_);
         if (interval > 500.0f) interval = 500.0f;
         float dev = interval - avgIntervalMs_;
@@ -209,6 +232,29 @@ bool EntityInterp::sample(unsigned long nowMs, const InterpConfig& cfg, EntitySt
     // Render time is past the newest: dead-reckon briefly off the last segment,
     // then clamp. Prevents a hard stop during a short starvation gap.
     if (renderTime >= newest.t) {
+        // ...but a body its owner reports STANDING STILL has nothing to
+        // dead-reckon. Hold the newest pose. Since the stationary keepalive
+        // exists, most of the ring is now heartbeats from still bodies, and
+        // dead-reckoning them turned a no-op into the dominant sample mode
+        // (extrap 450k against lerp 374k the first session it shipped) while
+        // any residual velocity in the last segment - a park jump, a
+        // stop-frame artifact - got multiplied by ahead/seg and pushed the
+        // copy off a position the owner says is not changing.
+        //
+        // Reported as SM_SINGLE rather than a new mode: it IS the "one usable
+        // pose, hold it" case, and the mode enum feeds the [interp] stat line
+        // whose field list is API for the PowerShell oracles. Counting these
+        // as `single` instead of `extrap` also restores what each number
+        // means - extrap should read "the stream starved and we guessed",
+        // which is the thing worth alarming on.
+        // sourceMoving() compares the last two POSITIONS rather than trusting
+        // the reported flags, for the same reason push() does.
+        if (!sourceMoving()) {
+            out->x = newest.x; out->y = newest.y; out->z = newest.z;
+            out->heading = newest.heading;
+            lastMode_ = SM_SINGLE;
+            return true;
+        }
         const Snap& prev = at(count_ - 2);
         unsigned long ahead = renderTime - newest.t;
         if (ahead > cfg.maxExtrapMs) ahead = cfg.maxExtrapMs;
