@@ -1764,7 +1764,15 @@ void Replicator::applyTargets(GameWorld* gw) {
             float srcSpeed = (vlen > out.cSpeed) ? vlen : out.cSpeed;
             float spd = srcSpeed + gapNewest * catchupK_;
             float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
-            float cap = base * 2.5f;
+            // 1.5x, not 2.5x. A commanded speed the body cannot actually
+            // achieve does not make it hurry - it makes it stall against its
+            // own clamp, and a stalled body covers no ground at all. Measured
+            // live at 2.5x: a driven world NPC failed to translate on 1127 of
+            // 1519 active frames (74%), which renders as a walk cycle playing
+            // with the body barely moving, then a lurch when the snap collects
+            // it. 1.5x still closes any bounded gap in bounded time and stays
+            // inside what the same character model can deliver.
+            float cap = base * 1.5f;
             if (spd > cap) spd = cap;
             // Re-issue distance scales with speed. A fixed 1.0 u against a lead
             // point that advances ~1.1 u per frame at 65 u/s re-orders EVERY
@@ -1811,7 +1819,8 @@ void Replicator::applyTargets(GameWorld* gw) {
             // stutter IS the teleporting it was supposed to fix - the body
             // stalls, falls behind, and the snap gate collects it. 1.25x is
             // enough to close a gap over a few seconds while staying inside
-            // what the engine will deliver.
+            // what the engine will deliver, and tighter than walkTo's own cap
+            // because this write lands on the integrator every single frame.
             if (isSquad) {
                 float mirrorCap = srcSpeed * 1.25f;
                 float mirrorSpd = (spd > mirrorCap) ? mirrorCap : spd;
