@@ -86,6 +86,11 @@ const float CATCHUP_K   = 2.0f;   // gap-proportional speed boost (chase a movin
 const float REISSUE_DIST = 1.0f;  // re-issue the walk order only when tgt moved this far
 const float LEAD_SECONDS = 0.6f;  // project the walk target this far along source velocity
 const float NPC_MOVE_VEL = 0.75f; // NPC est. velocity (u/s) above which it is "walking"
+// Keepalive cadence for a STATIONARY mid-band body. Must stay under the interp
+// staleness window (InterpConfig::staleMs 2000, and max(2000, 4*seg) in
+// sample()), or the peer releases the body between keepalives and the whole
+// point is lost. 1500 leaves margin for one dropped slice.
+const unsigned long MID_STILL_KEEPALIVE_MS = 1500;
                                   // (vs a fidget/turn in place -> treat as at rest)
 const unsigned long TASK_GRACE_MS = 4000;  // settle time before drift-checking a pose
 const float TASK_DRIFT_MAX = 4.0f;         // committed pose drift beyond which we park

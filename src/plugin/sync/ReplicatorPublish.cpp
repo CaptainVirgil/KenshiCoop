@@ -304,7 +304,11 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // times quota keeps the reach past parked bodies that the skip exists for,
         // while making the worst case independent of how large the band is.
         const unsigned int scanBudget = (quota * 4 < sz) ? quota * 4 : sz;
-        unsigned int tried = 0, added = 0;
+        // Keepalives may take at most a quarter of the slice, so a town full of
+        // standing NPCs can never crowd out the movers this band exists for.
+        unsigned int stillQuota = quota / 4;
+        if (stillQuota == 0) stillQuota = 1;
+        unsigned int tried = 0, added = 0, stillSent = 0;
         while (tried < scanBudget && added < quota && n < MAX_PUBLISH) {
             const Key mk = midBand_[(midCursor_ + tried) % sz].k;
             ++tried;
@@ -314,16 +318,50 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             if (dup) continue;
             if (engine::captureNpcByHand(gw, mk.i, mk.s, mk.t, mk.c, mk.cs,
                                          &buf[n])) {
-                // Movers only (Phase 2 refinement, run 112835): a stationary
-                // far NPC is covered by the 1 Hz census position (park
-                // fallback) - streaming it just fed the join a body to drive
-                // and starved Kenshi's character-update budget town-wide.
-                // Skipping WITHOUT consuming quota lets the scan reach past
-                // parked bodies, so a lone approaching raid effectively
-                // streams at near-full rate while a busy field shares ~2 Hz.
-                if (buf[n].cMoving == 0 && buf[n].cSpeed <= 0.25f) continue;
+                // Movers first (Phase 2 refinement, run 112835): streaming every
+                // stationary far NPC every tick fed the join a whole town to
+                // drive and starved Kenshi's character-update budget.
+                //
+                // But streaming a still body NEVER is the opposite error, and it
+                // is the one the doctrine names: absence is not evidence. The
+                // peer's only word on a stationary mid body was the 1 Hz census
+                // POSITION, which carries no task and no pose - so the peer read
+                // the silence as "at rest, release to local AI", the local AI
+                // walked the NPC's own schedule, and the copy diverged until the
+                // 120 u park teleported it - standing, wherever it had wandered,
+                // seat broken. The first live session measured that loop running
+                // continuously: ~900 culls, ~900 restores, 828 parks and a
+                // freeze log saturating its own 4/s throttle, all on the join,
+                // whose frame budget then starved its OWN outbound stream.
+                //
+                // So a still body gets a KEEPALIVE: one full sample (position,
+                // task and pose) every MID_STILL_KEEPALIVE_MS, which is inside
+                // the interp staleness window, so the peer holds it where the
+                // owner says it is instead of releasing it to wander. Costs
+                // ~180 bodies / 1.5 s x 79 B = ~9 KB/s against a measured
+                // steady-state of ~43 KB/s.
+                if (buf[n].cMoving == 0 && buf[n].cSpeed <= 0.25f) {
+                    if (stillSent >= stillQuota) continue;
+                    std::map<Key, unsigned long>::iterator sit = midStillMs_.find(mk);
+                    if (sit != midStillMs_.end() &&
+                        (nowPub - sit->second) < MID_STILL_KEEPALIVE_MS) continue;
+                    midStillMs_[mk] = nowPub;
+                    ++stillSent;
+                }
                 ++n;
                 ++added;
+            }
+        }
+        // The map is keyed by hand and the band is rebuilt every census, so
+        // without a prune it accumulates one entry per NPC ever seen - the same
+        // unbounded-growth shape InvRecv::seenMs was added to fix. Drop entries
+        // no keepalive has touched in a minute; a body that comes back simply
+        // sends one keepalive immediately, which is the correct answer anyway.
+        if (midStillMs_.size() > 512) {
+            for (std::map<Key, unsigned long>::iterator pit = midStillMs_.begin();
+                 pit != midStillMs_.end(); ) {
+                if (nowPub - pit->second > 60000) midStillMs_.erase(pit++);
+                else                              ++pit;
             }
         }
     }

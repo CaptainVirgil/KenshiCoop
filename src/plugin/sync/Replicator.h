@@ -903,6 +903,10 @@ private:
         // March attribution: when this body last ENTERED the rest branch, and
         // which branch it took last frame (so the entry edge can be detected).
         unsigned long restEnterMs;
+        // Newest sample time whose rest pose was re-asserted while this body sat
+        // released at mid-rest. Keeps that re-assert at one per received
+        // keepalive instead of one per tick.
+        unsigned long stillPoseMs;
         bool         walkBranchPrev;
         // Per-hand smoothness attribution (Phase 2 diagnosis): cumulative
         // active/zero-step frames this body contributed to the oracle, so a
@@ -935,7 +939,7 @@ private:
                    chainSeeTick(0), chainSeeSample(0), chainNoSeeTick(0), furnEnterHoldMs(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
-                   restEnterMs(0), walkBranchPrev(false),
+                   restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
                    zeroF(0), activeF(0), midSeenMs(0) {
             chainOwner[0] = chainOwner[1] = chainOwner[2] = chainOwner[3] = chainOwner[4] = 0;
         }
@@ -1129,6 +1133,11 @@ private:
         bool operator<(const MidBandEntry& o) const { return dist < o.dist; }
     };
     std::vector<MidBandEntry> midBand_;
+    // Last keepalive send per STATIONARY mid-band body. A still body is skipped
+    // by the movers-only rule, which left the peer with no task/pose word on it
+    // at all; this stamps the periodic full sample that keeps it held rather
+    // than released to local AI. Pruned in publishOwned (bounded growth).
+    std::map<Key, unsigned long> midStillMs_;
     unsigned int              midCursor_;  // start of the CURRENT slice
     unsigned long             midSliceMs_; // last slice advance (50 ms cadence:
                                            // the slice must persist across a

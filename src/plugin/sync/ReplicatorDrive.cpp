@@ -1502,6 +1502,26 @@ void Replicator::applyTargets(GameWorld* gw) {
         // the release also skips the AI suspend below, so the local AI can
         // idle the body naturally between host movements.
             if (!isSquad && midTier && !npcMoving) {
+                // Re-assert the owner's REST POSE once per fresh keepalive
+                // before letting go. The release hands the body to local AI,
+                // and local AI does not idle it - it resumes the NPC's own
+                // schedule, so the copy walks away from where its owner has it
+                // standing or seated, and nothing corrects that until the
+                // 120 u park teleports it (standing, seat broken). Until the
+                // publisher's stationary keepalive existed there was nothing
+                // to assert: a still mid body was never streamed, so its pose
+                // was not on the wire at all. Gated on the sample TIME, so this
+                // costs one applyRest per body per keepalive (~0.67 Hz), not
+                // one per tick - the per-tick drive cost is what starved the
+                // engine in run 112835 and this deliberately does not re-enter
+                // it. Stream asserts, exactly as the doctrine wants.
+                unsigned long newestMs = d.interp.newestMs();
+                if (newestMs != 0 && newestMs != d.stillPoseMs) {
+                    d.stillPoseMs = newestMs;
+                    if (d.walkBranchPrev || d.restEnterMs == 0) d.restEnterMs = now;
+                    applyRest(c, d, out, haveActual, ax, ay, az, now, isSquad);
+                    d.walkBranchPrev = false;
+                }
                 drivenChars_.erase(c);
                 drivenSeen_.erase(c); // wide pass may census-park it again
                 d.parked = false; d.haveDest = false;
