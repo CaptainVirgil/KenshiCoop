@@ -25,11 +25,18 @@ export WINEPATH="$(winpath "$VC/bin/amd64");$(winpath "$SDK/Bin/x64");$(winpath 
 vc_include() {
   local repo="$1"
   local kl="$repo/third_party/KenshiLib_deps"
-  printf '%s;%s;%s;%s;%s;%s;%s' \
+  # KenshiLib/Include/kenshi is on the path DELIBERATELY, in addition to
+  # KenshiLib/Include. From 0.4.0 the library's own headers moved into
+  # subdirectories (kenshi/combat/, kenshi/AI/, kenshi/Animation/) but still
+  # include their siblings as "Enums.h", "util/lektor.h" - paths relative to
+  # kenshi/, not to the including file. Without this, kenshi/combat/CombatClass.h
+  # cannot find kenshi/Enums.h and seven translation units fail.
+  printf '%s;%s;%s;%s;%s;%s;%s;%s' \
     "$(winpath "$VC/include")" \
     "$(winpath "$SDK/Include")" \
     "$(winpath "$repo/third_party/vc10_compat")" \
     "$(winpath "$kl/KenshiLib/Include")" \
+    "$(winpath "$kl/KenshiLib/Include/kenshi")" \
     "$(winpath "$kl/KenshiLib/Include/ogre")" \
     "$(winpath "$kl/boost_1_60_0")" \
     "$(winpath "$repo/third_party/enet/enet/include")"

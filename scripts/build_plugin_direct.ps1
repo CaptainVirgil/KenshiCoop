@@ -58,7 +58,11 @@ $env:PATH    = "$vc\bin\amd64;$vc\bin;$sdk\Bin\x64;$sdk\Bin;$env:PATH"
 $env:INCLUDE = @(
     (Join-Path $vc "include"), (Join-Path $sdk "Include"),
     (Join-Path $repo "third_party\vc10_compat"),
-    (Join-Path $kl "KenshiLib\Include"), (Join-Path $kl "KenshiLib\Include\ogre"),
+    (Join-Path $kl "KenshiLib\Include"),
+    # See vcenv.sh: from KenshiLib 0.4.0 the headers moved into subdirectories but
+    # still include siblings relative to kenshi/, so kenshi/ must be on the path.
+    (Join-Path $kl "KenshiLib\Include\kenshi"),
+    (Join-Path $kl "KenshiLib\Include\ogre"),
     (Join-Path $kl "boost_1_60_0"), $enet
 ) -join ";"
 $env:LIB     = @(

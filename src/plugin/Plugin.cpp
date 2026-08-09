@@ -2067,6 +2067,14 @@ static void logHostVersions() {
     static const char* const kVerified[] = { "0.4.0" };
     const int nVerified = (int)(sizeof(kVerified) / sizeof(kVerified[0]));
 
+    // KenshiLib.dll carries NO version resource - GetFileVersionInfo returns
+    // nothing for it, which is how the first attempt at this failed. What it does
+    // carry is the literal string RE_Kenshi prints at startup ("KenshiLib 0.4.0"),
+    // so read that out of the file on disk.
+    //
+    // The FILE, not the mapped image: the module is already loaded, but scanning a
+    // live image means walking sections and guarding every read, for no benefit.
+    // One ~900 KB read at startup is cheaper than being clever.
     char runtimeVer[64];
     runtimeVer[0] = '\0';
 
@@ -2074,21 +2082,34 @@ static void logHostVersions() {
     if (kl) {
         char path[MAX_PATH];
         if (GetModuleFileNameA(kl, path, MAX_PATH)) {
-            DWORD dummy = 0;
-            DWORD sz = GetFileVersionInfoSizeA(path, &dummy);
-            if (sz) {
-                std::vector<unsigned char> buf(sz);
-                if (GetFileVersionInfoA(path, 0, sz, &buf[0])) {
-                    VS_FIXEDFILEINFO* ffi = 0;
-                    UINT len = 0;
-                    if (VerQueryValueA(&buf[0], "\\", (LPVOID*)&ffi, &len) && ffi && len) {
-                        _snprintf(runtimeVer, sizeof(runtimeVer) - 1, "%u.%u.%u",
-                                  (unsigned)HIWORD(ffi->dwFileVersionMS),
-                                  (unsigned)LOWORD(ffi->dwFileVersionMS),
-                                  (unsigned)HIWORD(ffi->dwFileVersionLS));
-                        runtimeVer[sizeof(runtimeVer) - 1] = '\0';
+            FILE* f = fopen(path, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long len = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                // Sanity-bound it: this should be ~1 MB. A wildly different size
+                // means we are not looking at what we think we are.
+                if (len > 0 && len < 64 * 1024 * 1024) {
+                    std::vector<char> buf((size_t)len + 1, 0);
+                    size_t got = fread(&buf[0], 1, (size_t)len, f);
+                    static const char kTag[] = "KenshiLib ";
+                    const size_t tagLen = sizeof(kTag) - 1;
+                    for (size_t i = 0; got > tagLen && i + tagLen < got; ++i) {
+                        if (std::memcmp(&buf[i], kTag, tagLen) != 0) continue;
+                        const char* v = &buf[i] + tagLen;
+                        // Accept only digits and dots, so a stray match on prose
+                        // cannot masquerade as a version.
+                        size_t n = 0;
+                        while (n < sizeof(runtimeVer) - 1 &&
+                               ((v[n] >= '0' && v[n] <= '9') || v[n] == '.')) ++n;
+                        if (n >= 3 && v[0] >= '0' && v[0] <= '9') {
+                            std::memcpy(runtimeVer, v, n);
+                            runtimeVer[n] = '\0';
+                            break;
+                        }
                     }
                 }
+                fclose(f);
             }
         }
     }

@@ -139,9 +139,25 @@ grep _NV_mainLoop_GPUSensitiveStuff build/Release/KenshiCoop.map
 definition, and that build will assert on startup. This is also why the kit ships
 the `.map`.
 
-**Deps are pinned to `e75769b`.** KenshiLib **v0.4.0 breaks the plugin**: it moved
-`kenshi/CombatClass.h` under `kenshi/combat/` and added a second, byte-identical
-`enum BuildingDesignation`. Do not bump the pin casually.
+**Deps are pinned to `b566d74` — KenshiLib 0.4.0, matching the runtime.**
+
+This used to be pinned at `e75769b` (v0.1) with the note *"v0.4.0 breaks the plugin"*.
+That was **fork-lore**: the pin went unrevisited while RE_Kenshi shipped 0.4.0, so the
+build described Kenshi's memory layout three minor versions out of date from the library
+actually serving it at runtime. Bumping cost exactly three mechanical things:
+
+1. `kenshi/CombatClass.h` → `kenshi/combat/CombatClass.h` (one include).
+2. `KenshiLib/Include/kenshi` must ALSO be on the include path — 0.4.0 moved headers into
+   subdirectories but still includes siblings relative to `kenshi/` (`kenshi/combat/CombatClass.h`
+   does `#include "Enums.h"`). Handled in `vcenv.sh` and `build_plugin_direct.ps1`.
+3. The duplicate `enum BuildingDesignation` — already handled by `patch_vendored_headers.sh`.
+
+Checked before trusting it: the RVAs we actually call are **unchanged** between the two
+(`CharMovement::restore` `0x661810`, `teleportCollisionHull` `0x65D4E0`), so no address we
+were using had silently drifted.
+
+**The general rule this earned:** a pin justified by a story rather than a re-test is a
+claim, not a constraint. Before repeating one — including one written here — check it.
 
 **Trap — two post-checkout steps, or the build fails confusingly.** After any checkout or
 update of the deps, both `fetch_lfs.sh` (the `.lib` files and `boost.zip` are LFS
