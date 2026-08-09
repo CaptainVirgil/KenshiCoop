@@ -5,8 +5,8 @@ plugin. `KenshiCoop.dll` is loaded into the game by RE_Kenshi, hooks the engine 
 KenshiLib, and drives all game mutation on the main thread. Networking is ENet over UDP
 with an optional Steam P2P tunnel.
 
-**Its own project, derived from `nhoral/KenshiCoop`.** It began as a fork and the
-`upstream` remote is still there — his work is worth watching and a fix can still be
+**Its own project, derived from `nhoral/KenshiCoop`.** The GitHub fork link was
+cut on 2026-08-09 (`isFork: false`) and the `upstream` remote is still there — his work is worth watching and a fix can still be
 cherry-picked either way — but the two are no longer merge-compatible: protocol 56 vs
 54, a different build system, a different release line. Attribution is permanent and
 deliberate (README + AGPL-3.0 as a derived work), not a formality to be dropped later.

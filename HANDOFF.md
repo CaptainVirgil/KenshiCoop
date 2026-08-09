@@ -88,9 +88,6 @@ whether the host starts driving (`drv>0` in its audit line).
 ## Loose ends
 
 - [ ] Launch and work through "what to watch" above
-- [ ] **Finish the standalone move:** repo Settings → General → *Leave fork
-      network*. No API exists for it. README attribution and the semver rename
-      are already done and pushed
 - [ ] Cut **`v0.1.0`** (not `fork-8`). Everything since `fork-6` is unreleased
       and protocol is now 56, so it is a hard cut — `fork-6` will refuse to
       connect. **Item 28's census `truncated` flag should land before the

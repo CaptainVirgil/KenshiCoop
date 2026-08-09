@@ -101,12 +101,11 @@ Still open, in cost order:
   **Protocol is now 56**, so this is a hard cut: both players must update the
   same day. Since the bump is already spent, item 28's census `truncated` flag
   should land BEFORE the release rather than waiting for a bump of its own.
-- **Detach the GitHub fork.** README attribution is done (nhoral and
-  RE_Kenshi/KenshiLib credited up front, AGPL kept deliberately as a derived
-  work) and releases are renamed off `fork-N` onto semver. The detach itself is
-  **a UI action GitHub exposes no API for**: repo Settings → General → bottom →
-  *Leave fork network*. Irreversible — the repo can never rejoin the network —
-  but it changes nothing about the code or the licence obligations.
+- ~~Detach the GitHub fork.~~ **Done 2026-08-09** — `isFork: false`,
+  `parent: null`. Standalone repo. Attribution to nhoral and
+  RE_Kenshi/KenshiLib is in the README's opening block and Credits, and
+  AGPL-3.0 is kept deliberately as a derived work, so nothing is owed less by
+  standing alone.
 - **CT 203**: Steam-client decision above, or `pct destroy 203`.
 
 ---
