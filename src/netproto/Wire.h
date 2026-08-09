@@ -1531,11 +1531,56 @@ inline u8 packetType(const void* data, unsigned int len) {
 template <unsigned N>
 inline void wireTerm(char (&field)[N]) { field[N - 1] = '\0'; }
 
+// Terminate every char[] a packet carries, as part of parsing it.
+//
+// This used to be the receive site's job - a wireTerm() per field, at each arm of
+// the dispatch. That is a rule you have to remember 22 times, and it was already
+// forgotten five times: the whole save/load name family arrived unterminated. So
+// the rule moved to the one place every receive path already funnels through.
+//
+// The generic overload is a deliberate no-op: most packets are all-numeric and
+// need nothing. A packet that DOES carry a char[] needs an overload below, and
+// forgetting one is what the Wire.h/wireSanitize consistency check in
+// scripts/tests/Contract.Tests.ps1 exists to catch - it reads the struct
+// definitions in this file and fails if a char[] field has no overload naming it.
+//
+// Entry types inside array payloads (InvItemEntry, WorldItemEntry) are NOT here:
+// they are never readPacket'd - they are read in place out of the ENet buffer and
+// terminated where Inbound copies them (core/Inbound.h, pushInv/pushWorldItems).
+template <typename T>
+inline void wireSanitize(T&) {}
+
+inline void wireSanitize(WorldDropPacket& p) {
+    wireTerm(p.stringID); wireTerm(p.manufacturer); wireTerm(p.material);
+}
+inline void wireSanitize(WorldPickupPacket& p) { wireTerm(p.stringID); }
+inline void wireSanitize(InvXferPacket& p) {
+    wireTerm(p.stringID); wireTerm(p.manufacturer); wireTerm(p.material);
+}
+inline void wireSanitize(MedicalPacket& p) {
+    for (int i = 0; i < 4; ++i) wireTerm(p.limbSid[i]);
+}
+inline void wireSanitize(FactionPacket& p)    { wireTerm(p.sid); }
+inline void wireSanitize(DeedPacket& p)       { wireTerm(p.ownerSid); }
+inline void wireSanitize(BuildPlacePacket& p) { wireTerm(p.sid); }
+inline void wireSanitize(SpawnInfoPacket& p)  { wireTerm(p.charSid); wireTerm(p.facSid); }
+inline void wireSanitize(ProdPacket& p)       { wireTerm(p.outSid); }
+inline void wireSanitize(ResearchPacket& p)   { wireTerm(p.sid); }
+// The save/load name family. Every one of these names reaches a path that builds
+// a filesystem path out of it, so an unterminated read here is the worst of the
+// set - it walks off the packet into whatever follows on the stack.
+inline void wireSanitize(SaveReqPacket& p)    { wireTerm(p.name); }
+inline void wireSanitize(SaveBeginPacket& p)  { wireTerm(p.name); }
+inline void wireSanitize(LoadGoPacket& p)     { wireTerm(p.name); }
+inline void wireSanitize(LoadReqPacket& p)    { wireTerm(p.name); }
+inline void wireSanitize(LoadNackPacket& p)   { wireTerm(p.name); }
+
 // Safe typed read: returns true and fills out if the buffer is large enough.
 template <typename T>
 inline bool readPacket(const void* data, unsigned int len, T* out) {
     if (data == 0 || out == 0 || len < sizeof(T)) return false;
     memcpy(out, data, sizeof(T));
+    wireSanitize(*out);
     return true;
 }
 

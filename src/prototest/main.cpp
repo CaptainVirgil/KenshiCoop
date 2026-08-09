@@ -462,8 +462,18 @@ static void roundTrip(const char* name, u8 typeTag) {
     T out;
     std::memset(&out, 0, sizeof(T));
     bool okRead = readPacket(buf, (unsigned)sizeof(T), &out);
+    // readPacket NUL-terminates every char[] the packet carries (Wire.h,
+    // wireSanitize) - a sender that omits the terminator must not be able to
+    // walk a receiver off the end of the struct. So the expectation is the sent
+    // bytes WITH that applied, not the raw bytes: `buf` above deliberately still
+    // holds the unterminated pattern, which is what a hostile sender puts on the
+    // wire. That the termination actually happened is proven separately, by
+    // testWireTermination - this comparison alone would also pass if the field
+    // were zeroed wholesale.
+    T expect = in;
+    wireSanitize(expect);
     std::sprintf(label, "%s round-trip read", name);
-    CHECK(label, okRead && std::memcmp(&in, &out, sizeof(T)) == 0);
+    CHECK(label, okRead && std::memcmp(&expect, &out, sizeof(T)) == 0);
 
     std::sprintf(label, "%s packetType tag", name);
     CHECK(label, packetType(buf, (unsigned)sizeof(T)) == typeTag);
@@ -516,6 +526,82 @@ static void testRoundTrips() {
     CHECK("packetType(len 0) == 0", packetType(b0, 0) == 0);
     CHECK("readPacket(null) rejected", !readPacket<HelloPacket>(0, 4, (HelloPacket*)b0) || true);
 }
+
+// ---- 2b. every char[] on the wire is terminated on receipt ---------------------
+//
+// The threat is a peer that fills a fixed-size field to its last byte with no
+// terminator. Every one of these fields then reaches a std::string(...) or a
+// strcmp(...), and one family of them (the save/load names) is used to build a
+// filesystem path - so the read runs off the end of the packet struct into
+// whatever the caller had on its stack.
+//
+// This used to be the receive site's job, one wireTerm() per field at each arm
+// of NetLink's dispatch, and it was forgotten for five packets. It now happens
+// inside readPacket(), which every receive path already funnels through.
+//
+// The buffer here is filled with 0xFF, NOT with a pattern: it is the exact
+// hostile input - no byte anywhere is a terminator - so a field that comes out
+// terminated can only have been terminated by us.
+//
+// Contract.Tests.ps1 checks the other half, the half a C++ test cannot see: that
+// no char[] in Wire.h is MISSING from the wireSanitize overload set. Both are
+// needed - this file proves the mechanism works, that one proves it is complete.
+#define TERM_CHECK(TYPE, TAG, FIELD)                                          \
+    do {                                                                      \
+        unsigned char b[512];                                                 \
+        std::memset(b, 0xFF, sizeof(b));                                      \
+        b[0] = (unsigned char)(TAG);                                          \
+        TYPE p;                                                               \
+        std::memset(&p, 0, sizeof(p));                                        \
+        bool r = readPacket(b, (unsigned)sizeof(TYPE), &p);                   \
+        char lbl[160];                                                        \
+        std::sprintf(lbl, "%s.%s terminated on receipt", #TYPE, #FIELD);      \
+        CHECK(lbl, r && p.FIELD[sizeof(p.FIELD) - 1] == '\0');                \
+    } while (0)
+
+static void testWireTermination() {
+    std::printf("== wire char[] termination on receipt ==\n");
+
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   stringID);
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   manufacturer);
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   material);
+    TERM_CHECK(WorldPickupPacket, PKT_WORLD_PICKUP, stringID);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     stringID);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     manufacturer);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     material);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[0]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[1]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[2]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[3]);
+    TERM_CHECK(FactionPacket,     PKT_FACTION,      sid);
+    TERM_CHECK(DeedPacket,        PKT_DEED,         ownerSid);
+    TERM_CHECK(BuildPlacePacket,  PKT_BUILD_PLACE,  sid);
+    TERM_CHECK(SpawnInfoPacket,   PKT_SPAWN_INFO,   charSid);
+    TERM_CHECK(SpawnInfoPacket,   PKT_SPAWN_INFO,   facSid);
+    TERM_CHECK(ProdPacket,        PKT_PROD,         outSid);
+    TERM_CHECK(ResearchPacket,    PKT_RESEARCH,     sid);
+
+    // The save/load name family - the five that were missed when this was done
+    // per-receive-site, and the ones whose field becomes a path.
+    TERM_CHECK(SaveReqPacket,     PKT_SAVE_REQ,     name);
+    TERM_CHECK(SaveBeginPacket,   PKT_SAVE_BEGIN,   name);
+    TERM_CHECK(LoadGoPacket,      PKT_LOAD_GO,      name);
+    TERM_CHECK(LoadReqPacket,     PKT_LOAD_REQ,     name);
+    TERM_CHECK(LoadNackPacket,    PKT_LOAD_NACK,    name);
+
+    // Negative control: the mechanism must not be zeroing the whole field. Byte 0
+    // of a 0xFF buffer stays 0xFF, so a wholesale memset would fail this - which
+    // is the difference between "terminated" and "destroyed".
+    unsigned char b[512];
+    std::memset(b, 0xFF, sizeof(b));
+    b[0] = (u8)PKT_SAVE_BEGIN;
+    SaveBeginPacket sb;
+    std::memset(&sb, 0, sizeof(sb));
+    bool okSb = readPacket(b, (unsigned)sizeof(SaveBeginPacket), &sb);
+    CHECK("termination truncates, it does not clear the field",
+          okSb && sb.name[0] == (char)0xFF && sb.name[46] == (char)0xFF);
+}
+#undef TERM_CHECK
 
 // ---- 3. Field-offset lock (HELLO version + batch framing) -----------------------
 
@@ -2966,6 +3052,7 @@ int main() {
     testChangeGate();
     testChangeGateTable();
     testRoundTrips();
+    testWireTermination();
     testFraming();
     testSaveCrc();
     testFolderFingerprint();
