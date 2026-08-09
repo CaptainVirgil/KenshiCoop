@@ -55,12 +55,16 @@ Everything here is a doc or a script saying something untrue about the code. All
 were found by an adversarial audit on 2026-08-08 and each survived an independent
 verification pass. Costs are minutes to low hours; none needs a game.
 
+**The instruction surface was audited and corrected on 2026-08-08** — `CLAUDE.md`,
+all three `.claude/skills`, `README.md`, `Wire.h`'s header comment, and the four
+docs with dead `resources/` pointers. Item 44 is closed by that pass. What is left
+below is the *code* half of 45/46 and the two wire claims in 47.
+
 | # | Item | Why it matters |
 |---|---|---|
-| 44 | The v100 rule's stated mechanism is false | Keep the rule. `KenshiLib.lib` carries no ABI records, so **modern MSVC links fine** and then misreads every field after a `std::string` (40 B in VC10, 32 B in VS2015+). mingw fails at link; modern MSVC fails silently at runtime. The doc promises the opposite, so the rule is untestable by anyone who checks it |
-| 45 | Incremental rebuild scans 34 of 11,576 headers | `CLAUDE.md` states absolutely that any header change forces a full rebuild. It scans `src/` and `vc10_compat` only. The 0.4.0 bump built correctly **only because `KC_REBUILD=1` was passed by hand** |
-| 46 | Windows build/gate has drifted behind Linux | The parity claim is stale as of two commits after its own proof, and the DOA guard that exists *because* fork-1..5 shipped dead is Linux-only |
-| 47 | Doc rot: dead `BUILD_SETUP.md`, `resources/` pointers, protocol coordinate drift | Includes two wire claims that are actively wrong: growing `NpcCensusHeader` is described as a safe append and is a **mass-cull**, and `ENTITY_BATCH_MAX` is called a receive-side bound that is not enforced |
+| 45 | Widen the incremental rebuild's header scan | **Docs corrected; code not.** The scan is still 34 headers of the 11,576 on the include path, so a KenshiLib or ENet header change rebuilds nothing. `CLAUDE.md` now says so and tells you to pass `KC_REBUILD=1` by hand — widening the scan removes the footgun |
+| 46 | Port the Linux-only build features to Windows | The parity *claim* is corrected everywhere; the *gap* remains. `DepsPin.h` stamping and the map-based loadability check exist only in `build_plugin.sh`, so the dead-on-arrival class that produced fork-1..5 is still uncovered on Windows |
+| 47 | Two wire claims that are actively wrong | The doc-rot half is done (BUILD_SETUP restored from upstream `30bf8ea`, `resources/` pointers repointed). Left: growing `NpcCensusHeader` is documented as a safe append and is a **mass-cull**; `ENTITY_BATCH_MAX` is called a receive-side bound and is not enforced (`hdr.count` is a `u8`, the loop runs to 255) |
 | 48 | Two comments backwards about their own mechanism | The Ogre shims and the damage guard. **Keep both behaviours** — the risk is a credibility cascade where someone disproves the stated reason and deletes working code |
 | 49 | ENet revision recorded nowhere | It is compiled into every shipped kit. On-disk is 17 commits past `v1.3.18`, and those commits include bounds checks in the untrusted packet parser. The documented recipe reproduces a *different, less hardened* network stack |
 
