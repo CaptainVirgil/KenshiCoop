@@ -84,8 +84,12 @@ but the IDE relies on the registry fix below.
 3. **Missing `ammintrin.h`.** The KB2519277 compiler update ships an `intrin.h`
    that includes `ammintrin.h` without providing it. Shim:
    `third_party/vc10_compat/ammintrin.h` (added to `INCLUDE`).
-4. **ENet 1.3.18 C99 `for`-decls.** The v100 C compiler is C89-only; apply
-   `third_party/enet/patches/0001-enet-c89-for-loops.patch` after fetching ENet.
+4. **ENet C99 `for`-decls.** The v100 C compiler is C89-only. Fetch the
+   *pinned* ENet revision (`5a9c537f`, not the 1.3.18 release tarball — see
+   `third_party/enet/README.md`), then apply BOTH patches in
+   `third_party/enet/patches/`: `0001-enet-c89-for-loops.patch` and
+   `0002-enet-socket-hooks.patch` (the Steam tunnel's socket seam; the plugin
+   does not compile without it).
 5. **Ogre symbols.** `Ogre::Quaternion::getYaw` is imported from Ogre, so the
    project links `OgreMain_x64.lib` (from the deps) in addition to `kenshilib.lib`.
 

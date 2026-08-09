@@ -19,7 +19,7 @@ export INCLUDE="$(winpath "$VC/include");$(winpath "$SDK/Include");$(winpath "$R
 export LIB="$(winpath "$VC/lib/amd64");$(winpath "$SDK/Lib/x64")"
 
 [ -f "$ENET/host.c" ] || {
-  echo "ENet sources missing at $ENET - see CLAUDE.md for the fetch + patch steps" >&2
+  echo "ENet sources missing at $ENET - see third_party/enet/README.md for the pinned fetch + patch recipe" >&2
   exit 1
 }
 

@@ -71,14 +71,13 @@ and `.reloc`, with `.rdata` differing only by the aligned length of the embedded
 Both scripts link objects in vcxproj source order — `/OPT:ICF` folding depends on link
 order, so an alphabetical object list silently changes `.text`.
 
-Since that proof, two changes landed on the **Linux script only**: the generated
-`DepsPin.h` stamp (`36ed9fb`, `37812ee`) and the map-based loadability check (`857a780`).
-`grep -c DEPS_PIN scripts/build_plugin_direct.ps1` returns 0 against 7 for the shell
-script, and the stamp changes a string literal's length, so the artifacts no longer match.
-No automated parity gate exists, and no Windows-built DLL has ever shipped — both
-`dist/release-fork-6/{win,linux}` DLLs are the same Linux build. Porting those two
-features to `build_plugin_direct.ps1` is roadmap item 46. See the `kenshicoop-build` skill
-for the comparison procedure.
+Since that proof the scripts diverged and re-converged: the `DepsPin.h` stamp (now
+covering KenshiLib AND the vendored ENet), the map-based loadability check, and the
+full-include-path header scan exist in **both** scripts as of 2026-08-08 (roadmap items
+45/46) — but the Windows port has **not yet run on a real Windows machine**, and the
+artifacts have not been re-compared since `5a7902d`. No automated parity gate exists, and
+no Windows-built DLL has ever shipped — both `dist/release-fork-6/{win,linux}` DLLs are
+the same Linux build. See the `kenshicoop-build` skill for the comparison procedure.
 
 **The Linux gate builds both configurations**; the Windows gate does not build the plugin
 at all (`verify.ps1` says so itself: "Requires NO Kenshi launch and NO KenshiCoop.dll").
@@ -190,6 +189,12 @@ were using had silently drifted.
 **The general rule this earned:** a pin justified by a story rather than a re-test is a
 claim, not a constraint. Before repeating one — including one written here — check it.
 
+**ENet is pinned too: `5a9c537f`** (lsalzman/enet master, 17 commits past v1.3.18).
+Those commits are packet-parser hardening the 1.3.18 release lacks — never substitute
+the release tarball. The checkout is gitignored, so the pin lives in
+`third_party/enet/README.md` (fetch + patch recipe) and is stamped into the DLL next to
+the KenshiLib pin (`[host] ENet vendored=...`; `-dirty` = the two patches, healthy).
+
 **Trap — two post-checkout steps, or the build fails confusingly.** After any checkout or
 update of the deps, both `fetch_lfs.sh` (the `.lib` files and `boost.zip` are LFS
 pointers) and `patch_vendored_headers.sh` must re-run. The header patch is idempotent and
@@ -277,17 +282,18 @@ violation.
 ## Build loop
 
 Both build scripts are **incremental**: a translation unit is skipped when its object
-is newer than its source, so a no-op rebuild is under a second and a one-file edit is
-about one. Touching any header **under `src/` or `third_party/vc10_compat`** forces a full
-rebuild — deliberately, because those headers are load-bearing and a source-only check
-would skip a TU a header change invalidated.
+is newer than its source, so a no-op rebuild is fast and a one-file edit is about one
+second. Touching any header **on the include path** — `src/`, `vc10_compat`, the
+KenshiLib deps (boost included) and ENet, ~11.6k headers checked in one scan pass per
+build — forces a full rebuild, deliberately: those headers are load-bearing and a
+source-only check would skip a TU a header change invalidated. That covers
+`patch_vendored_headers.sh` rewriting vendored headers and the ENet socket-hook patch
+being applied or reverted, which the old 34-header scan silently missed.
 
-**That scan is 34 headers; the include path handed to `cl.exe` carries 11,576.** A
-KenshiLib or ENet header change rebuilds NOTHING, so the documented post-checkout ritual
-(`patch_vendored_headers.sh` rewrites 164 vendored headers) is a silent stale-object
-generator, and applying or reverting the ENet socket-hook patch is invisible to it. **Pass
-`KC_REBUILD=1` by hand after touching anything under `third_party/`** — the KenshiLib 0.4.0
-bump only built correctly because it was. Widening the scan is roadmap item 45.
+**`KC_REBUILD=1` is still the manual big hammer**, needed only for a change that moves no
+header mtime forward: extracting an archive that preserves old timestamps (boost.zip's
+headers carry 2016 dates) or an `rsync -a` from elsewhere. `git checkout` and the patch
+scripts stamp fresh mtimes and are caught by the scan.
 
 The log keeps one previous run as `.prev`, so relaunching after a crash no longer
 destroys the log of the crash. The kit ships `KenshiCoop.map`, so a crash address in a

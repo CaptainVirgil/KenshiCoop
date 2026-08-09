@@ -8,8 +8,8 @@ REM Prereqs (see resources/BUILD_SETUP.md):
 REM   - VC++ 2010 (v100) x64 compiler  (SDK 7.1 + KB2519277)
 REM   - VS2022 Build Tools (for MSBuild.exe)
 REM   - third_party/KenshiLib_deps (deps + Boost) and env vars set
-REM   - third_party/enet/enet patched for C89 (scripts/apply_enet_patch is implicit;
-REM     see third_party/enet/patches/0001-enet-c89-for-loops.patch)
+REM   - third_party/enet/enet at the pinned revision with both patches applied
+REM     (fetch + patch recipe: third_party/enet/README.md)
 setlocal
 
 REM Build configuration (Phase 1 build separation). Default = Harness, the

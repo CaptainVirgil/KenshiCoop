@@ -181,8 +181,9 @@ Dependencies are fetched, not committed:
   [KenshiLib_Examples_deps](https://github.com/BFrizzleFoShizzle/KenshiLib_Examples_deps)
   into `third_party/KenshiLib_deps/`
 - ENet: clone [lsalzman/enet](https://github.com/lsalzman/enet) into
-  `third_party/enet/enet/` and apply the patches in `third_party/enet/patches/`
-  (see `third_party/enet/README.md`)
+  `third_party/enet/enet/`, check out the pinned revision `5a9c537f`, and apply
+  the patches in `third_party/enet/patches/` (recipe and why the pin matters:
+  `third_party/enet/README.md` — the 1.3.18 release is NOT a substitute)
 
 ## Development and testing
 

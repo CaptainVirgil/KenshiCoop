@@ -37,7 +37,7 @@
 #include <vector>
 #include <cstring>
 // Written by the build scripts (build/generated/DepsPin.h), naming the KenshiLib
-// checkout this DLL was compiled against. Guarded by a FLAG the build script
+// and vendored-ENet checkouts this DLL was compiled against. Guarded by a FLAG the build script
 // defines, not by __has_include: this is a C++03 (v100) compiler, where
 // __has_include is not a thing and `#if __has_include(...)` quietly evaluates to
 // 0 - so the header was silently skipped and every build logged "unstamped"
@@ -2126,6 +2126,15 @@ static void logHostVersions() {
     char b[256];
     _snprintf(b, sizeof(b) - 1, "[host] KenshiLib runtime=%s built-against=%s",
               runtimeVer[0] ? runtimeVer : "UNREADABLE", builtAgainst);
+    b[sizeof(b) - 1] = '\0';
+    coopLog(b);
+
+#ifdef KENSHICOOP_ENET_PIN
+    const char* enetPin = KENSHICOOP_ENET_PIN;
+#else
+    const char* enetPin = "unstamped";
+#endif
+    _snprintf(b, sizeof(b) - 1, "[host] ENet vendored=%s", enetPin);
     b[sizeof(b) - 1] = '\0';
     coopLog(b);
 

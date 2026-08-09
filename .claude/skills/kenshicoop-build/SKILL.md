@@ -83,8 +83,12 @@ no-op on a tree already patched from Linux).
 
 `third_party/KenshiLib_deps` is a separate checkout, **pinned to `b566d74`**
 (KenshiLib 0.4.0 — the version RE_Kenshi actually ships), gitignored.
-`third_party/enet/enet` is a clone of lsalzman/enet with the two patches in
-`third_party/enet/patches/` applied.
+`third_party/enet/enet` is a clone of lsalzman/enet **pinned at `5a9c537f`**
+(17 commits past v1.3.18 — post-release packet-parser hardening; the 1.3.18
+release tarball is not a substitute) with the two patches in
+`third_party/enet/patches/` applied. Fetch + patch recipe:
+`third_party/enet/README.md`. The build stamps the checkout's
+`git describe --always --dirty` into the DLL next to the KenshiLib pin.
 
 This used to be pinned at `e75769b` with the note *"v0.4.0 breaks the plugin"*. It did
 not: the move of `kenshi/CombatClass.h` under `kenshi/combat/` cost one include line plus
