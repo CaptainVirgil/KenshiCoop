@@ -91,6 +91,17 @@ const float NPC_MOVE_VEL = 0.75f; // NPC est. velocity (u/s) above which it is "
 // sample()), or the peer releases the body between keepalives and the whole
 // point is lost. 1500 leaves margin for one dropped slice.
 const unsigned long MID_STILL_KEEPALIVE_MS = 1500;
+// A body this close to one of our own characters is never AI-frozen: the freeze
+// targets divergent wanderers (measured 500-900 u), and suspending the AI of an
+// NPC you are standing next to breaks interaction with it - talking to a frozen
+// seated NPC crashed the client. Well under the 120 u park threshold and under
+// the ~50 u seat-schedule divergence class, so it swallows nothing the freeze
+// was built for.
+const float FREEZE_PC_EXEMPT_DIST = 25.0f;
+// How often the local player-squad positions behind that exemption are
+// refreshed. They are only used for a coarse radius test, so a few Hz is plenty
+// and the point is to NOT add a per-frame captureSquad to the authority pass.
+const unsigned long PC_SAMPLE_MS = 250;
                                   // (vs a fidget/turn in place -> treat as at rest)
 const unsigned long TASK_GRACE_MS = 4000;  // settle time before drift-checking a pose
 const float TASK_DRIFT_MAX = 4.0f;         // committed pose drift beyond which we park

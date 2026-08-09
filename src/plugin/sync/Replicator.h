@@ -1355,6 +1355,15 @@ private:
     // broken cadence flooded the reliable channel invisibly once (2026-08-09).
     unsigned long          invResentCount_;
     unsigned long          invResentRollupMs_;
+    // Local player-squad positions, refreshed a few times a second in
+    // enforceHostAuthority. Only consumer is the freeze's proximity exemption
+    // (a body you are standing next to is not a divergent wanderer, and
+    // suspending its AI crashes dialogue), so a coarse sample is plenty.
+    enum { PC_SAMPLE_MAX = 16 };
+    float                  pcSampleX_[PC_SAMPLE_MAX];
+    float                  pcSampleZ_[PC_SAMPLE_MAX];
+    unsigned int           pcSampleN_;
+    unsigned long          pcSampleMs_;
     // Protocol 34: the host's ~1 Hz container census result (LOCAL hands of
     // complete STORAGE/machine-class buildings in the interest spheres).
     // Folded into the authored set each publishInventories pass while

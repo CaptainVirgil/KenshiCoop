@@ -196,6 +196,23 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         } else ++it;
     }
 
+    // Refresh the local player positions the freeze's proximity exemption reads.
+    // A few Hz deliberately: the exemption is a coarse radius test, and this
+    // pass runs every render frame - a per-frame captureSquad here would be
+    // exactly the kind of cost the rest of this work is trying to remove.
+    if (pcSampleMs_ == 0 || (nowMs() - pcSampleMs_) >= PC_SAMPLE_MS) {
+        pcSampleMs_ = nowMs();
+        static EntityState pcBuf[PC_SAMPLE_MAX]; // main-thread only
+        unsigned int np = engine::captureSquad(gw, /*leaderOnly*/ false,
+                                               pcBuf, PC_SAMPLE_MAX);
+        if (np > PC_SAMPLE_MAX) np = PC_SAMPLE_MAX;
+        for (unsigned int p = 0; p < np; ++p) {
+            pcSampleX_[p] = pcBuf[p].x;
+            pcSampleZ_[p] = pcBuf[p].z;
+        }
+        pcSampleN_ = np;
+    }
+
     // Enumerate the join's local world NPCs (same interest query as the host).
     const unsigned int MAX_NPCS = 256;
     static Character*  chars[MAX_NPCS]; // main-thread only
@@ -1623,6 +1640,32 @@ float Replicator::parkDivergedCopy(Character* c, const EntityState& st, const Ke
 // detour is not installed (KENSHICOOP_AI_SUSPEND=0).
 void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift) {
     if (!c) return;
+    // NEVER freeze a body one of our own characters is standing next to.
+    //
+    // This freeze exists for genuinely divergent WANDERERS - the comments
+    // above it measure 500-900 u, and the threshold sits at 120 u precisely to
+    // clear the ~50 u seat-schedule class. A body within arm's reach of a
+    // player is none of those, and suspending its AI breaks interaction with
+    // it: talking to a frozen seated NPC crashed the join twice on 2026-08-09
+    // (unhandled C++ exception inside the engine's dialogue path, no
+    // KenshiCoop frame on the stack - the engine's dialogue state machine does
+    // not tolerate a partner whose AI has been suspended underneath it).
+    // Release an existing freeze on approach too, so an NPC that was already
+    // frozen becomes talkable when you walk up to it rather than staying inert.
+    if (pcSampleN_ > 0) {
+        float cx, cy, cz;
+        if (engine::readPos(c, &cx, &cy, &cz)) {
+            for (unsigned int p = 0; p < pcSampleN_; ++p) {
+                float dx = cx - pcSampleX_[p];
+                float dz = cz - pcSampleZ_[p];
+                if (dx * dx + dz * dz <= FREEZE_PC_EXEMPT_DIST * FREEZE_PC_EXEMPT_DIST) {
+                    std::map<Key, unsigned long>::iterator fit = censusFrozen_.find(k);
+                    if (fit != censusFrozen_.end()) censusFrozen_.erase(fit);
+                    return;
+                }
+            }
+        }
+    }
     // 20 s hold (was 5 s): a diverged working slave released after only 5 s
     // below-threshold walked back toward its local job spot / owner and was
     // over the 120 u park line again before the next 5 s park cooldown fired
