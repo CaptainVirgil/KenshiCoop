@@ -8,15 +8,15 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**fork-6 is the public release. fork-7 is built and installed locally, unreleased.**
+**`fork-6` is the last public release. Everything since is unreleased — and the next release is `v0.1.0`, not `fork-8`.**
 
 | | |
 |---|---|
 | Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1 |
-| Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve) |
-| Local build | `fork-7` — first build against KenshiLib 0.4.0; installed on both the Steam install and `~/Kenshi-Join` |
+| Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve). The last release made while this was still a fork |
+| Local build | protocol 56, installed on both the Steam install and `~/Kenshi-Join`. Ships as **`v0.1.0`** — the first release under the project's own identity |
 | Gate | 733 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
-| Interop | fork-6 ↔ fork-7 **do** connect: the handshake compares `PROTOCOL_VERSION`, not the build label |
+| Interop | **`fork-6` will NOT connect to the current build** — protocol 54 vs 56. The handshake compares `PROTOCOL_VERSION`, not the label, and a mismatch is a hard reject |
 
 fork-1 through fork-5 were dead on arrival (no `/GL`) and are withdrawn or
 superseded; fork-5 was deleted outright, tag included.
@@ -92,17 +92,21 @@ Still open, in cost order:
 
 ## Open decisions (cheap, need Virgil)
 
-- **Release fork-8, or hold.** A large amount landed 2026-08-08/09 and none of
+- **Cut `v0.1.0`, or hold.** A large amount landed 2026-08-08/09 and none of
   it has been released: the instruction audit, ENet pin + stamp, the
   full-include-path header scan, the Windows DOA checks, the entity-batch
   receive clamp with `netlinktest`, then the played-session fixes (inventory
   cadence, drive catch-up, mid-band keepalive, the freeze-vs-drive collision,
   damage floaters) and weather sync. fork-7 predates all of it.
-  **Protocol is now 55**, so fork-8 is a hard cut: both players must update the
+  **Protocol is now 56**, so this is a hard cut: both players must update the
   same day. Since the bump is already spent, item 28's census `truncated` flag
   should land BEFORE the release rather than waiting for a bump of its own.
-- **Detach the GitHub fork** (cosmetic — AGPL attribution stays either way;
-  upstream dormant).
+- **Detach the GitHub fork.** README attribution is done (nhoral and
+  RE_Kenshi/KenshiLib credited up front, AGPL kept deliberately as a derived
+  work) and releases are renamed off `fork-N` onto semver. The detach itself is
+  **a UI action GitHub exposes no API for**: repo Settings → General → bottom →
+  *Leave fork network*. Irreversible — the repo can never rejoin the network —
+  but it changes nothing about the code or the licence obligations.
 - **CT 203**: Steam-client decision above, or `pct destroy 203`.
 
 ---

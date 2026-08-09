@@ -88,10 +88,13 @@ whether the host starts driving (`drv>0` in its audit line).
 ## Loose ends
 
 - [ ] Launch and work through "what to watch" above
-- [ ] Decide fork-8. Everything since fork-6 is unreleased and protocol is now
-      56, so it is a hard cut. **Item 28's census `truncated` flag should land
-      before the release** rather than waiting for a bump of its own — the bump
-      is already spent
+- [ ] **Finish the standalone move:** repo Settings → General → *Leave fork
+      network*. No API exists for it. README attribution and the semver rename
+      are already done and pushed
+- [ ] Cut **`v0.1.0`** (not `fork-8`). Everything since `fork-6` is unreleased
+      and protocol is now 56, so it is a hard cut — `fork-6` will refuse to
+      connect. **Item 28's census `truncated` flag should land before the
+      release** rather than waiting for a bump of its own; the bump is spent
 - [ ] Flip both configs back to `"transport": "steam"` for a brother session
 - [ ] Decide CT 203 (Steam client / GOG build / `pct destroy 203`)
 - [ ] Windows: run `build_plugin_direct.ps1` + `verify.ps1` once on a real

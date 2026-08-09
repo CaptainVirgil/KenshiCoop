@@ -7,6 +7,13 @@
 # first question of every failed session. kit.json answers it without a rebuild.
 #
 #   usage: scripts/linux/make_kit.sh [version-label]
+#
+# VERSION LABELS ARE SEMVER, e.g. v0.1.0 - NOT "fork-N". This project began as a
+# fork of nhoral/KenshiCoop and was numbered fork-1..fork-7 while it was one;
+# it is its own project now, with its own wire protocol and release line, so the
+# label names a RELEASE rather than a position relative to somebody else's repo.
+# The compatibility number players actually need is PROTOCOL_VERSION, which this
+# script reads from Wire.h and writes into kit.json either way.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

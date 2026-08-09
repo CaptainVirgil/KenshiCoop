@@ -6,6 +6,19 @@ Experimental **co-op multiplayer for [Kenshi](https://lofigames.com/)**, built a
 [RE_Kenshi](https://github.com/BFrizzleFoShizzle/RE_Kenshi) /
 [KenshiLib](https://github.com/BFrizzleFoShizzle/KenshiLib) plugin.
 
+> **Standing on two other projects.** This began as a fork of
+> **[nhoral/KenshiCoop](https://github.com/nhoral/KenshiCoop)** — the original
+> proof that co-op in Kenshi was possible at all, and the source of this
+> project's file layout, protocol numbering and a great deal of its replication
+> design. It has since diverged far enough to stand on its own (its own wire
+> protocol, build system and release line), but it is a derived work and stays
+> AGPL-3.0 so it remains one.
+>
+> It runs at all because of **[RE_Kenshi and KenshiLib](https://github.com/BFrizzleFoShizzle/RE_Kenshi)**
+> by [BFrizzleFoShizzle](https://github.com/BFrizzleFoShizzle) — the plugin
+> loader and the engine map this mod hooks through. Nothing here would exist
+> without that work.
+
 One player hosts their world; a friend connects (LAN, direct UDP, or Steam P2P)
 and plays their own squad inside it. The plugin replicates squads, NPCs, combat,
 inventory and equipment, direct trades between the players' squads, items
@@ -59,11 +72,12 @@ panel, so there's no config file to edit and no launcher scripts to run. (A tiny
 
 ### 1. Install the mod
 
-> **This is the CaptainVirgil fork.** Releases live at
-> [CaptainVirgil/KenshiCoop](https://github.com/CaptainVirgil/KenshiCoop/releases/latest),
-> not upstream's page — the two are on different protocol versions and will refuse to
-> connect to each other. **[PLAYING.md](PLAYING.md) is the five-minute setup guide**; the
-> rest of this README is upstream's description of how the mod works.
+> **Releases live at
+> [CaptainVirgil/KenshiCoop](https://github.com/CaptainVirgil/KenshiCoop/releases/latest).**
+> This project and nhoral's original are on different wire protocols and will
+> refuse to connect to each other — install one or the other, and both players
+> must run the *same* build. **[PLAYING.md](PLAYING.md) is the five-minute setup
+> guide.**
 
 Download `update-kenshicoop.ps1` from the latest release and run it:
 
@@ -195,8 +209,13 @@ scenario, and produces a numeric PASS/FAIL verdict from the two logs.
 
 ## Credits
 
-- [BFrizzleFoShizzle](https://github.com/BFrizzleFoShizzle) - RE_Kenshi and
-  KenshiLib, which make plugins like this possible
+- **[nhoral](https://github.com/nhoral)** — [the original KenshiCoop](https://github.com/nhoral/KenshiCoop),
+  which this project grew out of. The first working co-op for Kenshi, and the
+  origin of the file layout, the protocol numbering and much of the replication
+  design still in use here
+- **[BFrizzleFoShizzle](https://github.com/BFrizzleFoShizzle)** — RE_Kenshi and
+  KenshiLib: the plugin loader and the engine map that make a mod like this
+  possible at all
 - [lsalzman/enet](https://github.com/lsalzman/enet) - UDP networking library
 - [zeroit789](https://github.com/zeroit789) - the "Multiplayer (Wanderer x2)"
   co-op game start ([#15](https://github.com/nhoral/KenshiCoop/pull/15))
@@ -204,6 +223,9 @@ scenario, and produces a numeric PASS/FAIL verdict from the two logs.
 
 ## License
 
-[AGPL-3.0](LICENSE). KenshiLib and RE_Kenshi are GPLv3; this plugin links
-KenshiLib under GPLv3 section 13 (GPL/AGPL combination). Not affiliated with
-Lo-Fi Games. Non-commercial fan project.
+[AGPL-3.0](LICENSE), inherited from
+[nhoral/KenshiCoop](https://github.com/nhoral/KenshiCoop) and kept deliberately:
+this is a derived work and stays one, so anyone who takes it further owes the
+same terms back. KenshiLib and RE_Kenshi are GPLv3; this plugin links KenshiLib
+under GPLv3 section 13 (GPL/AGPL combination). Not affiliated with Lo-Fi Games.
+Non-commercial fan project.
