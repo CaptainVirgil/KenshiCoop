@@ -4,7 +4,7 @@
 existed in the tree, so **this file is a reconstruction from code archaeology**,
 not a recovered original. Read the preamble before trusting a row.
 
-Current `PROTOCOL_VERSION`: **54**.
+Current `PROTOCOL_VERSION`: **55**.
 
 > **Why it went missing, and why it will not again.** `Wire.h` used to point at
 > `resources/PROTOCOL_HISTORY.md`, and `resources/` is gitignored - so it named a
@@ -63,7 +63,7 @@ actually held in some commit.**
 Values `PROTOCOL_VERSION` has actually held, in order:
 
 ```
-1, 2, 3, 4, 11, 18, 23, 36, 37, 38, 39, 40, 41, 43, 44, 45, 48, 50, 51, 52, 53, 54
+1, 2, 3, 4, 11, 18, 23, 36, 37, 38, 39, 40, 41, 43, 44, 45, 48, 50, 51, 52, 53, 54, 55
 ```
 
 Values that **never existed** on this line: `5–10`, `12–17`, `19–22`, `24–35`,
