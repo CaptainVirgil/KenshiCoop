@@ -12,10 +12,10 @@ the build commands; this file holds the plan.
 
 | | |
 |---|---|
-| Protocol | 54 (unchanged since fork-1 — nothing on the wire has moved) |
+| Protocol | **55** — weather sync (2026-08-09) is the first wire change since fork-1 |
 | Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve) |
 | Local build | `fork-7` — first build against KenshiLib 0.4.0; installed on both the Steam install and `~/Kenshi-Join` |
-| Gate | 727 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
+| Gate | 732 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
 | Interop | fork-6 ↔ fork-7 **do** connect: the handshake compares `PROTOCOL_VERSION`, not the build label |
 
 fork-1 through fork-5 were dead on arrival (no `/GL`) and are withdrawn or
@@ -92,11 +92,15 @@ Still open, in cost order:
 
 ## Open decisions (cheap, need Virgil)
 
-- **Release fork-8, or hold.** Phase 1 (items 44–49) landed 2026-08-08/09:
-  instruction audit, ENet pin + stamp, full-include-path header scan, the
-  Windows DOA checks, the wire-claim corrections, and the entity-batch
-  receive clamp with `netlinktest` pinning it. fork-7 predates all of it and
-  was never released. None of it changes the wire (protocol stays 54).
+- **Release fork-8, or hold.** A large amount landed 2026-08-08/09 and none of
+  it has been released: the instruction audit, ENet pin + stamp, the
+  full-include-path header scan, the Windows DOA checks, the entity-batch
+  receive clamp with `netlinktest`, then the played-session fixes (inventory
+  cadence, drive catch-up, mid-band keepalive, the freeze-vs-drive collision,
+  damage floaters) and weather sync. fork-7 predates all of it.
+  **Protocol is now 55**, so fork-8 is a hard cut: both players must update the
+  same day. Since the bump is already spent, item 28's census `truncated` flag
+  should land BEFORE the release rather than waiting for a bump of its own.
 - **Detach the GitHub fork** (cosmetic — AGPL attribution stays either way;
   upstream dormant).
 - **CT 203**: Steam-client decision above, or `pct destroy 203`.
