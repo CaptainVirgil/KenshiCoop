@@ -1005,6 +1005,23 @@ private:
     // streaming them. Keyed by hand so we restore the exact body when it re-enters
     // the host's streamed set.
     std::map<Key, Character*> suppressed_;
+    // Identity witness for the suppressed set: key -> hash of the body's template
+    // stringID, recorded when the hide is booked.
+    //
+    // The 2 s re-assert sweep proves an entry live by round-tripping the pointer
+    // through its own hand, and MIGRATES the hide to the new key when the hand
+    // changed (a combat detach re-containers a hidden body). But a pointer that
+    // round-trips to itself is not proof of the SAME BODY: the engine can despawn
+    // a suppressed character and allocate a different one at that address, and the
+    // recycled body round-trips just as cleanly. Migrating on that evidence alone
+    // moves a hide onto an innocent NPC, which is the worst outcome this subsystem
+    // has - an invisible solid body in a doorway.
+    //
+    // A key with no witness is NOT migrated. Pruning is safe in a way migrating is
+    // not: the ordinary authority pass re-judges the body under its new key and
+    // re-hides it if it should be, so the cost of being wrong here is a flicker,
+    // where the cost of being wrong the other way is permanent.
+    std::map<Key, u32> suppressedSid_;
     // Phase 2 (runtime-spawn sync): last time the suppressed set was re-hidden.
     // The engine can undo a one-shot hide on its own (ambush dialog/combat
     // re-tasks the body, zone streaming re-adds it to the update list), so the

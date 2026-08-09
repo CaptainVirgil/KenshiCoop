@@ -2186,6 +2186,23 @@ void Replicator::applyStealthFeedback(GameWorld* gw, Inbound& in) {
     }
 }
 
+// A peer's speed multiplier, made safe before anything can read it.
+//
+// SpeedPacket.speed is untrusted f32 straight off the wire and it is the only
+// wire field that reaches the engine's own clock rate. 5.0 is the ceiling
+// slewedEffective already enforces for the slewed value; 0 is pause, which is
+// legitimate.
+//
+// The `!(v >= 0.0f)` form is deliberate rather than `v < 0.0f`: it is false for
+// a NaN as well as for a negative, and NaN is the case that got through
+// everything downstream (every comparison against a NaN is false, so both of
+// slewedEffective's clamps decline to fire and it returns the NaN unchanged).
+static float sanePeerSpeed(float v) {
+    if (!(v >= 0.0f)) return 0.0f;   // NaN and negatives both land here
+    if (v > 5.0f) return 5.0f;
+    return v;
+}
+
 void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
                            bool isHost) {
     const unsigned long RESEND_MS        = 3000; // safety resend (late join / lost state)
@@ -2265,9 +2282,19 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
         if (p.seq != 0 && speedSeqSeen_ != 0 && (long)(p.seq - speedSeqSeen_) <= 0)
             continue;
         speedSeqSeen_ = p.seq;
-        bool pkPaused = (p.flags & SPEED_PAUSED) != 0 || p.speed <= EPS;
+        // Sanitize BEFORE anything reads it. This is the one field on the wire
+        // that lands directly in the engine's clock rate, and slewedEffective's
+        // clamps do not hold it: a NaN fails every comparison there, so both
+        // bounds tests are false and it is returned unchanged, and a NEGATIVE
+        // value takes the `eff <= 0.01f` paused early-out and is returned
+        // unclamped - a peer could hand this client a negative time scale.
+        // The host path is not safe either: speedPeerReq_ feeds a min()
+        // arbitration, and min() against a NaN is not defined to do anything
+        // useful.
+        const float pkSpeed = sanePeerSpeed(p.speed);
+        bool pkPaused = (p.flags & SPEED_PAUSED) != 0 || pkSpeed <= EPS;
         if (p.type == (u8)PKT_SPEED_REQ && isHost) {
-            float req = pkPaused ? 0.0f : p.speed;
+            float req = pkPaused ? 0.0f : pkSpeed;
             bool  cmb = (p.flags & SPEED_IN_COMBAT) != 0;
             if (speedPeerReq_ < 0.0f || fabs(req - speedPeerReq_) > EPS ||
                 cmb != speedPeerCombat_) {
@@ -2283,7 +2310,7 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
             // touching the UI buttons - they keep showing this player's VOTE.
             // The clock slew (protocol 25) folds in here: the join's sim runs
             // at effective * timeSlew_ until its game clock matches the host's.
-            float eff = pkPaused ? 0.0f : p.speed;
+            float eff = pkPaused ? 0.0f : pkSpeed;
             if (engine::writeGameSpeedQuiet(gw, slewedEffective(eff), pkPaused)) {
                 speedLastApplied_ = eff;
                 bool changed = (speedLastSet_ < 0.0f || fabs(eff - speedLastSet_) > EPS);

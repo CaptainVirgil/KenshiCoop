@@ -621,6 +621,16 @@ struct WorldItemClaimHeader {
 // 16 * sizeof(WorldItemEntry)=1168 + header(6) stays under a 1400 B datagram.
 const unsigned int WORLD_ITEMS_MAX = 16;
 
+// netIds per cull / claim datagram. The count field on both headers above is a
+// u8, so 255 is the wire's own limit, not a policy choice.
+//
+// It lives here because the producer and the transport used to disagree about it
+// by one: the cull producer collected up to 256 and NetLink then clamped the send
+// to 255, so the 256th id was dropped after its local track had already been
+// erased - the peer's proxy stranded with nothing left on this side that could
+// ever cull it again. Both ends read this constant now.
+const unsigned int WORLD_IDS_PER_PACKET = 255;
+
 // ---- Phase W2: conservation DROP intent ------------------------------------
 // A WEAPON cannot be rebuilt on a peer (RootObjectFactory::createItem returns null for all
 // weapons), so the W1 "stream a template, spawn a proxy" path can never show a dropped

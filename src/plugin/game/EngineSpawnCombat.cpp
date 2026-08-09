@@ -2112,7 +2112,21 @@ bool vetoLocalDeath(Character* c) {
     if (!c) return false;
     // Only act on a body the local sim has actually killed - the caller gates
     // on the OWNER stream reporting alive, so this un-does a purely-local death.
-    if (!(g_isDeadCharFn && g_isDeadCharFn(c))) return false;
+    //
+    // The read itself needs the guard. g_isDeadCharFn is a resolved engine
+    // function called on a live Character, which is the exact shape every other
+    // call in this file wraps and this one did not: the caller resolves the
+    // pointer in the drive loop and the body can be destroyed between there and
+    // here, turning the read into a fault on the main thread - in the one path
+    // whose whole job is to keep a session alive through a divergence.
+    if (!g_isDeadCharFn) return false;
+    bool locallyDead = false;
+    __try {
+        locallyDead = g_isDeadCharFn(c) ? true : false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (!locallyDead) return false;
     // Release the forced KO + ragdoll first (own SEH), same lever as revive.
     knockDown(c, false);
     __try {

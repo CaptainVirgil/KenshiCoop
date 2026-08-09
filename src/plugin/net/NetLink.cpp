@@ -84,7 +84,9 @@ NetLink::NetLink()
       thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0), myId_(0),
       sendEpoch_(0),
       steamPeer_(0),
+      unknownPkts_(0), unknownLogMs_(0),
       simDelayMs_(0), simJitterMs_(0), simLossPct_(0) {
+    memset(unknownTypeBits_, 0, sizeof(unknownTypeBits_));
     InitializeCriticalSection(&outCs_);
 }
 
@@ -173,7 +175,7 @@ void NetLink::queueWorldItems(u32 ownerId, const WorldItemEntry* items, unsigned
 void NetLink::queueWorldRemove(u32 ownerId, const u32* netIds, unsigned int count) {
     OutWorldRemove ow;
     ow.ownerId = ownerId;
-    if (count > 255) count = 255; // u8 count on the wire
+    if (count > WORLD_IDS_PER_PACKET) count = WORLD_IDS_PER_PACKET; // u8 count on the wire
     if (netIds && count > 0) ow.netIds.assign(netIds, netIds + count);
     pushLocked(outCs_, outWorldRemove_, ow);
 }
@@ -182,7 +184,7 @@ void NetLink::queueWorldClaim(u32 ownerId, u32 authorId, const u32* netIds,
                               unsigned int count) {
     OutWorldClaim ow;
     ow.ownerId = ownerId; ow.authorId = authorId;
-    if (count > 255) count = 255; // u8 count on the wire
+    if (count > WORLD_IDS_PER_PACKET) count = WORLD_IDS_PER_PACKET; // u8 count on the wire
     if (netIds && count > 0) ow.netIds.assign(netIds, netIds + count);
     pushLocked(outCs_, outWorldClaim_, ow);
 }
@@ -1024,6 +1026,32 @@ void NetLink::threadLoop() {
                                 ++syncSamples;
                                 if (rtt <= bestRttMs) { bestRttMs = rtt; bestOffsetMs = offset; }
                             }
+                        }
+                    } else {
+                        // A type this build has no arm for. Dropping it is right;
+                        // dropping it SILENTLY was not - it is the only signal that
+                        // separates version skew from a corrupted stream, and both
+                        // otherwise present as "a feature quietly does not work".
+                        //
+                        // Reported at most once per distinct type, plus a running
+                        // total every 10 s, so a stream producing garbage on every
+                        // packet cannot make the log the bigger problem.
+                        ++unknownPkts_;
+                        const unsigned int w = (unsigned int)type >> 5;
+                        const unsigned int bit = 1u << ((unsigned int)type & 31u);
+                        bool firstOfType = (unknownTypeBits_[w] & bit) == 0;
+                        unknownTypeBits_[w] |= bit;
+                        unsigned long nowU = (unsigned long)monoMs();
+                        if (firstOfType || (nowU - unknownLogMs_) > 10000) {
+                            unknownLogMs_ = nowU;
+                            char b[144];
+                            _snprintf(b, sizeof(b) - 1,
+                                "unknown packet type=%u len=%u total=%lu "
+                                "(peer build mismatch or corrupt stream)",
+                                (unsigned)type, (unsigned)ev.packet->dataLength,
+                                unknownPkts_);
+                            b[sizeof(b) - 1] = '\0';
+                            netLog(b);
                         }
                     }
                     enet_packet_destroy(ev.packet);

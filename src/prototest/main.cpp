@@ -2009,6 +2009,87 @@ static void testDriveBands() {
           t.combatSlideMax >= t.combatBigSnap);
 }
 
+// ---- 5g-bis. The peer speed multiplier, sanitized -------------------------------
+//
+// MIRROR of sanePeerSpeed (ReplicatorChannels.cpp) and of slewedEffective's
+// clamps (Replicator.h) - both take a GameWorld-bearing Replicator, so they are
+// restated. Retune together.
+//
+// SpeedPacket.speed is untrusted f32 off the wire and the only wire field that
+// reaches the engine's own clock rate. Worth pinning because the two values that
+// got through are the two nobody writes a test for: a NaN (every comparison
+// against it is false, so BOTH of slewedEffective's clamps decline to fire and it
+// is returned unchanged) and a negative (it takes the `eff <= 0.01f` paused
+// early-out and is returned unclamped).
+static float mirrorSanePeerSpeed(float v) {
+    if (!(v >= 0.0f)) return 0.0f;
+    if (v > 5.0f) return 5.0f;
+    return v;
+}
+
+// MIRROR of Replicator::slewedEffective, as it reads TODAY - including the two
+// holes above, so this file records that the sanitizer is what closes them and
+// not a second clamp downstream.
+static float mirrorSlewedEffective(float eff, float slew) {
+    if (eff <= 0.01f) return eff;
+    float s = eff * slew;
+    if (s > 5.0f)  s = 5.0f;
+    if (s < 0.05f) s = 0.05f;
+    return s;
+}
+
+static void testPeerSpeedSanity() {
+    std::printf("== peer speed multiplier sanity ==\n");
+
+    // Ordinary values pass through untouched - a sanitizer that changes the
+    // normal case is a bug of its own.
+    CHECK("pause (0) survives",          mirrorSanePeerSpeed(0.0f) == 0.0f);
+    CHECK("1x survives",                 mirrorSanePeerSpeed(1.0f) == 1.0f);
+    CHECK("5x survives (the ceiling)",   mirrorSanePeerSpeed(5.0f) == 5.0f);
+
+    CHECK("above the ceiling clamps",    mirrorSanePeerSpeed(1000.0f) == 5.0f);
+    CHECK("negative becomes pause",      mirrorSanePeerSpeed(-1.0f) == 0.0f);
+    CHECK("a large negative becomes pause",
+          mirrorSanePeerSpeed(-1.0e30f) == 0.0f);
+
+    // NaN. Built by division rather than a literal: C++03 has no std::nanf, and
+    // 0.0f/0.0f is the portable way to get one out of a v100 compiler.
+    // volatile so the compiler cannot constant-fold the division (v100 warns
+    // C4723 on a literal 0/0, and folding it would produce the NaN at compile
+    // time rather than exercising the runtime path the receive site takes).
+    volatile float zero = 0.0f;
+    float nan = zero / zero;
+    CHECK("the NaN is actually a NaN (self-comparison fails)", !(nan == nan));
+    CHECK("NaN becomes pause", mirrorSanePeerSpeed(nan) == 0.0f);
+
+    // The two holes this closes, stated as the tests that FAIL without it. If
+    // slewedEffective is ever given its own guards, these become redundant rather
+    // than wrong - but they must not be deleted before that happens.
+    float leakedNan = mirrorSlewedEffective(nan, 1.0f);
+    CHECK("without sanitizing, a NaN passes slewedEffective unchanged",
+          !(leakedNan == leakedNan));
+    CHECK("without sanitizing, a negative passes slewedEffective unclamped",
+          mirrorSlewedEffective(-1000.0f, 1.0f) == -1000.0f);
+
+    // ...and the same two values, sanitized first, are safe by the time they
+    // reach it. This is the actual contract of the receive path.
+    CHECK("sanitized NaN reaches the engine as pause",
+          mirrorSlewedEffective(mirrorSanePeerSpeed(nan), 1.0f) == 0.0f);
+    CHECK("sanitized negative reaches the engine as pause",
+          mirrorSlewedEffective(mirrorSanePeerSpeed(-1000.0f), 1.0f) == 0.0f);
+
+    // Nothing that survives sanitizing can drive the clock outside the band
+    // slewedEffective promises. Swept, including the unpaused floor.
+    bool inBand = true;
+    for (int i = -50; i <= 200; ++i) {
+        float v   = (float)i * 0.1f;
+        float out = mirrorSlewedEffective(mirrorSanePeerSpeed(v), 1.0f);
+        if (out == 0.0f) continue;                 // pause is legitimate
+        if (!(out >= 0.05f && out <= 5.0f)) inBand = false;
+    }
+    CHECK("every sanitized input lands in [0.05, 5] or is a pause", inBand);
+}
+
 // ---- 5h-bis. targets_ age-out: the three-way stale/latched/gone predicate -------
 //
 // MIRROR of Replicator::ageOutStaleTargets (ReplicatorDrive.cpp) - it takes a
@@ -3151,6 +3232,7 @@ int main() {
     testSyncTuning();
     testSuppressionCaps();
     testDriveBands();
+    testPeerSpeedSanity();
     testTargetAgeOut();
     testDriveConvergence();
     testOwnRanks();

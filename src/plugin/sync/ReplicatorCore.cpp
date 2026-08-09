@@ -194,6 +194,7 @@ void Replicator::resetSession() {
     jailObs_.clear();          // jail-observe spike per-captive last sample
     proxyByKey_.clear();
     suppressed_.clear();
+    suppressedSid_.clear();
     midBand_.clear();          // host mid-band round-robin (rebuilt by next census)
     midCursor_ = 0; midSliceMs_ = 0;
     life_.clear();             // Phase 3 lifecycle: the OLD world's journeys

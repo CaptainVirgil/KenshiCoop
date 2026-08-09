@@ -907,6 +907,7 @@ void Replicator::rekeyPeerBody(GameWorld* gw, const Key& oldK, const Key& newK,
         if (sit != suppressed_.end()) {
             engine::restoreNpc(gw, c);
             suppressed_.erase(sit);
+            suppressedSid_.erase(oldK);   // the witness goes with the entry
             wasSuppressed = true;
         }
         // A body transferred into a tab WE own is ours to control now, not

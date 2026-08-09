@@ -13,6 +13,26 @@
 
 namespace coop {
 
+// Hash of a body's template stringID, or 0 when it cannot be read.
+//
+// The identity witness for suppressed_ (see suppressedSid_): an address that
+// round-trips through its own hand proves the pointer is live, not that it is the
+// same CHARACTER - the engine can despawn one body and allocate another at that
+// address. The template sid is the cheapest thing that tells those apart, and 0
+// means "unknown", which callers must treat as "do not vouch for this".
+static u32 suppressWitness(Character* c) {
+    if (!c) return 0;
+    char sid[48]; char fac[48];
+    float x, y, z, hd, age; bool dead;
+    if (!engine::describeCharacter(c, sid, sizeof(sid), fac, sizeof(fac),
+                                   &x, &y, &z, &hd, &dead, &age))
+        return 0;
+    if (!sid[0]) return 0;
+    u32 h = 2166136261u;
+    for (const char* p = sid; *p; ++p) { h ^= (unsigned char)*p; h *= 16777619u; }
+    return h ? h : 1u;
+}
+
 void Replicator::debugMark(Character* c, int colorId, const char* tag) {
     static int en = -1;
     if (en < 0) {
@@ -478,6 +498,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 // log the miss once at the threshold crossing.
                 if (engine::suppressNpc(gw, chars[i])) {
                     suppressed_[k] = chars[i];
+                    suppressedSid_[k] = suppressWitness(chars[i]);
                     ++authSuppresses_;
                     lifeSet(k, LIFE_CULLED, "suppress");
                     debugMark(chars[i], 1, lifeName(LIFE_CULLED));
@@ -597,6 +618,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             } else if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_MS) {
                 if (engine::suppressNpc(gw, wChars[i])) {
                     suppressed_[k] = wChars[i];
+                    suppressedSid_[k] = suppressWitness(wChars[i]);
                     ++authSuppresses_;
                     ++censusCulls_;
                     lifeSet(k, LIFE_CULLED, "cull-wide");
@@ -645,6 +667,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         authReassertMs_ = now;
         unsigned int pruned = 0;
         std::map<Key, Character*> migrated;
+        std::map<Key, u32> migratedSid;
         for (std::map<Key, Character*>::iterator it = suppressed_.begin();
              it != suppressed_.end(); ) {
             unsigned int h[5];
@@ -659,6 +682,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                     debugMarkers_.erase(mi);
                 }
                 authCount_.erase(it->first);
+                suppressedSid_.erase(it->first);
                 ++pruned; ++authPruned_;
                 suppressed_.erase(it++);
                 continue;
@@ -666,8 +690,43 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             Key ck; ck.i = h[0]; ck.s = h[1]; ck.t = h[2];
             ck.c = h[3]; ck.cs = h[4];
             if (ck < it->first || it->first < ck) {
-                migrated[ck] = it->second;
+                // The hand changed. Two things produce that and they need
+                // opposite treatment: a combat detach re-containering the body we
+                // hid (migrate, or the hide stops re-asserting under a key that
+                // will never resolve again), and the engine having despawned our
+                // body and allocated a DIFFERENT one at the same address (do not
+                // migrate - that hides an innocent NPC, and an invisible solid
+                // body in a doorway is the worst failure this subsystem has).
+                //
+                // The live-pointer round-trip above cannot tell them apart: a
+                // recycled body round-trips to itself just as cleanly. The
+                // template sid can. No witness, or a witness that disagrees,
+                // means prune - and pruning is genuinely safe here, because the
+                // ordinary authority pass re-judges the body under its new key
+                // next tick and re-hides it if it should be. Being wrong this way
+                // costs a flicker; being wrong the other way is permanent.
+                std::map<Key, u32>::iterator wi = suppressedSid_.find(it->first);
+                u32 wasSid = (wi != suppressedSid_.end()) ? wi->second : 0;
+                u32 nowSid = suppressWitness(it->second);
+                if (wasSid != 0 && nowSid == wasSid) {
+                    migrated[ck] = it->second;
+                    migratedSid[ck] = wasSid;
+                } else {
+                    // Not vouched for. Un-hide before letting go: the body is
+                    // live, and dropping the entry without restoring would strand
+                    // it invisible with nothing left tracking it.
+                    engine::restoreNpc(gw, it->second);
+                    ++authRestores_;
+                    char b[192]; _snprintf(b, sizeof(b) - 1,
+                        "[authority] suppress MIGRATE REFUSED hand=%u,%u -> %u,%u "
+                        "(sid witness %s) - restored, the ordinary pass re-judges it",
+                        (unsigned)it->first.i, (unsigned)it->first.s,
+                        (unsigned)ck.i, (unsigned)ck.s,
+                        (wasSid == 0) ? "missing" : "disagrees");
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
                 authCount_.erase(it->first);
+                suppressedSid_.erase(it->first);
                 suppressed_.erase(it++);
                 continue;
             }
@@ -683,9 +742,23 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
              it != migrated.end(); ++it) {
             if (suppressed_.find(it->first) != suppressed_.end()) continue;
             suppressed_[it->first] = it->second;
+            suppressedSid_[it->first] = migratedSid[it->first];
             if (keep.find(it->first) == keep.end() &&
                 drivenChars_.find(it->second) == drivenChars_.end())
                 engine::suppressNpc(gw, it->second);
+        }
+        // Reconcile the witness map against the set it witnesses. Every erase
+        // path above drops both, but suppressed_ is written and cleared from
+        // several files, and a witness for a key that is no longer suppressed is
+        // both dead weight and - if that key is ever suppressed again - a stale
+        // answer to the identity question. Cheap: this sweep is 2 s, and the map
+        // is the same size as the one it mirrors.
+        if (suppressedSid_.size() != suppressed_.size()) {
+            for (std::map<Key, u32>::iterator wi = suppressedSid_.begin();
+                 wi != suppressedSid_.end(); ) {
+                if (suppressed_.find(wi->first) == suppressed_.end()) suppressedSid_.erase(wi++);
+                else ++wi;
+            }
         }
         if (pruned > 0) {
             char b[128]; _snprintf(b, sizeof(b) - 1,
@@ -1162,9 +1235,30 @@ bool Replicator::authorHoldsBody(GameWorld* gw, u32 localId, const Key& k,
     // so the receiver defers to it and handover happens only when the author
     // STOPS streaming - a decision one side makes alone, needing no agreement
     // about whose cell a drifting body is standing in.
+    // ...but "the peer's stream holds this body" has to mean NOW. drivenChars_ is
+    // this tick's set and says exactly that. drivenSeen_ is the grace map, pruned
+    // on a 30 s horizon, and it was consulted for MEMBERSHIP alone - so a body the
+    // peer stopped streaming half a minute ago still read as peer-driven and this
+    // client declined to author it for the rest of that window. The handover this
+    // function exists to make possible ("handover happens only when the author
+    // STOPS streaming") was the one thing it delayed.
+    //
+    // Same recency form the wide pass already uses against the same map a few
+    // hundred lines up, and the same 8 s: long enough to ride out a body dropping
+    // out of the stream for a beat at the mid band's ~2 Hz cadence, short enough
+    // that a real handover is not held up by a stream that has genuinely ended.
+    const unsigned long CELL_YIELD_GRACE_MS = 8000;
     bool peerDrives = false;
-    if (c) peerDrives = drivenChars_.find(c) != drivenChars_.end() ||
-                        drivenSeen_.find(c)  != drivenSeen_.end();
+    if (c) {
+        if (drivenChars_.find(c) != drivenChars_.end()) {
+            peerDrives = true;
+        } else {
+            std::map<Character*, unsigned long>::const_iterator ds = drivenSeen_.find(c);
+            unsigned long nowY = nowMs();
+            peerDrives = (ds != drivenSeen_.end()) &&
+                         (nowY - ds->second) < CELL_YIELD_GRACE_MS;
+        }
+    }
     // Say so once per body rather than per tick: the old line was 30% of this
     // scenario's log and said the same thing every frame.
     if (peerDrives && cellYield_.insert(k).second) {

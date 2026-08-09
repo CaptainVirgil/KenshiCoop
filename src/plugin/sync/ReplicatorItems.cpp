@@ -15,6 +15,29 @@
 
 namespace coop {
 
+// Bound an (ownerId, id) dedupe set without letting one sender's history be
+// evicted to make room for another's.
+//
+// erase(begin()) looks like "drop the oldest", and the comment at each call site
+// said so, but the set is ordered by the PAIR: it removes the lowest ownerId
+// first and exhausts that player's entire history before touching anyone else's.
+// The host holds the low id, so a host resend was always the one that found its
+// dedupe entry already gone - and a re-applied drop/pickup/transfer is a
+// duplicated item, which is the single thing these sets exist to prevent.
+//
+// Evicting within the sender we just inserted for is both correct and fair: ids
+// ARE per-sender monotonic, so the lowest one for that sender really is its
+// oldest, and a sender that floods only ever discards its own history. O(log n),
+// no walk.
+static void capAppliedSet(std::set<std::pair<u32, u32> >& s, u32 ownerId,
+                          unsigned int totalMax) {
+    if (s.size() <= totalMax) return;
+    std::set<std::pair<u32, u32> >::iterator lo =
+        s.lower_bound(std::make_pair(ownerId, (u32)0));
+    if (lo != s.end() && lo->first == ownerId) s.erase(lo);
+    else s.erase(s.begin());   // unreachable: the caller just inserted for ownerId
+}
+
 void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
     // Author the inventory of every container we OWN. ownHands_ is the per-tick set of
     // owned squad-member hands (a character's own hand IS its personal-inventory
@@ -521,7 +544,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
 
     // ---- Stream new/changed + HANDLE-based cull over every track -----------
     WorldItemEntry send[WORLD_ITEMS_MAX]; unsigned int ns = 0;
-    u32 removed[256]; unsigned int nr = 0;
+    u32 removed[WORLD_IDS_PER_PACKET]; unsigned int nr = 0;
     unsigned int deferred = 0;
     // TEST-ONLY: shrink the per-tick batch (KENSHICOOP_WI_BATCH_MAX) so a scenario can overflow
     // it with a handful of drops. Filling the real 16-entry batch needs a crowd of simultaneous
@@ -542,7 +565,18 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
             // Baseline (save-native) tracks were never streamed, so the peer has
             // no proxy to remove - just drop our track. Streamed tracks emit a
             // remove so the peer despawns its proxy.
-            if (!tr.baseline) { if (nr < 256) removed[nr++] = tr.netId; }
+            if (!tr.baseline) {
+                if (nr >= WORLD_IDS_PER_PACKET) {
+                    // This tick's cull datagram is full. DEFER - do not erase the
+                    // track. Erasing it while its removal never goes out strands
+                    // the peer's proxy forever, because the cull is driven by our
+                    // track and we would have just thrown away the only thing that
+                    // could ever emit it. Next tick has room.
+                    ++it;
+                    continue;
+                }
+                removed[nr++] = tr.netId;
+            }
             if (dumpWi) { char b[112]; _snprintf(b, sizeof(b) - 1,
                 "[wi] CULL netId=%u (gone/picked-up) baseline=%d", tr.netId, tr.baseline ? 1 : 0);
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
@@ -634,10 +668,21 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
             // netId simply finds nothing and is ignored.
             worldProxies_.erase(pi++);
         }
+        // CHUNK, do not clamp. queueWorldClaim silently truncates to the u8 wire
+        // count, and the proxies these ids refer to have ALREADY been erased from
+        // worldProxies_ above - so a truncated tail is not a deferred claim, it is
+        // a lost one, and the author keeps a real item on its ground that this
+        // client already put in a bag. That is the duplicate the claim channel was
+        // added to remove.
         for (std::map<u32, std::vector<u32> >::iterator ci = claims.begin();
-             ci != claims.end(); ++ci)
-            net.queueWorldClaim(ownerId, ci->first, &ci->second[0],
-                                (unsigned int)ci->second.size());
+             ci != claims.end(); ++ci) {
+            const std::vector<u32>& ids = ci->second;
+            for (unsigned int off = 0; off < ids.size(); off += WORLD_IDS_PER_PACKET) {
+                unsigned int n = (unsigned int)ids.size() - off;
+                if (n > WORLD_IDS_PER_PACKET) n = WORLD_IDS_PER_PACKET;
+                net.queueWorldClaim(ownerId, ci->first, &ids[off], n);
+            }
+        }
     }
 }
 
@@ -1081,9 +1126,9 @@ void Replicator::applyWeaponDrops(GameWorld* gw, Inbound& in) {
         std::pair<u32, u32> id(p.ownerId, p.dropId);
         if (appliedDrops_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedDrops_.insert(id);
-        // Bounded (step 6): ids are per-sender monotonic, so evicting the smallest
-        // discards the oldest - far outside any plausible reliable-channel replay.
-        if (appliedDrops_.size() > 4096) appliedDrops_.erase(appliedDrops_.begin());
+        // Bounded (step 6), per sender - see capAppliedSet for why the obvious
+        // erase(begin()) was evicting the host's whole history first.
+        capAppliedSet(appliedDrops_, p.ownerId, 4096);
         Key ok; ok.t = p.oType; ok.c = p.oContainer; ok.cs = p.oContainerSerial;
         ok.i = p.oIndex; ok.s = p.oSerial;
         if (ownHands_.count(ok) != 0) continue;     // we own this char -> we dropped it locally
@@ -1447,7 +1492,8 @@ void Replicator::applyWeaponPickups(GameWorld* gw, Inbound& in) {
         std::pair<u32, u32> id(p.ownerId, p.pickupId);
         if (appliedPickups_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedPickups_.insert(id);
-        if (appliedPickups_.size() > 4096) appliedPickups_.erase(appliedPickups_.begin());
+        // Bounded per sender, not globally - see capAppliedSet.
+        capAppliedSet(appliedPickups_, p.ownerId, 4096);
         Key ok; ok.t = p.oType; ok.c = p.oContainer; ok.cs = p.oContainerSerial;
         ok.i = p.oIndex; ok.s = p.oSerial;
         if (ownHands_.count(ok) != 0) continue;        // we own this char -> we picked it up locally
@@ -1788,7 +1834,8 @@ void Replicator::applyTransfers(GameWorld* gw, Inbound& in, NetLink& net, u32 lo
         std::pair<u32, u32> id(p.ownerId, p.xferId);
         if (appliedXfers_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedXfers_.insert(id);
-        if (appliedXfers_.size() > 4096) appliedXfers_.erase(appliedXfers_.begin());
+        // Bounded per sender, not globally - see capAppliedSet.
+        capAppliedSet(appliedXfers_, p.ownerId, 4096);
         unsigned int sHand[5] = { p.sType, p.sContainer, p.sContainerSerial, p.sIndex, p.sSerial };
         unsigned int dHand[5] = { p.dType, p.dContainer, p.dContainerSerial, p.dIndex, p.dSerial };
         Key sk; sk.t = p.sType; sk.c = p.sContainer; sk.cs = p.sContainerSerial;

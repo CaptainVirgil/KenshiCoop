@@ -381,6 +381,19 @@ private:
     // thereafter). 0 = stock UDP transport.
     unsigned long long steamPeer_;
 
+    // Packet types this build does not know. Net-thread only.
+    //
+    // The dispatch used to drop them with no log and no counter, which threw away
+    // the single diagnostic that distinguishes the two things that produce one:
+    // a peer running a different build (version skew that the PROTOCOL_VERSION
+    // gate somehow let past) and a stream that is being corrupted. Neither has any
+    // other symptom at this layer - both just look like a feature quietly not
+    // working. Rate-limited so a corrupt stream cannot turn the log into the
+    // failure.
+    unsigned long unknownPkts_;    // total this session
+    unsigned long unknownLogMs_;   // when the last line was emitted
+    unsigned int  unknownTypeBits_[8]; // 256-bit set: types already reported once
+
     // WAN sim config (set before launch; read-only on the net thread thereafter).
     unsigned int  simDelayMs_;
     unsigned int  simJitterMs_;
