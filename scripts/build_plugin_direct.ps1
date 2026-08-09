@@ -78,6 +78,31 @@ $defs += @("/D_WINDOWS","/D_USRDLL","/DWIN32_LEAN_AND_MEAN","/DUNICODE","/D_UNIC
 # Source list straight out of the project, honouring <ExcludedFromBuild>.
 [xml]$proj = Get-Content -LiteralPath (Join-Path $repo "src\plugin\KenshiCoop.vcxproj")
 $ns = "http://schemas.microsoft.com/developer/msbuild/2003"
+
+# Whole program optimization, read from the vcxproj rather than assumed.
+#
+# LOAD-BEARING, not an optimization preference. It lives in a
+# Label="Configuration" <PropertyGroup>, not in the <ItemDefinitionGroup> that
+# holds every other compiler and linker setting - and this script read only the
+# latter, so every DLL it produced was built WITHOUT /GL while the project asked
+# for it. Without /GL, KenshiLib's member-function stubs are emitted as ordinary
+# local functions, `&GameWorld::_NV_mainLoop_GPUSensitiveStuff` resolves inside
+# KenshiCoop.dll, and KenshiLib::GetRealAddress asserts before the plugin
+# finishes loading - assertion box, then crash. Its message literally advises
+# enabling whole program optimization.
+$ltcg = @()
+foreach ($g in $proj.GetElementsByTagName("PropertyGroup")) {
+    if ($g.GetAttribute("Label") -ne "Configuration") { continue }
+    if ($g.GetAttribute("Condition") -notmatch [regex]::Escape("'$Config|x64'")) { continue }
+    foreach ($w in $g.ChildNodes) {
+        if ($w.LocalName -eq "WholeProgramOptimization" -and
+            $w.InnerText.Trim().ToLower() -eq "true") {
+            $opt  += "/GL"
+            $ltcg  = @("/LTCG")
+        }
+    }
+}
+Write-Host ("=== whole program optimization: " + $(if ($ltcg.Count) { "ON (/GL + /LTCG)" } else { "off" }) + " ===")
 $sources = @()
 foreach ($item in $proj.GetElementsByTagName("ClCompile")) {
     $inc = $item.GetAttribute("Include")
@@ -108,6 +133,21 @@ New-Item -ItemType Directory -Force -Path $objDir, $outDir | Out-Null
 $newestHeader = (Get-ChildItem -LiteralPath (Join-Path $repo "src") -Recurse -Filter *.h |
                  Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
 $headerStamp = if ($newestHeader) { $newestHeader.LastWriteTimeUtc } else { [datetime]::MinValue }
+
+# Force a full rebuild when the FLAGS change, not just when sources do. The
+# incremental check is timestamps only, so a flag change would leave every
+# existing object in place and the link would silently mix objects built two
+# different ways - which for /GL means mixing IL objects with native ones.
+$stamp    = Join-Path $objDir ".buildflags"
+$stampNow = "OPT=$($opt -join ' ') DEFS=$($defs -join ' ') LTCG=$($ltcg -join ' ')"
+if (-not (Test-Path -LiteralPath $stamp) -or
+    (Get-Content -LiteralPath $stamp -Raw) -ne $stampNow) {
+    if (Test-Path -LiteralPath $stamp) {
+        Write-Host "=== build flags changed since the last run - full rebuild ==="
+    }
+    Remove-Item -LiteralPath $objDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $objDir | Out-Null
+}
 
 $toCompile = @()
 foreach ($src in $sources) {
@@ -146,7 +186,7 @@ if ($produced -ne $sources.Count) {
 }
 
 Write-Host "=== linking $($objs.Count) objects ==="
-& $link /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG `
+& $link /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG @ltcg `
     "/OUT:$outDir\KenshiCoop.dll" "/PDB:$outDir\KenshiCoop.pdb" "/MAP:$outDir\KenshiCoop.map" `
     @objs kenshilib.lib OgreMain_x64.lib MyGUIEngine_x64.lib ws2_32.lib winmm.lib `
     user32.lib kernel32.lib advapi32.lib shell32.lib ole32.lib 2>&1 |
@@ -155,4 +195,8 @@ Write-Host "=== linking $($objs.Count) objects ==="
 $dll = Join-Path $outDir "KenshiCoop.dll"
 if (-not (Test-Path -LiteralPath $dll)) { throw "link produced no DLL" }
 Write-Host ("built: {0}  {1} bytes" -f $dll, (Get-Item $dll).Length)
+# Stamp only AFTER a successful link, so a failed build cannot convince the next
+# run that its objects match these flags.
+Set-Content -LiteralPath $stamp -Value $stampNow -NoNewline
+
 Write-Host ("sha256: {0}" -f (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLower())

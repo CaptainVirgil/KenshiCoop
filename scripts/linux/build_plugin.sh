@@ -29,6 +29,27 @@ esac
 # Win32 calls, so the W variants must be selected.
 DEFS="$DEFS /D_WINDOWS /D_USRDLL /DWIN32_LEAN_AND_MEAN /DUNICODE /D_UNICODE"
 
+# Whole program optimization, read from the vcxproj rather than assumed.
+#
+# THIS IS LOAD-BEARING, not an optimization preference. It lives in a
+# Label="Configuration" <PropertyGroup>, not in the <ItemDefinitionGroup> where
+# every other compiler and linker setting sits, and this script read only the
+# latter - so every DLL it ever produced was built WITHOUT /GL while the project
+# demanded it.
+#
+# What that costs: KenshiLib's member-function stubs get emitted as ordinary
+# local functions, so `&GameWorld::_NV_mainLoop_GPUSensitiveStuff` resolves to an
+# address inside KenshiCoop.dll and KenshiLib::GetRealAddress asserts on it
+# before the plugin finishes loading. The game shows an assertion box and then
+# crashes. The assertion text says "try enabling whole program optimization" and
+# means exactly that.
+LTCG=""
+if [ "$(python3 "$REPO/scripts/linux/vcxproj_sources.py" \
+          "$REPO/src/plugin/KenshiCoop.vcxproj" "$CONFIG" x64 --wpo)" = "1" ]; then
+    OPT="$OPT /GL"
+    LTCG="/LTCG"
+fi
+
 export INCLUDE="$(vc_include "$REPO")"
 export LIB="$(vc_lib "$REPO")"
 
@@ -41,6 +62,22 @@ mapfile -t SOURCES < <(
     "$REPO/src/plugin/KenshiCoop.vcxproj" "$CONFIG" x64
 )
 [ "${#SOURCES[@]}" -gt 0 ] || { echo "no sources for $CONFIG" >&2; exit 1; }
+
+# Force a full rebuild when the FLAGS change, not just when sources do.
+#
+# The incremental check below compares timestamps only, so a flag change leaves
+# every existing object in place and the link silently mixes objects built two
+# different ways - which for /GL means mixing IL objects with native ones. The
+# flag set is therefore part of the build's identity and is stamped alongside the
+# objects.
+STAMP="$OUT/.buildflags"
+STAMP_NOW="OPT=$OPT DEFS=$DEFS LTCG=$LTCG"
+if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_NOW" ]; then
+    if [ -f "$STAMP" ]; then
+        echo "=== build flags changed since the last run - full rebuild ==="
+    fi
+    rm -rf "$OBJ"; mkdir -p "$OBJ"
+fi
 
 echo "=== KenshiCoop.dll ($CONFIG|x64, v100 via Wine) - ${#SOURCES[@]} translation units ==="
 
@@ -101,13 +138,17 @@ for src in "${SOURCES[@]}"; do
 done
 
 echo "=== linking ${#OBJS[@]} objects ==="
-vclink /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG \
+vclink /nologo /DLL /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF /DEBUG $LTCG \
   /OUT:"$(winpath "$OUT/KenshiCoop.dll")" \
   /PDB:"$(winpath "$OUT/KenshiCoop.pdb")" \
   /MAP:"$(winpath "$OUT/KenshiCoop.map")" \
   "${OBJS[@]}" \
   kenshilib.lib OgreMain_x64.lib MyGUIEngine_x64.lib ws2_32.lib winmm.lib \
   user32.lib kernel32.lib advapi32.lib shell32.lib ole32.lib
+
+# Only stamp AFTER a successful link, so an interrupted or failed build does not
+# convince the next run that its objects match these flags.
+printf '%s' "$STAMP_NOW" > "$STAMP"
 
 ls -la "$OUT/KenshiCoop.dll"
 sha256sum "$OUT/KenshiCoop.dll"

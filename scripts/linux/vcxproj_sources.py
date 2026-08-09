@@ -71,5 +71,32 @@ def main():
         print(include.replace("\\", "/"))
 
 
+def whole_program_optimization(project, config, platform):
+    """True when the project asks for /GL + /LTCG for this configuration.
+
+    This lives in a Label="Configuration" <PropertyGroup>, NOT in the
+    <ItemDefinitionGroup> where every other compiler and linker setting sits -
+    which is exactly why both hand-rolled build scripts missed it for this
+    project's entire history outside MSBuild. Without /GL the KenshiLib
+    member-function stubs are emitted as ordinary local functions, so
+    `&GameWorld::_NV_mainLoop_GPUSensitiveStuff` resolves inside KenshiCoop.dll
+    and KenshiLib::GetRealAddress asserts on it at startup - the plugin never
+    loads. The assertion text says "try enabling whole program optimization",
+    and it means it literally.
+    """
+    root = ET.parse(project).getroot()
+    for group in root.iter(MSBUILD_NS + "PropertyGroup"):
+        if group.get("Label") != "Configuration":
+            continue
+        if not condition_matches(group.get("Condition"), config, platform):
+            continue
+        for wpo in group.findall(MSBUILD_NS + "WholeProgramOptimization"):
+            return (wpo.text or "").strip().lower() == "true"
+    return False
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 4 and sys.argv[4] == "--wpo":
+        print("1" if whole_program_optimization(sys.argv[1], sys.argv[2], sys.argv[3]) else "0")
+    else:
+        main()
