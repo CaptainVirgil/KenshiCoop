@@ -2044,6 +2044,73 @@ bool installMainLoopHook() {
 void configureReplicator() {
     coop::engine::resolve();
 
+    // ---- Capability report ----------------------------------------------------
+    // The CAP_* registry evaluated itself at the end of resolve() and then nothing
+    // read it: capAvailable() had no call sites at all. This is its first consumer.
+    //
+    // It REPORTS; it does not disable. The temptation is to force the feature off,
+    // and that is the wrong trade here. The engine wrappers already fail safe on
+    // an unresolved pointer - every one null-checks and returns false - so a
+    // missing capability costs a no-op, not a crash. Turning the feature off on
+    // the strength of this table instead risks the opposite error: capEvaluate is
+    // deliberately fail-closed, so a capability whose required rows do not all
+    // resolve reads as unavailable even where the code only ever calls the subset
+    // that DID resolve. That would disable something that works, on a machine
+    // nobody can reproduce, which is strictly worse than the silence being fixed.
+    //
+    // The silence is the actual complaint, and a line in the log answers it: two
+    // players staring at beds that will not sync currently have no way to learn
+    // that this build could not resolve setBedMode, because nothing failed. Making
+    // this gate rather than report is a follow-up, and it needs one real
+    // observation of a capability coming up false on a healthy install first.
+    //
+    // Not listed: features with no single capability behind them (spawn, recruit,
+    // research, inventory, squad), which resolve through hand translation and the
+    // object factory rather than one named lever. CAP_HAND_RESOLVE is the CORE
+    // capability and is checked elsewhere - without it nothing works at all.
+    {
+        struct FeatureCap {
+            const bool*              flag;
+            coop::engine::Capability cap;
+            const char*              name;
+        };
+        const FeatureCap kGates[] = {
+            { &g_cfg.carrySync,   coop::engine::CAP_CARRY,     "carry"     },
+            { &g_cfg.furnSync,    coop::engine::CAP_FURNITURE, "furniture" },
+            { &g_cfg.chainSync,   coop::engine::CAP_CHAIN,     "chain"     },
+            { &g_cfg.stealthSync, coop::engine::CAP_STEALTH,   "stealth"   },
+            { &g_cfg.doorSync,    coop::engine::CAP_DOOR,      "door"      },
+            { &g_cfg.bdoorSync,   coop::engine::CAP_DOOR,      "bdoor"     },
+            { &g_cfg.buildSync,   coop::engine::CAP_BUILD,     "build"     },
+            { &g_cfg.prodSync,    coop::engine::CAP_MACHINE,   "prod"      },
+            { &g_cfg.deedSync,    coop::engine::CAP_DEED,      "deed"      },
+            { &g_cfg.timeSync,    coop::engine::CAP_TIME,      "time"      },
+            { &g_cfg.moneySync,   coop::engine::CAP_WALLET,    "money"     },
+            { &g_cfg.factionSync, coop::engine::CAP_FACTION,   "faction"   },
+            { &g_cfg.medSync,     coop::engine::CAP_LIMB,      "medical"   },
+            { &g_cfg.statsSync,   coop::engine::CAP_STATS,     "stats"     },
+            { &g_cfg.speedSync,   coop::engine::CAP_SPEED,     "speed"     },
+            { &g_cfg.saveSync,    coop::engine::CAP_SAVELOAD,  "save"      },
+            { &g_cfg.loadSync,    coop::engine::CAP_SAVELOAD,  "load"      }
+        };
+        const int nGates = (int)(sizeof(kGates) / sizeof(kGates[0]));
+        unsigned int missing = 0;
+        for (int i = 0; i < nGates; ++i) {
+            if (!*(kGates[i].flag)) continue;             // off by config: not a surprise
+            if (coop::engine::capAvailable(kGates[i].cap)) continue;
+            ++missing;
+            char b[208]; _snprintf(b, sizeof(b) - 1,
+                "[caps] WARNING %sSync is ON but the '%s' engine capability did not "
+                "resolve in this build - the feature will no-op silently",
+                kGates[i].name, coop::engine::capName(kGates[i].cap));
+            b[sizeof(b) - 1] = '\0'; coopLog(b);
+        }
+        char b[144]; _snprintf(b, sizeof(b) - 1,
+            "[caps] %u of %d enabled features are missing their engine capability",
+            missing, nGates);
+        b[sizeof(b) - 1] = '\0'; coopLog(b);
+    }
+
     // Stage 4: the host streams nearby world NPCs (host-authoritative) in addition
     // to its squad; the join resolves each by hand and drives it like a squad body.
     if (g_cfg.isHost || g_cfg.cellAuth) g_repl.setStreamNpcs(true);

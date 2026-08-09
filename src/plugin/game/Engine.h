@@ -13,6 +13,15 @@
 
 #include <string>
 #include "../../netproto/Wire.h"
+// The owned capability registry. Header-only and include-free (it names slots as
+// void** and capabilities as an enum), so pulling it into the PUBLIC facade does
+// not breach the Phase 5a boundary - no game-internal header comes with it.
+//
+// It is here because the registry previously lived only behind EngineInternal.h,
+// the adapter, which is exactly why capAvailable() had no call sites: no public
+// consumer could see the enum to ask a question with. A registry nobody can
+// reach gates nothing.
+#include "EngineCaps.h"
 
 class GameWorld;
 class Character;
