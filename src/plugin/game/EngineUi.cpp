@@ -61,6 +61,23 @@ ScreenLabel* markerCreateSeh(ForgottenGUI* g, Character* c,
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+// Same widget, but RISING - the engine's own damage numbers are ScreenLabels
+// too (OptionsHolder::damageFloaters toggles them), so this is the game's own
+// presentation rather than an overlay of ours.
+ScreenLabel* floaterCreateSeh(ForgottenGUI* g, Character* c,
+                              const std::string* text, const MyGUI::Colour* col,
+                              const Ogre::Vector3* off) {
+    __try {
+        ScreenLabel* l = g->createScreenLabel(*text, *col, ScreenLabel::LS_SMALL,
+                                              ScreenLabel::RS_NORMAL);
+        if (l) {
+            l->_NV_setRisingSpeed(ScreenLabel::RS_NORMAL);
+            l->_NV_setTracking(c->handle, *off);
+        }
+        return l;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 bool markerUpdateSeh(ScreenLabel* l, const std::string* text,
                      const MyGUI::Colour* col) {
     __try {
@@ -106,6 +123,34 @@ bool markerDestroySeh(ForgottenGUI* g, ScreenLabel* l) {
 }
 
 } // namespace
+
+void floaterSpawn(Character* c, const char* text, int colorId) {
+    if (!c || !text) return;
+    ForgottenGUI* g = ::gui; // KenshiLib data export (spike 46)
+    if (!g) return;
+    // OWN the lifetime. ScreenLabel carries no timer - only ScreenLabelDebug
+    // has timeLeft - and whether a rising label self-reaps when it finishes
+    // rising is not provable from the dump. So keep a bounded ring of our own
+    // and destroy the oldest as new ones arrive: at worst RING_N labels are
+    // alive at once, which is the same bound the debug markers already live
+    // under, and markerDestroy is a no-op on a handle the GUI already reaped.
+    const unsigned int RING_N = 24;
+    static void* ring[RING_N];      // main-thread only
+    static unsigned int head = 0;
+    static int inited = 0;
+    if (!inited) { for (unsigned int i = 0; i < RING_N; ++i) ring[i] = 0; inited = 1; }
+
+    std::string t(text);
+    MyGUI::Colour col;
+    markerColour(colorId, &col);
+    // Slightly above head height so a number does not sit inside the name tag.
+    Ogre::Vector3 off(0.0f, 2.6f, 0.0f);
+    ScreenLabel* l = floaterCreateSeh(g, c, &t, &col, &off);
+    if (!l) return;
+    if (ring[head]) markerDestroy(ring[head]);
+    ring[head] = (void*)l;
+    head = (head + 1) % RING_N;
+}
 
 void* markerCreate(Character* c, const char* text, int colorId) {
     if (!c || !text) return 0;

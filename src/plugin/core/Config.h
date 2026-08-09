@@ -190,6 +190,14 @@ struct Config {
     // setting or each will claim bodies the other also claims.
     bool          splitAuthority;
 
+    // Draw a floating damage number for a hit the damage guard suppressed
+    // (KENSHICOOP_DAMAGE_FLOATERS=0 disables; DEFAULT ON). The guard skips the
+    // engine's hit path on driven bodies, and that path is where the number
+    // comes from - so a swing that really did wound the owner's body showed the
+    // attacking player nothing. Presentation only: the wound itself already
+    // rides PKT_COMBAT_HIT and is applied by the owner.
+    bool          damageFloaters;
+
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
     // apply no damage to DRIVEN bodies. Not because vitals "never cross the

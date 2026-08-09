@@ -2004,11 +2004,12 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         _snprintf(b, sizeof(b) - 1,
             "[interp] lerp=%lu extrap=%lu clamp=%lu seg=%lu single=%lu "
             "snapSq=%lu snapNpc=%lu reissueSq=%lu reissueNpc=%lu restFlip=%lu "
-            "delay=%lu jit=%.1f starve=%u snapMid=%lu restFlipMid=%lu",
+            "delay=%lu jit=%.1f starve=%u snapMid=%lu restFlipMid=%lu "
+            "haltDrv=%lu",
             interpLerp_, interpExtrap_, interpClampOld_, interpSegSnap_,
             interpSingle_, hardSnapSquad_, hardSnapNpc_,
             walkReissueSquad_, walkReissueNpc_, restFlipNpc_, maxDelay, maxJit,
-            starveHeldNow_, hardSnapMid_, restFlipMid_);
+            starveHeldNow_, hardSnapMid_, restFlipMid_, freezeSkipDriven_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
         // Worst zero-step contributor (Phase 2 smoothness diagnosis): name the
         // hand charging the most frozen-while-active frames to the oracle.

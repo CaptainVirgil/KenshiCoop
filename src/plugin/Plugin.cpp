@@ -2521,9 +2521,16 @@ void installEngineDetours() {
             // the damage its player-squad melee WOULD have dealt to driven world-NPC
             // copies; publishCombatHits forwards it and the host wounds the real body.
             g_repl.setReportCombat(!g_cfg.isHost);
+            // The guard also swallows the engine's floating damage number,
+            // because that number is drawn by the hit path it skips. Draw our
+            // own from the amounts the guard is already holding.
+            coop::engine::setDamageFloaters(g_cfg.damageFloaters);
             coopLog(g_cfg.isHost
                 ? "[dmg] hitByMeleeAttack detour installed; damage guard ON (host, driven peer-squad bodies)"
                 : "[dmg] hitByMeleeAttack detour installed; damage guard ON + combat-hit report ON (join)");
+            if (g_cfg.damageFloaters)
+                coopLog("[dmg] suppressed-hit damage floaters ON "
+                        "(KENSHICOOP_DAMAGE_FLOATERS=0 disables)");
         } else {
             coopLog("[dmg] FAILED to install hitByMeleeAttack detour; damage guard disabled");
         }

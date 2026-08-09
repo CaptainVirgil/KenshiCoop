@@ -1146,6 +1146,11 @@ private:
     std::vector<EntityState>  midRows_;
     unsigned long             midRowsMs_;
     bool                      splitAuthority_;
+    // How many times the census freeze / proxy reconcile declined to halt a
+    // body because the drive was walking it. Printed in the 5 s [interp]
+    // rollup as haltDrv=: a climbing number is the marching bug being
+    // PREVENTED, and a zero says this collision is no longer happening.
+    unsigned long             freezeSkipDriven_;
     // Cells claimed by MORE THAN ONE client this rebuild. rebuildClaimedCells
     // resolves those to the host; the body split reads this to know where that
     // tie-break happened, because a cell only one client stands in has nothing

@@ -1252,6 +1252,11 @@ struct ReportedDmg { float flesh; float blood; ReportedDmg() : flesh(0.0f), bloo
 std::map<Character*, ReportedDmg> g_reportedDmg;
 std::set<Character*>              g_reportAttackers;
 bool                              g_combatReport = false;
+// Draw a floating number for a hit the guard suppressed. The guard is what
+// makes a cosmetic fight cosmetic, and it also swallows the engine's own damage
+// number - so the player swinging saw no feedback for a hit that really did
+// wound the owner's body.
+bool                              g_dmgFloaters = true;
 
 HitMaterialType __fastcall hitByMelee_hook(Character* self, CutDirection dir,
                                            Damages& damage, Character* who,
@@ -1268,6 +1273,31 @@ HitMaterialType __fastcall hitByMelee_hook(Character* self, CutDirection dir,
             ReportedDmg& rd = g_reportedDmg[self];
             rd.flesh += damage.cut + damage.blunt + damage.pierce + damage.extraStun;
             rd.blood += (damage.cut + damage.pierce) * 0.5f + damage.bleedMult;
+            // Draw the number the suppressed hit path would have drawn.
+            //
+            // Skipping the engine's hit path is what makes a cosmetic fight
+            // cosmetic - and that same path is where the floating damage
+            // number comes from, so a hit that really does wound the owner's
+            // body showed the attacking player no feedback whatsoever. The
+            // wound is real (it rides PKT_COMBAT_HIT and the host applies it);
+            // only the presentation was lost.
+            //
+            // Spawned HERE rather than from the received packet because this
+            // is the better data and needs no network: per SWING with the real
+            // pre-suppression amounts, on the machine of the player who threw
+            // it. The packet accumulates several swings per victim and carries
+            // no breakdown, so a floater from the receive side would be a
+            // merged sum arriving late.
+            if (g_dmgFloaters) {
+                const float shown = damage.cut + damage.blunt + damage.pierce +
+                                    damage.extraStun;
+                if (shown >= 1.0f) {
+                    char n[24];
+                    _snprintf(n, sizeof(n) - 1, "%d", (int)(shown + 0.5f));
+                    n[sizeof(n) - 1] = '\0';
+                    floaterSpawn(self, n, 1); // red, like a hurt reading
+                }
+            }
         }
         return HIT_MISSED; // cosmetic fight: the local swing never lands
     }
@@ -2426,6 +2456,7 @@ void setCombatReport(bool on) {
     g_combatReport = on;
     if (!on) g_reportedDmg.clear();
 }
+void setDamageFloaters(bool on) { g_dmgFloaters = on; }
 void clearReportAttackers()          { g_reportAttackers.clear(); }
 void addReportAttacker(Character* c)  { if (c) g_reportAttackers.insert(c); }
 bool takeReportedDamage(Character* c, float* outFlesh, float* outBlood) {

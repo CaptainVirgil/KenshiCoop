@@ -1592,6 +1592,16 @@ void Replicator::reconcileProxy(Character* c, const EntityState& st,
                                 const std::map<Character*, Key>& keyOf) {
     std::map<Character*, Key>::const_iterator pk = keyOf.find(c);
     if (pk == keyOf.end()) return;
+    // A body the drive is walking is not a divergence to repair - it is being
+    // written by its owner right now. parkDivergedCopy halts and teleports, and
+    // the freeze below halts every tick for 20 s, so running either against a
+    // driven body puts two writers on it and the copy stops dead mid-stride.
+    // This path is the worst case of that: a PROXY is by definition minted from
+    // the peer's stream, so it is always driven when the peer is streaming it.
+    if (drivenChars_.find(c) != drivenChars_.end()) {
+        ++freezeSkipDriven_;
+        return;
+    }
     // st carries the LOCAL enumeration's hand; the census row answers to the
     // stream key, so the drift is measured and the park keyed by that.
     float drift = parkDivergedCopy(c, st, pk->second);
@@ -1707,6 +1717,27 @@ void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift)
                 }
             }
         }
+    }
+    // NEVER halt a body the drive is currently walking. This freeze calls
+    // haltMovement() EVERY TICK for its whole 20 s hold, and drivenChars_ is
+    // cleared and rebuilt by applyTargets every tick - so a body can be
+    // walk-ordered by the drive and halted by this pass in the same frame, for
+    // twenty seconds. That is the NPCs-march-in-place report: measured live,
+    // one Holy Sentinel sat at zero=656 of active=672 frames (97.6%) with an
+    // outstanding destination 45 u away and a commanded 22.5 u/s, and the same
+    // body later tracked 1008 consecutive active frames with ZERO frozen ones
+    // once the hold expired. The [life] ledger shows the same hand being
+    // adopted PARKED->HI while its freeze hold was still running, ~3.3 band
+    // transitions per second across the town.
+    //
+    // The drive is the stronger claim: a body the owner is actively streaming
+    // has a position to be at, and holding it still is precisely the
+    // divergence this exists to prevent. Keep the latch armed - only skip the
+    // actuation - so the hold still expires on schedule and an undriven body
+    // is quieted as before.
+    if (drivenChars_.find(c) != drivenChars_.end()) {
+        ++freezeSkipDriven_;
+        return;
     }
     // 20 s hold (was 5 s): a diverged working slave released after only 5 s
     // below-threshold walked back toward its local job spot / owner and was

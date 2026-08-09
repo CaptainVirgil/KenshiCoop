@@ -42,6 +42,7 @@ Replicator::Replicator()
       xferScanMs_(0), nextTreatId_(1),
       invResentCount_(0), invResentRollupMs_(0),
       pcSampleN_(0), pcSampleMs_(0), midRowsMs_(0), splitAuthority_(false),
+      freezeSkipDriven_(0),
       quietRelapse_(0), crawlPhysRestore_(0),
       sitOrders_(0), detachUses_(0), noDetach_(false),
       dmgGuard_(false), reportCombat_(false), nextHitId_(1),

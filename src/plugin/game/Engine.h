@@ -322,6 +322,14 @@ void charName(Character* c, char* out, unsigned int cap);
 // a colored text label pinned to a character; the engine's own projection
 // tracks the body every frame. colorId: 0 = green (host-driven), 1 = red
 // (hidden/suppressed), 2 = yellow (local-only ghost). Returns an opaque
+// Spawn a RISING damage-style floater over a character and forget it: the
+// lifetime is owned by a small internal ring, so callers hold no handle. Same
+// widget class the engine's own damage numbers use. Main-thread only, no-op
+// when the GUI is not up. Exists because the damage guard suppresses the
+// engine's hit path on driven bodies, and that path is what draws the number -
+// so a hit that really landed showed no feedback at all.
+void  floaterSpawn(Character* c, const char* text, int colorId);
+
 // ScreenLabel handle (null on fault / GUI not up). Main-thread only.
 void* markerCreate(Character* c, const char* text, int colorId);
 bool  markerUpdate(void* label, const char* text, int colorId);
@@ -1244,6 +1252,10 @@ void         damageGuardStats(unsigned long* outGuarded, unsigned long* outPasse
 // sends a CombatHitPacket; the host applies it. setCombatReport(false) clears the
 // accumulator. The attacker set is rebuilt each tick (like the guard set).
 void         setCombatReport(bool on);
+// Draw a floating damage number for a hit the guard suppressed (default ON,
+// KENSHICOOP_DAMAGE_FLOATERS=0 disables). Presentation only - the wound itself
+// already rides PKT_COMBAT_HIT and is applied by the owner.
+void         setDamageFloaters(bool on);
 void         clearReportAttackers();
 void         addReportAttacker(Character* c);
 // Drain the accumulated join-dealt damage for one victim copy (returns false if
