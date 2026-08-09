@@ -30,7 +30,7 @@ Both checks were falsified against known-bad inputs before being trusted.
 
 ## Repo state
 
-- Branch `linux-build`, **7 commits ahead of `origin/linux-build`** — not pushed.
+- Branch `linux-build`, pushed and current with `origin/linux-build`.
 - Working tree clean.
 - `fork-6` is the public release (3 assets). `fork-7` is built and installed
   locally but **not released**. They interoperate: the handshake compares
