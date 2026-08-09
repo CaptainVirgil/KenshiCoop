@@ -1931,6 +1931,45 @@ void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId) {
     // proxies before clearing maps so a re-connect leaves no orphaned duplicates.
     sessionResetForUi();
 
+    // Re-name the log to match the role actually being played. The file was
+    // opened at plugin load from the CONFIGURED role, and THIS is where the role
+    // is really decided - so a player whose coop_config.json said "host" and who
+    // then pressed JOIN wrote their entire session into KenshiCoop_host.log. The
+    // trap was documented twice instead of fixed, which helped nobody reading a
+    // log to work out whose it was.
+    //
+    // Only when the path is still one of the two defaults: an explicit
+    // KENSHICOOP_LOG is the operator naming their own file, and moving it would
+    // be worse than the problem. logRetag falls back to the old path if the
+    // rename fails, so this cannot cost a session its logging.
+    if (g_cfg.isHost != isHost) {
+        const char* kHostLog = "KenshiCoop_host.log";
+        const char* kJoinLog = "KenshiCoop_join.log";
+        if (g_cfg.logPath == kHostLog || g_cfg.logPath == kJoinLog) {
+            const char* want = isHost ? kHostLog : kJoinLog;
+            bool moved = coop::logRetag(want, isHost ? "HOST" : "JOIN");
+            char b[192]; _snprintf(b, sizeof(b) - 1,
+                "[role] panel role is %s; log %s '%s' (was '%s')",
+                isHost ? "HOST" : "JOIN",
+                moved ? "renamed to" : "COULD NOT be renamed to, still",
+                want, g_cfg.logPath.c_str());
+            b[sizeof(b) - 1] = '\0'; coopLog(b);
+            if (moved) g_cfg.logPath = want;
+        }
+    }
+
+    // Steam transport with no Steam is not a connection that will ever succeed,
+    // and it is not recoverable without a game restart: the Steam client has to be
+    // running BEFORE Kenshi starts, because the process resolves steam_api64 once
+    // at launch. Starting Steam now and pressing Connect again does nothing, which
+    // is precisely the loop players get stuck in. Say so instead of sitting in
+    // "Connecting..." until the timeout.
+    if (useSteam && coop::steamp2p::selfId() == 0) {
+        coopErr("KenshiCoop: Steam is not running, so the Steam transport cannot "
+                "connect. Start Steam and then RESTART Kenshi - Steam has to be up "
+                "before the game launches. (Or switch Transport to UDP.)");
+    }
+
     g_cfg.isHost    = isHost;
     g_cfg.transport = useSteam ? "steam" : "udp";
     // Re-read the UDP endpoint (ip/port) from coop_config.json so editing it then

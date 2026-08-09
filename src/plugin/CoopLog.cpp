@@ -9,6 +9,7 @@
 
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 
 namespace coop {
 namespace {
@@ -17,6 +18,7 @@ FILE*            g_fp   = 0;
 CRITICAL_SECTION g_cs;
 bool             g_init = false;
 char             g_tag[16] = { 0 };
+char             g_curPath[512] = { 0 };  // what logRetag renames FROM
 volatile long    g_fakeSkewMs = 0;
 
 void writeLine(const char* level, const char* msg) {
@@ -78,8 +80,51 @@ void logInit(const char* path, const char* modeTag) {
             std::rename(path, prev.c_str()); // fails harmlessly on the first run
         }
         g_fp = std::fopen(path, "w");
+        size_t pi = 0;
+        for (; path[pi] && pi < sizeof(g_curPath) - 1; ++pi) g_curPath[pi] = path[pi];
+        g_curPath[pi] = '\0';
     }
     writeLine("INFO", "log opened");
+}
+
+bool logRetag(const char* newPath, const char* newTag) {
+    if (!g_init || !newPath || !newPath[0]) return false;
+    EnterCriticalSection(&g_cs);
+    bool moved = false;
+    if (g_curPath[0] && std::strcmp(g_curPath, newPath) != 0) {
+        if (g_fp) { std::fflush(g_fp); std::fclose(g_fp); g_fp = 0; }
+        // Take the .prev slot with us, so the "keep one previous run" rule still
+        // holds under the new name rather than leaving an orphan beside the old.
+        {
+            std::string oldPrev(g_curPath); oldPrev += ".prev";
+            std::string newPrev(newPath);   newPrev += ".prev";
+            std::remove(newPrev.c_str());
+            std::rename(oldPrev.c_str(), newPrev.c_str()); // harmless if absent
+        }
+        std::remove(newPath);                       // rename() will not overwrite
+        moved = (std::rename(g_curPath, newPath) == 0);
+        // Append, never "w": the run so far is the point. If the rename failed the
+        // file is still at the old path and that is where we keep writing - losing
+        // the rest of a session to a naming nicety would be the worse bug.
+        const char* open_at = moved ? newPath : g_curPath;
+        g_fp = std::fopen(open_at, "a");
+        if (!g_fp && moved) {                       // renamed but unopenable
+            g_fp = std::fopen(g_curPath, "a");
+            moved = false;
+        }
+        if (moved) {
+            size_t i = 0;
+            for (; newPath[i] && i < sizeof(g_curPath) - 1; ++i) g_curPath[i] = newPath[i];
+            g_curPath[i] = '\0';
+        }
+    }
+    if (newTag) {
+        size_t i = 0;
+        for (; newTag[i] && i < sizeof(g_tag) - 1; ++i) g_tag[i] = newTag[i];
+        g_tag[i] = '\0';
+    }
+    LeaveCriticalSection(&g_cs);
+    return moved;
 }
 
 void logLine(const char* msg)    { writeLine("INFO",  msg); }

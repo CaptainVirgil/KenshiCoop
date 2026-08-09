@@ -39,6 +39,22 @@ void logSetFakeSkewMs(long skewMs);
 void logLine(const char* msg);
 void logErrLine(const char* msg);
 
+// Re-point the log at a new path and mode tag, mid-session.
+//
+// The role a player actually plays is chosen in the F2 panel at Connect time,
+// but the log file is opened at plugin load from the CONFIGURED role - so a
+// player whose config said "host" and who then pressed JOIN wrote their whole
+// session into KenshiCoop_host.log. That trap was documented twice (CLAUDE.md,
+// PLAYING.md) instead of fixed, and it misleads everyone who reads a log,
+// including the person who wrote the warning.
+//
+// Flushes and closes, renames the file on disk (so the run so far is not lost),
+// and reopens in APPEND mode. Every failure path falls back to reopening the
+// ORIGINAL path in append mode: a log that ends up with the wrong name is a
+// nuisance, a session that silently stops logging is not. Returns true when the
+// file now lives at newPath. No-op if the path is unchanged.
+bool logRetag(const char* newPath, const char* newTag);
+
 // Flush and close the file. Called right before ExitProcess on test self-exit.
 void logClose();
 
