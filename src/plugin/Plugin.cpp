@@ -34,7 +34,21 @@
 #include "net/NetLink.h"
 #include "net/SteamP2P.h"
 #include "net/SteamInvite.h"
+#include <vector>
+#include <cstring>
+// Written by the build scripts (build/generated/DepsPin.h), naming the KenshiLib
+// checkout this DLL was compiled against. Guarded by a FLAG the build script
+// defines, not by __has_include: this is a C++03 (v100) compiler, where
+// __has_include is not a thing and `#if __has_include(...)` quietly evaluates to
+// 0 - so the header was silently skipped and every build logged "unstamped"
+// while appearing to succeed.
+#ifdef KENSHICOOP_HAVE_DEPS_PIN
+#include "DepsPin.h"
+#endif
 #include "game/Engine.h"
+// GetFileVersionInfo* for logHostVersions. A pragma rather than three edits to
+// the vcxproj's AdditionalDependencies, so every build path picks it up.
+#pragma comment(lib, "version.lib")
 #include "game/EngineUi.h"       // Phase 5a: F2 co-op panel + status overlay
 #include "game/EngineScenario.h" // Phase 5a: auto-bake scene builders
 #include "sync/Replicator.h"
@@ -2031,6 +2045,85 @@ void coopUiDisconnect() {
 
 // Startup log roster: load banner, fake-skew notice, build stamp, role line,
 // and the effective (resolved) config summary. Answerable from the log alone.
+// Which KenshiLib is actually serving us at runtime, and which one we compiled
+// against.
+//
+// These are NOT the same thing and never have been. The plugin builds against the
+// deps checkout pinned at e75769b (tag v0.1) because later headers moved
+// kenshi/CombatClass.h and duplicated an enum - but the DLL that resolves our
+// member-function stubs at runtime is whatever RE_Kenshi ships, currently 0.4.0.
+// Three minor versions of unmanaged ABI drift, working by stability rather than by
+// design, and until now nothing recorded which one a player was on.
+//
+// This does not refuse to run on an unexpected version. It has no basis to: the
+// combination usually works, and refusing would strand players on a newer
+// RE_Kenshi for no demonstrated reason. It records both, and says plainly when the
+// runtime is one this build has never been verified against - so the first
+// question after a mystery crash report ("what were they running?") is answered
+// by the log instead of guessed at.
+static void logHostVersions() {
+    // Every runtime KenshiLib this build has actually been exercised against.
+    // Add to it only after a real launch, not on the strength of it compiling.
+    static const char* const kVerified[] = { "0.4.0" };
+    const int nVerified = (int)(sizeof(kVerified) / sizeof(kVerified[0]));
+
+    char runtimeVer[64];
+    runtimeVer[0] = '\0';
+
+    HMODULE kl = GetModuleHandleA("KenshiLib.dll");
+    if (kl) {
+        char path[MAX_PATH];
+        if (GetModuleFileNameA(kl, path, MAX_PATH)) {
+            DWORD dummy = 0;
+            DWORD sz = GetFileVersionInfoSizeA(path, &dummy);
+            if (sz) {
+                std::vector<unsigned char> buf(sz);
+                if (GetFileVersionInfoA(path, 0, sz, &buf[0])) {
+                    VS_FIXEDFILEINFO* ffi = 0;
+                    UINT len = 0;
+                    if (VerQueryValueA(&buf[0], "\\", (LPVOID*)&ffi, &len) && ffi && len) {
+                        _snprintf(runtimeVer, sizeof(runtimeVer) - 1, "%u.%u.%u",
+                                  (unsigned)HIWORD(ffi->dwFileVersionMS),
+                                  (unsigned)LOWORD(ffi->dwFileVersionMS),
+                                  (unsigned)HIWORD(ffi->dwFileVersionLS));
+                        runtimeVer[sizeof(runtimeVer) - 1] = '\0';
+                    }
+                }
+            }
+        }
+    }
+
+#ifdef KENSHICOOP_DEPS_PIN
+    const char* builtAgainst = KENSHICOOP_DEPS_PIN;
+#else
+    const char* builtAgainst = "unstamped";
+#endif
+
+    char b[256];
+    _snprintf(b, sizeof(b) - 1, "[host] KenshiLib runtime=%s built-against=%s",
+              runtimeVer[0] ? runtimeVer : "UNREADABLE", builtAgainst);
+    b[sizeof(b) - 1] = '\0';
+    coopLog(b);
+
+    if (!runtimeVer[0]) {
+        coopLog("[host] WARNING could not read KenshiLib.dll's version. If anything "
+                "misbehaves, this build's compatibility with it is unknown.");
+        return;
+    }
+    bool known = false;
+    for (int i = 0; i < nVerified; ++i)
+        if (std::strcmp(kVerified[i], runtimeVer) == 0) { known = true; break; }
+    if (!known) {
+        _snprintf(b, sizeof(b) - 1,
+                  "[host] WARNING KenshiLib %s has never been verified against this "
+                  "build (known good: %s). It will probably work - the stub ABI is "
+                  "stable - but mention this version first in any bug report.",
+                  runtimeVer, kVerified[0]);
+        b[sizeof(b) - 1] = '\0';
+        coopLog(b);
+    }
+}
+
 void logStartupBanner() {
     coopLog("KenshiCoop loaded! (clean rebuild)");
     if (g_cfg.fakeClockSkewMs != 0) {
@@ -2540,6 +2633,7 @@ __declspec(dllexport) void startPlugin() {
         coop::crashdump::install(dir.c_str(), g_cfg.isHost ? "host" : "join");
     }
 
+    logHostVersions();
     logStartupBanner();
 
     // Hook the main-thread tick FIRST (early-return on failure), then wire the
