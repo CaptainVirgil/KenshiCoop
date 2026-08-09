@@ -78,6 +78,13 @@ mkdir -p "$STEAM_COMPAT_DATA_PATH"
 
 # Read by the plugin at startup (Config.cpp). The F2 panel can still override the
 # role at runtime; this just means the join comes up already pointed at the host.
+# Kenshi is a Steam build: steam_api64 wants an app identity, and without one the
+# game exits during startup instead of erroring. The clone carries steam_appid.txt
+# already; these make the running Steam client answer for it.
+export SteamAppId=$KENSHI_APPID
+export SteamGameId=$KENSHI_APPID
+export SteamOverlayGameId=$KENSHI_APPID
+
 export KENSHICOOP_MODE=join
 export KENSHICOOP_IP=127.0.0.1
 export KENSHICOOP_PORT="$PORT"
@@ -90,4 +97,27 @@ echo "    target: $KENSHICOOP_IP:$KENSHICOOP_PORT"
 echo "    log:    $KENSHICOOP_LOG"
 echo "    in game: F2 -> Role JOIN, Transport UDP, Connection ONLINE (no save needed)"
 cd "$JOIN_DIR"
-exec "$PROTON/proton" run "$JOIN_DIR/kenshi_x64.exe"
+
+# Launch RE_Kenshi's PATCHED exe directly, with the flag that tells it not to
+# relaunch. This is the whole trick, and without it the join never starts.
+#
+# RE_Kenshi installs a second, patched kenshi_x64.exe under RE_Kenshi/. The
+# top-level exe is a shim: it execs ./RE_Kenshi/kenshi_x64.exe --norestart and
+# exits. Under Steam that hand-off survives because Steam's own launch wrapper
+# holds the session open; under a bare `proton run` the tracked process is gone
+# the moment the shim execs, wineserver tears the prefix down, and the real game
+# dies before RE_Kenshi writes a single log line - which is exactly what it looked
+# like, an instant silent exit with no RE_Kenshi_log.txt anywhere.
+#
+# Skipping the shim removes the hand-off entirely. `--norestart` is the same
+# argument the shim passes, so this is the process the host ends up running too.
+#
+# waitforexitandrun (not run) is Steam's own verb and waits for the whole tree.
+GAME_EXE="$JOIN_DIR/kenshi_x64.exe"
+GAME_ARGS=()
+if [ -x "$JOIN_DIR/RE_Kenshi/kenshi_x64.exe" ]; then
+    GAME_EXE="$JOIN_DIR/RE_Kenshi/kenshi_x64.exe"
+    GAME_ARGS=(--norestart)
+    echo "    exe:    RE_Kenshi/kenshi_x64.exe --norestart (skipping the relaunch shim)"
+fi
+exec "$PROTON/proton" waitforexitandrun "$GAME_EXE" "${GAME_ARGS[@]}"
