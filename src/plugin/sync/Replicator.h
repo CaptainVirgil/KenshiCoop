@@ -1341,6 +1341,11 @@ private:
     std::set<Key>          ownedContainers_;
     std::map<Key, InvPub>  invPub_;
     std::map<Key, InvRecv> invRecv_;
+    // Periodic (unchanged-snapshot) resend rollup: count + window start for the
+    // 60 s "[inv] resent N" line. The periodic leg logs nothing per send, and a
+    // broken cadence flooded the reliable channel invisibly once (2026-08-09).
+    unsigned long          invResentCount_;
+    unsigned long          invResentRollupMs_;
     // Protocol 34: the host's ~1 Hz container census result (LOCAL hands of
     // complete STORAGE/machine-class buildings in the interest spheres).
     // Folded into the authored set each publishInventories pass while

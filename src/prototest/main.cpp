@@ -1692,6 +1692,20 @@ static void testSyncTuning() {
           tun.carryHealDebounceMs >= 2 * midIntervalMs &&
           tun.furnHealDebounceMs  >= 2 * midIntervalMs);
 
+    // The inventory resend cadence must never be zero. abe12a2 moved the
+    // 5000/30000/24 literals out of ReplicatorItems.cpp into these fields
+    // without ctor initializers; zero-initialized, resendMs collapsed to 0 and
+    // every sent container re-queued its full snapshot EVERY TICK on the
+    // reliable channel - silently, because the periodic leg logs nothing per
+    // send. One live session (2026-08-09) starved the motion stream this way
+    // and presented as pose/position desync. An uninitialized cadence field
+    // must never pass this gate again.
+    CHECK_EQ("inv resend cadence, small snapshots (ms)", tun.invResendMs, 5000);
+    CHECK_EQ("inv resend cadence, big snapshots (ms)", tun.invResendBigMs, 30000);
+    CHECK_EQ("inv big-snapshot threshold (entries)", tun.invResendBigN, 24);
+    CHECK("a periodic inv resend is never sub-second",
+          tun.invResendMs >= 1000 && tun.invResendBigMs >= 1000);
+
     // Send interval -> the interp render delay. The flat ceiling alone does NOT
     // cover the mid band; that is precisely why the cadence-scaled one exists, and
     // the hard bound on it must still clear one send interval.

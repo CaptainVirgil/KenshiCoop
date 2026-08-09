@@ -40,6 +40,7 @@ Replicator::Replicator()
       nextWorldNetId_(1), worldSeeded_(false),
       nextDropId_(1), nextPickupId_(1), nextXferId_(1),
       xferScanMs_(0), nextTreatId_(1),
+      invResentCount_(0), invResentRollupMs_(0),
       quietRelapse_(0), crawlPhysRestore_(0),
       sitOrders_(0), detachUses_(0), noDetach_(false),
       dmgGuard_(false), reportCombat_(false), nextHitId_(1),

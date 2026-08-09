@@ -176,6 +176,23 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
         u8 sflags = trunc ? INV_FLAG_TRUNCATED : (u8)0;
         net.queueInvSnapshot(ownerId, keyKind, wireKey, items, n, sflags);
         pub.hash = hash; pub.lastSendMs = now; pub.lastSentN = n; pub.lastSentUnits = units;
+        // The periodic leg queues WITHOUT the SEND log below, which is how a
+        // 0 ms resend cadence flooded the reliable channel invisibly for a
+        // whole session (2026-08-09). Keep it quiet per send - the healthy
+        // cadence is one per container per 5/30 s - but never silent: a
+        // 60 s rollup makes the channel's real rate readable in any log.
+        if (periodic) {
+            invResentCount_++;
+            if (invResentRollupMs_ == 0) invResentRollupMs_ = now;
+            if (now - invResentRollupMs_ >= 60000) {
+                char r[120];
+                _snprintf(r, sizeof(r) - 1,
+                    "[inv] resent %lu unchanged snapshot(s) in %lus",
+                    invResentCount_, (unsigned long)((now - invResentRollupMs_) / 1000));
+                r[sizeof(r) - 1] = '\0'; coop::logLine(r);
+                invResentCount_ = 0; invResentRollupMs_ = now;
+            }
+        }
         if (changed) {
             char b[200];
             _snprintf(b, sizeof(b) - 1,

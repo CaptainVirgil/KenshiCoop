@@ -146,6 +146,17 @@ struct SyncTuning {
           bdoorSampleMs(1000),    bdoorResendMs(10000),
           doorEchoHoldMs(5000),
           midBandMax(256),        midSliceMax(32),
+          // 5000/30000/24 are the literals abe12a2 lifted out of
+          // ReplicatorItems.cpp -- and forgot to put here. Zero-initialized,
+          // resendMs collapsed to 0 and every sent container re-queued its
+          // full snapshot EVERY TICK on the reliable channel, silently (the
+          // [inv] SEND log only covers the content-change branch). ~17/s per
+          // container, 1.3 KB each, first seen live 2026-08-09: it starved
+          // the motion stream and presented as pose/position desync.
+          // prototest pins these three; an uninitialized cadence field must
+          // never be able to pass the gate again.
+          invResendMs(5000),      invResendBigMs(30000),
+          invResendBigN(24),
           carryHealDebounceMs(1500), furnHealDebounceMs(1500),
           koReleaseDebounceMs(3000) {}
 };

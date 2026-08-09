@@ -1158,8 +1158,13 @@ void NetLink::threadLoop() {
         }
 
         // Drain + send any queued container-contents snapshots on CH_RELIABLE. Each
-        // is [InvSnapshotHeader][InvItemEntry*count]; only enqueued on content-change,
-        // so this channel stays quiet. Reliable so the change survives WAN loss.
+        // is [InvSnapshotHeader][InvItemEntry*count]; enqueued on content-change plus
+        // a periodic re-assert (invResendMs / invResendBigMs - 5/30 s defaults, pinned
+        // by prototest), so the channel is quiet but never silent. Do NOT trust
+        // "quiet" from reading this code alone: when that cadence collapsed to 0 it
+        // flooded every tick with nothing logged (2026-08-09) - the [inv] resent
+        // rollup in ReplicatorItems.cpp is the observability for this path.
+        // Reliable so the change survives WAN loss.
         std::vector<OutInv> invs;
         EnterCriticalSection(&outCs_);
         invs.swap(outInv_);
