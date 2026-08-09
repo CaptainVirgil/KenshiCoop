@@ -57,11 +57,28 @@ both direct-launch prefixes from the live one (reflink; `mfc100u.dll` is the
 sentinel), pins the runner to Proton Experimental, and passes the exe path
 absolute (relative dies silently one line into Proton).
 
+### It was then PLAYED, and found four defects in one sitting
+
+Everything below was invisible to unit tests, a launched game and log
+evidence — the exact verification the fork had relied on for its whole
+history. All four are fixed, gated and pushed; none changed the wire.
+
+| Found | Cause |
+|---|---|
+| Reliable channel flooded, ~166 KB/s | `abe12a2` moved the inventory resend literals into `SyncTuning` without ctor initialisers → interval 0 → every container re-sent every tick, silently (the SEND log only covers content-change). Now 36 KB/s; `prototest` pins the defaults |
+| Peer's character teleported every ~4 s while running | The catch-up boost was overwritten by the gait mirror the same frame, and the commanded speed used the owner's speed *setting* (43) not its measured translation (65). Squad snaps 9 → 2 per window |
+| Town NPCs flapping, pose mismatch, seats broken | A stationary mid-band body was never streamed at all, so the peer read silence as "at rest", released it to local AI, and it wandered to the 120 u park. Keepalive + rest re-assert: cull 903→35, restore 891→22, park 828→197, freeze 1452→423 |
+| Join crash on dialogue with a seated NPC | `censusFreezeAi` had frozen the NPC's AI; the engine's dialogue state machine threw. Fix pending (task: interaction hold) |
+
+**The lesson worth keeping:** a green gate and a launched game agree with each
+other and can still both be wrong about what two clients do. The first hour of
+real play outproduced every automated signal this project has.
+
 Still open, in cost order:
 
-1. **A PLAYED session** — two humans, or one human driving both windows. The
-   automated session proves transport, handshake, save transfer and the drive;
-   it does not prove gameplay feel. Log signals: the `kenshicoop-logs` skill.
+1. **A session played by two HUMANS.** One person driving both windows found
+   the above, but does not exercise a second machine, the Steam P2P tunnel, or
+   a real network path. Log signals: the `kenshicoop-logs` skill.
 2. **The brother, over Steam.** The only route that exercises the Steam P2P
    tunnel and yields a second machine's `[engine] CAPS`. Flip both configs
    back to `"transport": "steam"` first — both sit on `udp` today.
@@ -114,10 +131,27 @@ fail-safe rather than fail-destructive.
 
 ---
 
+## Phase 3b — main-thread relief (opened by the played session)
+
+The join client is frame-starved while the host idles, and that imbalance is
+what the remaining desync reduces to: a starved client publishes a lumpy
+stream, so the *other* client's copy of its character accrues gap and snaps.
+Bandwidth is not the constraint (36 KB/s measured on a link that moved a save
+at ~900 KB/s); Kenshi's per-frame engine-call budget is.
+
+| # | Item |
+|---|---|
+| 50 | **Per-frame time budget.** Plugin cost scales with town size. The mid band already round-robins and the wide sweep is throttled, but there is no global budget: stamp a counter at tick entry, stop issuing engine calls past ~2 ms, resume next frame from a cursor. Makes plugin cost independent of how many NPCs are loaded |
+| 51 | **Cache hand→`Character*` resolution.** Every pass re-resolves each hand from scratch (deliberate: a despawn degrades to a skip). Hundreds per frame in a town. Wants a generation-stamped cache with a cheap validity check, invalidated where the session reset already clears pointer caches |
+| 52 | **`captureLite` audit.** Doctrine says the authority passes pay ~14 engine calls per body and discard all but hand and position. Verify per call site, flip the ones that over-capture |
+| 53 | **Split authority by hand-hash inside a contested cell.** Cell authority splits by SPACE, so two players in one cell means the host authors all ~216 NPCs and drives none while the join drives all of them. A stable hash of the (save-stable) hand splits the duty with no spatial boundary and therefore no handoff churn. Safest increment: split the DRIVE/publish duty only, leaving existence/census authority with the host, so neither client can cull the other's half |
+
 ## Phase 4 — known bugs, not yet worth their fix
 
 | # | Item |
 |---|---|
+| 54 | **Dialogue is never replicated, and damage splash counters are suppressed.** Two faces of one gap: state replicates, presentation does not. There is no dialogue packet in `Wire.h` at all — the host sees dialogue because its engine runs that NPC's AI, while on the peer the NPC is a driven proxy with AI suspended. And the damage guard returns `HIT_MISSED` without running the engine's hit path, which is *where the floating damage number is generated* — `PKT_MEDICAL` reconciles the resulting health, so the wound is real and only the feedback is missing. The splash half is the cheap one: `applyCombatHits` already receives the hit and would need an engine call that spawns the text without applying damage |
+| 55 | **Dialogue with a frozen NPC crashes the client.** `censusFreezeAi` suspends a parked NPC's AI; starting dialogue with one throws an unhandled C++ exception inside the engine (`0xE06D7363`, no KenshiCoop frame on the stack). Reproduced twice on a seated NPC. Wants an interaction hold: a body in dialogue with the local player is exempt from freeze/park/cull until it ends, same latch shape as `xferLatch_` |
 | 37 | `gateShouldSend`'s effective resend interval is `max(minSendMs, resendMs)` — the throttle is evaluated before the resend. Latent: only money passes a non-zero `minSendMs` |
 | 38 | `CATCHUP_K` has zero stability headroom — `K·dt = 2.0 × 0.5 s = exactly 1.0` on the mid band. Not broken today; one band retune from a copy that walks through the source and back |
 

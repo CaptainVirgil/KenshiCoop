@@ -281,6 +281,22 @@ violation.
   termination was a rule to remember 23 times and was forgotten 5 times; it now lives in
   `readPacket`. Where a hand-written list remains (the `wireSanitize` overloads), a
   contract test reads the source and fails when the list falls behind.
+- **A refactor that moves a literal into a struct must move it into the CONSTRUCTOR.**
+  `abe12a2` lifted `5000/30000/24` out of `ReplicatorItems.cpp` into `SyncTuning` fields
+  and never initialised them. Zero-initialised, the inventory resend interval was 0, so
+  every container re-sent its whole snapshot every tick on the *reliable* channel — for
+  a full session, undetected. `prototest` now pins those three defaults; pin any cadence
+  field you add the same way, because zero is a plausible-looking value that means
+  "as fast as possible".
+- **A channel with a periodic leg needs observability on that leg.** The flood was
+  invisible because `[inv] SEND` only logs the content-change branch, and the
+  serializer's own comment claimed the channel "stays quiet". Quiet is not silent: emit
+  a rollup (`[inv] resent N in 60s`) so the real rate is readable in any log.
+- **A speed SETTING is not a measured velocity.** `EntityState::cSpeed` is the owner's
+  `CharMovement::currentSpeed`; the engine translates a body faster than that (slope and
+  other modifiers land outside it) — measured 64.7 u/s actual against 43.4 reported. A
+  drive that commands a copy at the setting can never catch a source moving at the
+  truth, and no lead distance fixes a pursuer that is simply slower.
 
 ## Build loop
 
@@ -304,7 +320,33 @@ player's report resolves to a function.
 
 `[net] bandwidth out=… in=…` appears every 5 s. Nothing measured its own traffic before,
 which means any earlier claim about what a channel costs — including the ~40 KB/s figure
-in `SyncTuning.h` — was arithmetic rather than measurement.
+in `SyncTuning.h` — was arithmetic rather than measurement. Measured 2026-08-09 in a real
+two-client session: **~36 KB/s steady state** with a 216-NPC town loaded, against a link
+that moved 19.5 MB of save at ~900 KB/s. Bandwidth is not the constraint; the main
+thread is.
+
+## Diagnosing "it desyncs" — read the two [interp] lines FIRST
+
+The first played session (2026-08-09) taught this and it generalises. Symptoms that
+look like a replication bug are usually a **frame-starved client**, and the tell is the
+asymmetry between the two logs:
+
+| | host | join |
+|---|---|---|
+| `jit` | 7.8 ms | 167–200 ms |
+| `delay` | 86 ms | 320–777 ms |
+| `extrap/lerp` | ~4% | 20%+ |
+
+A starved client publishes a **lumpy stream**, so the *other* client's copy of its
+character accrues gap and hard-snaps, while its own copy of the peer tracks fine. That
+is why "his character never lags on my screen, mine lags on his" is a load report, not a
+drive bug. Both directions run the same code; only the input quality differs.
+
+**Why one client starves and the other idles:** cell authority splits work by SPACE.
+Two players standing in one cell means the host wins it (`[cell] MAP cells=1 slots=1
+24,22=0`), so the host authors every NPC and drives none, while the join drives every
+NPC and authors none. There is no spatial split to make when both players occupy the
+same space.
 
 ## Plan
 
@@ -313,9 +355,11 @@ been closed with a decision so it is not reopened. `HANDOFF.md`, when it exists,
 is disposable session state - half-built things and machine state outside the
 repo.
 
-**The single gating item is a two-client session.** Every gameplay fix shipped so
-far is verified by unit tests, a launched game and log evidence - never by two
-people playing.
+**The first two-client session ran 2026-08-09** and immediately produced four real
+defects that unit tests, a launched game and log evidence had all missed for the
+project's whole history — see `docs/ROADMAP.md`. What is still unproven is a session
+played by two *humans*; one person driving both windows does not exercise the second
+machine, the Steam P2P tunnel, or a real network path.
 
 ## Known open work
 
