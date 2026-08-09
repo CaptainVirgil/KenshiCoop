@@ -120,6 +120,21 @@ struct SyncTuning {
     // re-lock permanently.
     unsigned long furnHealDebounceMs;
 
+    // KO-latch release (protocol 54). A reliable EVT_KNOCKOUT pins a body down and
+    // only EVT_REVIVE was ever able to unpin it, so a revive that was never sent --
+    // or that landed while this client was not receiving -- left the body pinned for
+    // the rest of the session. The owner's continuous stream reporting the body
+    // upright is the second, always-available witness, and this is how long it has
+    // to keep saying so.
+    //
+    // Longer than the carry/furniture debounces on purpose. Those repair a lost
+    // event; this one OVERRIDES a reliable event that did arrive, so the evidence
+    // has to be stronger. Do NOT set it to 0: out.bodyState is the interpolated
+    // sample and lags real time, so an upright reading can predate the EVT_KNOCKOUT
+    // that just landed, and releasing on sight would stand up a body the owner
+    // knocked down a moment ago.
+    unsigned long koReleaseDebounceMs;
+
     SyncTuning()
         : moneyMinSendMs(1000),   moneyResendMs(5000),
           factionSampleMs(1000),  factionResendMs(10000),
@@ -131,7 +146,8 @@ struct SyncTuning {
           bdoorSampleMs(1000),    bdoorResendMs(10000),
           doorEchoHoldMs(5000),
           midBandMax(256),        midSliceMax(32),
-          carryHealDebounceMs(1500), furnHealDebounceMs(1500) {}
+          carryHealDebounceMs(1500), furnHealDebounceMs(1500),
+          koReleaseDebounceMs(3000) {}
 };
 
 } // namespace coop

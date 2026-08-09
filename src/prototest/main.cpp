@@ -2009,6 +2009,91 @@ static void testDriveBands() {
           t.combatSlideMax >= t.combatBigSnap);
 }
 
+// ---- 5h-bis. targets_ age-out: the three-way stale/latched/gone predicate -------
+//
+// MIRROR of Replicator::ageOutStaleTargets (ReplicatorDrive.cpp) - it takes a
+// GameWorld-bearing Replicator, so the predicate is restated here rather than
+// linked. Retune both in the same commit.
+//
+// Worth pinning because it is three interacting booleans guarding a map erase,
+// and the two failure directions are opposite and both bad: too eager drops a
+// death latch and a corpse stands back up; too lazy is the leak it was written to
+// fix - a targets_ entry, and a per-tick iteration of it, for every NPC ever
+// knocked out near a player.
+static const unsigned long AGE_TARGET_STALE_MS = 30000;
+static const unsigned long AGE_LATCH_STALE_MS  = 600000;
+
+static bool ageOutErases(unsigned long now, unsigned long lastSeenMs, bool latched) {
+    bool stale = (lastSeenMs == 0) || (now - lastSeenMs > AGE_TARGET_STALE_MS);
+    bool gone  = (lastSeenMs != 0) && (now - lastSeenMs > AGE_LATCH_STALE_MS);
+    return stale && (!latched || gone);
+}
+
+static void testTargetAgeOut() {
+    std::printf("== targets_ age-out predicate ==\n");
+
+    const unsigned long NOW = 5000000;   // well past both horizons
+
+    CHECK("the latched horizon is longer than the ordinary one",
+          AGE_LATCH_STALE_MS > AGE_TARGET_STALE_MS);
+
+    // Unlatched: the ordinary 30 s rule, unchanged by any of this.
+    CHECK("unlatched + fresh is kept",
+          !ageOutErases(NOW, NOW - 1000, false));
+    CHECK("unlatched + exactly at the stale horizon is kept",
+          !ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS, false));
+    CHECK("unlatched + one ms past the stale horizon is erased",
+          ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS - 1, false));
+
+    // Latched: survives the ordinary horizon. This is the part that must not
+    // regress - a corpse stays a corpse while its owner keeps streaming it.
+    CHECK("latched + fresh is kept",
+          !ageOutErases(NOW, NOW - 1000, true));
+    CHECK("latched + past the ordinary horizon is still kept",
+          !ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS - 1, true));
+    CHECK("latched + one ms short of the latch horizon is kept",
+          !ageOutErases(NOW, NOW - AGE_LATCH_STALE_MS, true));
+    CHECK("latched + one ms past the latch horizon is erased",
+          ageOutErases(NOW, NOW - AGE_LATCH_STALE_MS - 1, true));
+
+    // lastSeenMs == 0 means "no ingest has ever been dated for this hand". It
+    // cannot be aged as latched, because there is no timestamp to measure from -
+    // which is exactly why applyEvents and the dead-on-arrival mint both stamp it.
+    // Without those stamps this row is the leak, and it is invisible: the entry
+    // reads as maximally stale and is still never dropped.
+    CHECK("never-dated + unlatched is erased",
+          ageOutErases(NOW, 0, false));
+    CHECK("never-dated + latched is kept (nothing to date it by)",
+          !ageOutErases(NOW, 0, true));
+
+    // Monotonicity in age: once a row erases, no OLDER row of the same kind is
+    // kept. A predicate this shape can be written so a middle band survives, and
+    // that would strand rows forever at one particular age.
+    bool erasedLatched = false, erasedPlain = false;
+    bool monoLatched = true, monoPlain = true;
+    for (unsigned long age = 0; age <= 700000; age += 5000) {
+        bool eL = ageOutErases(NOW, NOW - age, true);
+        bool eP = ageOutErases(NOW, NOW - age, false);
+        if (erasedLatched && !eL) monoLatched = false;
+        if (erasedPlain   && !eP) monoPlain   = false;
+        if (eL) erasedLatched = true;
+        if (eP) erasedPlain   = true;
+    }
+    CHECK("latched rows only ever escalate toward erasure with age", monoLatched);
+    CHECK("unlatched rows only ever escalate toward erasure with age", monoPlain);
+    CHECK("both kinds do erase somewhere in the swept range",
+          erasedLatched && erasedPlain);
+
+    // A latched row is never erased before an unlatched row of the same age: the
+    // latch may only ever DELAY the drop, never cause one.
+    bool latchNeverEarlier = true;
+    for (unsigned long age = 0; age <= 700000; age += 5000) {
+        if (ageOutErases(NOW, NOW - age, true) && !ageOutErases(NOW, NOW - age, false))
+            latchNeverEarlier = false;
+    }
+    CHECK("a latch only ever delays the drop, never causes one", latchNeverEarlier);
+}
+
 // ---- 5i. Drive convergence: snap distance vs cadence, and the catch-up gain -----
 // The other half of the drive's pure arithmetic, and the half that is coupled to
 // something this binary CAN see: the mid band's send interval, derived from
@@ -3066,6 +3151,7 @@ int main() {
     testSyncTuning();
     testSuppressionCaps();
     testDriveBands();
+    testTargetAgeOut();
     testDriveConvergence();
     testOwnRanks();
     testSteamIdParse();

@@ -254,6 +254,8 @@ void loadConfig(Config& c) {
                                           "carryHealDebounceMs");
     tuneU(c.tuning.furnHealDebounceMs,  f, "KENSHICOOP_FURN_HEAL_DEBOUNCE_MS",
                                           "furnHealDebounceMs");
+    tuneU(c.tuning.koReleaseDebounceMs, f, "KENSHICOOP_KO_RELEASE_DEBOUNCE_MS",
+                                          "koReleaseDebounceMs");
     tuneU(c.tuning.invResendMs,       f, "KENSHICOOP_INV_RESEND_MS",       "invResendMs");
     tuneU(c.tuning.invResendBigMs,    f, "KENSHICOOP_INV_RESEND_BIG_MS",   "invResendBigMs");
     tuneUInt(c.tuning.invResendBigN,  f, "KENSHICOOP_INV_RESEND_BIG_N",    "invResendBigN");
@@ -489,10 +491,10 @@ std::string describeConfig(const Config& c) {
     // has to say what they were set to.
     char t[192];
     _snprintf(t, sizeof(t) - 1,
-              " midBand=%u/%u healDeb=%lu/%lu doorHold=%lu",
+              " midBand=%u/%u healDeb=%lu/%lu doorHold=%lu koRel=%lu",
               c.tuning.midBandMax, c.tuning.midSliceMax,
               c.tuning.carryHealDebounceMs, c.tuning.furnHealDebounceMs,
-              c.tuning.doorEchoHoldMs);
+              c.tuning.doorEchoHoldMs, c.tuning.koReleaseDebounceMs);
     t[sizeof(t) - 1] = '\0';
     s += t;
     return s;

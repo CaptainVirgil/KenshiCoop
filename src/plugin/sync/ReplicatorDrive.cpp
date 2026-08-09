@@ -779,6 +779,48 @@ void Replicator::applyTargets(GameWorld* gw) {
         // still wins absolutely - a corpse does not crawl.
         bool crawling = proneSync_ && coop::bodyIsCrawling(out.bodyState) &&
                         !d.deathLatched;
+        // ---- KO-latch release on the owner's continuous word --------------------
+        // The comment above promises "when the host reports the body upright again,
+        // release the KO once". Nothing did that: EVT_REVIVE was the ONLY thing that
+        // could clear koLatched, so a revive that was never sent - or that landed
+        // while this client was mid-stall and not receiving - pinned the body down
+        // for the rest of the session. The crawl carve-out directly above is the
+        // narrow version of this fix, added when one shape of it was reported; this
+        // is the general one, and it subsumes nothing (a crawler is still down by
+        // bodyIsDown, so it still needs its own carve-out).
+        //
+        // Debounced exactly like the carry and furniture heals, for the same reason:
+        // out.bodyState comes from the INTERPOLATED sample, which lags real time, so
+        // an upright reading can predate an EVT_KNOCKOUT that has already applied.
+        // Releasing on sight would stand up a body the owner just knocked down -
+        // the inverted-action class of bug. healDue additionally requires the ring
+        // to have ADVANCED, so a peer that went quiet cannot expire the wait against
+        // the very sample the wait was meant to outlast.
+        //
+        // deathLatched is untouched. A corpse does not stand up, and that latch is
+        // the only thing holding a body dead across a hand re-key.
+        if (d.koLatched && !d.deathLatched) {
+            if (coop::bodyIsDown(out.bodyState)) {
+                d.koSeeTick = 0; d.koSeeSample = 0;   // owner still says down
+            } else {
+                if (d.koSeeTick == 0) {
+                    d.koSeeTick   = now;
+                    d.koSeeSample = d.interp.newestMs();
+                }
+                if (healDue(now, d.koSeeTick, d.koSeeSample,
+                            tuning_.koReleaseDebounceMs, d.interp)) {
+                    d.koLatched = false;
+                    d.koSeeTick = 0; d.koSeeSample = 0;
+                    ++koReleases_;
+                    char b[144]; _snprintf(b, sizeof(b) - 1,
+                        "[ko] RELEASE hand=%u,%u (owner stream upright, no EVT_REVIVE)",
+                        out.hIndex, out.hSerial);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
+            }
+        } else if (d.koSeeTick != 0) {
+            d.koSeeTick = 0; d.koSeeSample = 0;
+        }
         // A latched EVT_DEATH/EVT_KNOCKOUT forces the down treatment every tick,
         // which is what keeps a corpse pinned. That latch lives on this Driven
         // record, so it MUST survive a hand re-key - rekeyPeerBody carries
@@ -1929,9 +1971,15 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         unsigned int trusted = 0;
         for (std::map<Key, Driven>::iterator it = targets_.begin(); it != targets_.end(); ++it)
             if (it->second.trusted) ++trusted;
-        char b[112];
-        _snprintf(b, sizeof(b), "[trust] trusted=%u driven=%u grants=%lu revokes=%lu",
-                  trusted, (unsigned)targets_.size() - trusted, trustGrants_, trustRevokes_);
+        // koRel / koExp ride along here rather than getting their own line: both
+        // are per-session totals about the same map this line already reports the
+        // size of. koRel climbing means EVT_REVIVEs are going missing; koExp
+        // climbing means latched bodies are being abandoned by the owner's stream.
+        char b[176];
+        _snprintf(b, sizeof(b) - 1,
+                  "[trust] trusted=%u driven=%u grants=%lu revokes=%lu koRel=%lu koExp=%lu",
+                  trusted, (unsigned)targets_.size() - trusted, trustGrants_, trustRevokes_,
+                  koReleases_, koLatchExpired_);
         b[sizeof(b) - 1] = '\0';
         coop::logLine(b);
     }
@@ -1943,11 +1991,40 @@ void Replicator::ageOutStaleTargets(unsigned long now) {
     // (a dead body must stay dead even while unstreamed); everything else is
     // reconstructed from the stream if the entity ever returns.
     const unsigned long TARGET_STALE_MS = 30000;
+    // ...but "preserved" was implemented as "immortal", and that is a leak with a
+    // per-NPC cost. The KO/death edge loop in publishOwned runs over the whole
+    // captured set, streamed world NPCs included, so every NPC that was ever KO'd
+    // anywhere near a player kept a targets_ entry - and a per-tick iteration of
+    // it - for the rest of the session. A town brawl is dozens of them.
+    //
+    // A latch is a hold against a DROPPED BATCH: it exists so a body stays down
+    // when this tick's lossy sample momentarily reads upright. It was never meant
+    // to be memory that outlives the stream. Once the owner has not streamed the
+    // body AT ALL for LATCH_STALE_MS there is no sample to override, and no
+    // EVT_REVIVE can arrive either, because the event rides the same stream that
+    // stopped - so the entry is pinning a body down on evidence minutes old with
+    // no way left to learn otherwise.
+    //
+    // Nothing is lost on re-entry: every EntityState carries the down/dead bits,
+    // so a body that is still dead is driven down by the stream itself, and the
+    // spawn path re-latches from SpawnInfoPacket.dead (ReplicatorSpawn.cpp) for a
+    // minted proxy. The window where neither applies is the single tick between
+    // re-entry and the first sample - which is already the case for every
+    // unlatched body and has never been the reported problem.
+    //
+    // Ten minutes, not thirty seconds: this is the backstop for a stream that
+    // ended, not the ordinary release. The ordinary release is the owner reporting
+    // the body upright, which applyTargets now acts on (koReleases_).
+    const unsigned long LATCH_STALE_MS = 600000;
     for (std::map<Key, Driven>::iterator it = targets_.begin(); it != targets_.end(); ) {
         Driven& d = it->second;
         bool stale   = (d.lastSeenMs == 0) || (now - d.lastSeenMs > TARGET_STALE_MS);
         bool latched = d.deathLatched || d.koLatched;
-        if (stale && !latched) targets_.erase(it++);
+        bool gone    = (d.lastSeenMs != 0) && (now - d.lastSeenMs > LATCH_STALE_MS);
+        if (stale && (!latched || gone)) {
+            if (latched) ++koLatchExpired_;
+            targets_.erase(it++);
+        }
         else ++it;
     }
     // The authority hysteresis counters are pruned in enforceHostAuthority (by

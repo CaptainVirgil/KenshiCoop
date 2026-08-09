@@ -784,6 +784,14 @@ private:
         bool         downApplied;     // Stage 2: body is currently held in ragdoll (host says down)
         bool         koLatched;       // a reliable EVT_KNOCKOUT pinned this body down
         bool         deathLatched;    // a reliable EVT_DEATH pinned this body down PERMANENTLY
+        // The KO latch's second release path. EVT_REVIVE was the only one, so a
+        // revive that was never sent - or that landed while this client was not
+        // receiving - pinned the body down for the rest of the session. These arm
+        // when the owner's stream starts reporting the body upright and clear the
+        // moment it says down again; see tuning_.koReleaseDebounceMs for why the
+        // wait exists and koSeeSample for why wall clock alone is not enough.
+        unsigned long koSeeTick;
+        unsigned long koSeeSample;   // as carrySeeSample, for the KO-latch release
         bool         combatArmed;     // Stage 3c: a melee-attack order is currently issued
         unsigned long combatTick;     // when the attack order was (re-)issued (re-arm throttle)
         unsigned int combatOrders;    // orders issued this combat episode (re-issue backoff)
@@ -909,6 +917,7 @@ private:
                    issuedTask(TASK_NONE), taskApplied(false), taskBad(false),
                    taskTick(0), taskRetries(0), taskNoneTick(0), detached(false), downApplied(false),
                    koLatched(false), deathLatched(false),
+                   koSeeTick(0), koSeeSample(0),
                    combatArmed(false), combatTick(0), combatOrders(0),
                    combatTgtIdx(0), combatTgtSer(0),
                    combatSeenTick(0), combatSnapTick(0), combatSnapCount(0),
@@ -2386,6 +2395,13 @@ private:
     unsigned long        trustLogTick_;
     unsigned long        trustGrants_;   // trusted-mode entries this run
     unsigned long        trustRevokes_;  // trusted-mode exits (divergence/drift)
+    // KO latches released by the owner's continuous stream rather than by an
+    // EVT_REVIVE. A non-zero count means revives are going missing: the release
+    // is doing its job, and the reason it had to is worth knowing.
+    unsigned long        koReleases_;
+    // Latched entries dropped by the age-out because the owner stopped streaming
+    // them entirely. These are the leak this bounds; see ageOutStaleTargets.
+    unsigned long        koLatchExpired_;
 };
 
 } // namespace coop

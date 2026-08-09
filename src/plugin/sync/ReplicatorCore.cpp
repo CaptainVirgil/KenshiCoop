@@ -47,6 +47,7 @@ Replicator::Replicator()
       stealthSync_(true), proneSync_(true),
       gateAuthority_(false), trustLogTick_(0),
       trustGrants_(0), trustRevokes_(0),
+      koReleases_(0), koLatchExpired_(0),
       authSuppresses_(0), authRestores_(0), authReassertMs_(0), authPruned_(0),
       censusRadius_(0.0f), censusSendMs_(0), censusRecvMs_(0), censusCulls_(0),
       censusPubTrunc_(false), censusFreshPrev_(false), censusRejudge_(false),

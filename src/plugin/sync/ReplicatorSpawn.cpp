@@ -412,8 +412,14 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
         lifeSet(k, LIFE_RESOLVED, "mint");
         // Dead on arrival: latch the down state now (the same reliable-latch
         // path an EVT_DEATH would take) so the proxy spawns INTO ragdoll
-        // instead of standing up for a frame. Latched entries never age out.
-        if (p.dead) targets_[k].deathLatched = true;
+        // instead of standing up for a frame. The latch survives ordinary
+        // age-out; it is dropped only after the owner has stopped streaming the
+        // body for LATCH_STALE_MS, and the stamp below is what dates that.
+        if (p.dead) {
+            Driven& pd = targets_[k];
+            pd.deathLatched = true;
+            if (pd.lastSeenMs == 0) pd.lastSeenMs = nowMs();
+        }
         // mintDist (Phase 1 telemetry): how far from our squad the proxy
         // appeared - the spawn-parity oracle gates its distribution.
         char b[224]; _snprintf(b, sizeof(b) - 1,
@@ -580,6 +586,15 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
         Key k; k.t = ev.sType; k.c = ev.sContainer; k.cs = ev.sContainerSerial;
         k.i = ev.sIndex; k.s = ev.sSerial;
         Driven& d = targets_[k]; // creates a placeholder if the body isn't streamed yet
+        // Start the age-out clock on a placeholder. lastSeenMs is "last ingest for
+        // this hand", and a reliable event IS an ingest - the only one this hand
+        // may ever get. Left at 0 the entry reads as never-seen, which the latched
+        // age-out cannot date and therefore could never drop: an EVT_KNOCKOUT for
+        // a body the owner does not stream leaked one map entry, permanently, and
+        // the KO/death edge loop emits those for every world NPC it captures.
+        // Safe against the starve-hold at the top of applyTargets: that path also
+        // requires interp.latest(), which an unstreamed placeholder fails.
+        if (d.lastSeenMs == 0) d.lastSeenMs = nowMs();
         switch (ev.event) {
             case EVT_DEATH:    d.deathLatched = true;  d.koLatched = true;  break;
             case EVT_KNOCKOUT: d.koLatched = true;                          break;
