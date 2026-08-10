@@ -8,13 +8,13 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`fork-6` is the last public release. Everything since is unreleased — and the next release is `v0.1.0`, not `fork-8`.**
+**`fork-6` is the last public release. Everything since is unreleased — and the next release is `v0.50`, not `fork-8`.**
 
 | | |
 |---|---|
 | Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1 |
 | Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve). The last release made while this was still a fork |
-| Local build | protocol 56, installed on both the Steam install and `~/Kenshi-Join`. Ships as **`v0.1.0`** — the first release under the project's own identity |
+| Local build | protocol 56, installed on both the Steam install and `~/Kenshi-Join`. Ships as **`v0.50`** — the first release under the project's own identity |
 | Gate | 733 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
 | Interop | **`fork-6` will NOT connect to the current build** — protocol 54 vs 56. The handshake compares `PROTOCOL_VERSION`, not the label, and a mismatch is a hard reject |
 
@@ -92,7 +92,7 @@ Still open, in cost order:
 
 ## Open decisions (cheap, need Virgil)
 
-- **Cut `v0.1.0`, or hold.** A large amount landed 2026-08-08/09 and none of
+- **Cut `v0.50`, or hold.** A large amount landed 2026-08-08/09 and none of
   it has been released: the instruction audit, ENet pin + stamp, the
   full-include-path header scan, the Windows DOA checks, the entity-batch
   receive clamp with `netlinktest`, then the played-session fixes (inventory

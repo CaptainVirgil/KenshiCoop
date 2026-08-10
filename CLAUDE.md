@@ -10,7 +10,7 @@ cut on 2026-08-09 (`isFork: false`) and the `upstream` remote is still there —
 cherry-picked either way — but the two are no longer merge-compatible: protocol 56 vs
 54, a different build system, a different release line. Attribution is permanent and
 deliberate (README + AGPL-3.0 as a derived work), not a formality to be dropped later.
-Releases are **semver (`v0.1.0`)**, not `fork-N`: the label names a release of THIS
+Releases are **semver (`v0.50`)**, not `fork-N`: the label names a release of THIS
 project rather than a position relative to somebody else's repo. `origin` is
 `CaptainVirgil/KenshiCoop`.
 

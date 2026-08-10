@@ -8,7 +8,7 @@
 #
 #   usage: scripts/linux/make_kit.sh [version-label]
 #
-# VERSION LABELS ARE SEMVER, e.g. v0.1.0 - NOT "fork-N". This project began as a
+# VERSION LABELS ARE SEMVER, e.g. v0.50 - NOT "fork-N". This project began as a
 # fork of nhoral/KenshiCoop and was numbered fork-1..fork-7 while it was one;
 # it is its own project now, with its own wire protocol and release line, so the
 # label names a RELEASE rather than a position relative to somebody else's repo.
@@ -76,7 +76,7 @@ JSON
 
 cat > "$OUT/KenshiCoop/kit.json" <<JSON
 {
-  "fork": "CaptainVirgil/KenshiCoop",
+  "project": "CaptainVirgil/KenshiCoop",
   "label": "$LABEL",
   "commit": "$COMMIT",
   "protocolVersion": $PROTO,

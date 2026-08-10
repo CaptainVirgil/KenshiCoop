@@ -88,7 +88,7 @@ whether the host starts driving (`drv>0` in its audit line).
 ## Loose ends
 
 - [ ] Launch and work through "what to watch" above
-- [ ] Cut **`v0.1.0`** (not `fork-8`). Everything since `fork-6` is unreleased
+- [ ] Cut **`v0.50`** (not `fork-8`). Everything since `fork-6` is unreleased
       and protocol is now 56, so it is a hard cut — `fork-6` will refuse to
       connect. **Item 28's census `truncated` flag should land before the
       release** rather than waiting for a bump of its own; the bump is spent
