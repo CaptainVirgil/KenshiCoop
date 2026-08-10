@@ -166,11 +166,31 @@ void Replicator::lifeSweep(GameWorld* gw, unsigned long now) {
                                                    cp->second.y, cp->second.z);
             if (mintable) {
                 lc.stuckLogMs = now;
-                char b[160];
+                // "(mintable)" claimed far more than it checked: only that the
+                // zone at the census position is loaded. It says nothing about
+                // the mint RADIUS, the far-mint arm dwell, or a denied/far
+                // backoff - so an ordinary distant body wore a failure's label.
+                // On 2026-08-10 forty of these appeared, ALL at age=33s, and all
+                // forty minted moments later: a normal delay read as an
+                // invisible-raid bug. Report which gate it is actually sitting
+                // behind, so the line means something when it does matter.
+                std::map<Key, SpawnReqState>::iterator sq =
+                    spawnReq_.find(it->first);
+                const char* why = "no-req-yet";
+                unsigned int sends = 0;
+                if (sq != spawnReq_.end()) {
+                    sends = sq->second.sends;
+                    if (sq->second.deniedMs != 0)         why = "denied-backoff";
+                    else if (sq->second.farMs != 0)       why = "outside-mint-radius";
+                    else if (sq->second.firstMissMs != 0) why = "arming-or-in-flight";
+                    else                                  why = "req-idle";
+                }
+                char b[208];
                 _snprintf(b, sizeof(b) - 1,
-                          "[life] STUCK hand=%u,%u,%u,%u,%u state=DISCOVERED age=%lus (mintable)",
+                          "[life] STUCK hand=%u,%u,%u,%u,%u state=DISCOVERED age=%lus"
+                          " zone=loaded why=%s reqs=%u",
                           it->first.t, it->first.c, it->first.cs, it->first.i,
-                          it->first.s, (now - lc.sinceMs) / 1000);
+                          it->first.s, (now - lc.sinceMs) / 1000, why, sends);
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b);
             } else {
                 lc.stuckLogMs = now; // re-check the zone on the next cadence

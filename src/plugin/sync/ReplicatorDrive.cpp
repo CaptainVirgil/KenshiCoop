@@ -2019,8 +2019,18 @@ void Replicator::logDriveTelemetry(unsigned long now) {
     if (aiSuspend_ && (now - aiLogTick_) > 3000) {
         aiLogTick_ = now;
         char b[96];
-        _snprintf(b, sizeof(b), "[ai] suspended=%u driven=%u",
-                  engine::aiSuspendCount(), (unsigned)targets_.size());
+        // `driven` must be drivenChars_ - the bodies we actually drove this tick
+        // and therefore the only ones the AI suspend applies to. It reported
+        // targets_ (every entity the peer streams us, driven or not), so the pair
+        // read as a suspension RATIO and was not one: "suspended=1 driven=33"
+        // looked like a broken suspend on 2026-08-10 and was 32 bodies that were
+        // never candidates. targets_ is still worth seeing, so keep it - named.
+        // Same lesson as the census's own "absence is not evidence": a number
+        // labelled as something it is not is an active falsehood, and this one
+        // nearly bought a behaviour change to fix a bug that did not exist.
+        _snprintf(b, sizeof(b), "[ai] suspended=%u driven=%u targets=%u",
+                  engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
+                  (unsigned)targets_.size());
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).
