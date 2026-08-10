@@ -31,7 +31,7 @@ typedef double         f64;
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 56;
+const u16 PROTOCOL_VERSION = 57;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -140,6 +140,15 @@ const u32 OWNER_ID_ALL = 0xFFFFFFFFu;
 struct HelloPacket {
     u8  type;    // = PKT_HELLO
     u16 version; // = PROTOCOL_VERSION
+    // Order-sensitive fingerprint of the sender's data/mods.cfg, and how many
+    // significant lines went into it. 0 = the file could not be read, which is
+    // UNKNOWN and must never be reported as a mismatch. Carried on both sides of
+    // the handshake because either player can be the one with the odd load
+    // order. A mismatch WARNS rather than rejects: differing mods break a shared
+    // world in ways that look exactly like replication bugs (see protocol 57 in
+    // docs/PROTOCOL_HISTORY.md), but it is the players' call whether to play on.
+    u32 modsHash;
+    u16 modsCount;
     u8  nameLen; // bytes of name following this struct (0..63)
     // char name[nameLen] follows
 };
@@ -148,6 +157,8 @@ struct WelcomePacket {
     u8  type;     // = PKT_WELCOME
     u16 version;  // host's PROTOCOL_VERSION (client re-checks)
     u32 playerId; // id the host assigned to this client
+    u32 modsHash;  // see HelloPacket::modsHash
+    u16 modsCount;
 };
 
 // A reliable one-shot transition. 'subject' is the hand the event happened TO; the

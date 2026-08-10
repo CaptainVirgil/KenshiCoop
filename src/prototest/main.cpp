@@ -87,8 +87,8 @@ static int g_total  = 0;
 
 static void testSizes() {
     std::printf("== wire struct sizes (the packed contract both clients memcpy) ==\n");
-    CHECK_EQ("sizeof(HelloPacket)",             sizeof(HelloPacket),             4);
-    CHECK_EQ("sizeof(WelcomePacket)",           sizeof(WelcomePacket),           7);
+    CHECK_EQ("sizeof(HelloPacket)",             sizeof(HelloPacket),             10);
+    CHECK_EQ("sizeof(WelcomePacket)",           sizeof(WelcomePacket),           13);
     CHECK_EQ("sizeof(EventPacket)",             sizeof(EventPacket),             54);
     CHECK_EQ("sizeof(EntityState)",             sizeof(EntityState),             79);
     CHECK_EQ("sizeof(EntityBatchHeader)",       sizeof(EntityBatchHeader),       14); // v35: +sendMs; v44: +epoch
@@ -329,7 +329,7 @@ static void testSizes() {
     CHECK("EVT_SQUAD_MOVE distinct", EVT_SQUAD_MOVE != EVT_RECRUIT &&
           EVT_SQUAD_MOVE != EVT_NONE && EVT_SQUAD_MOVE != EVT_EXIT_FURNITURE);
     CHECK_EQ("PROTOCOL_VERSION (v56: dialogue relay)",
-             (int)PROTOCOL_VERSION, 56);
+             (int)PROTOCOL_VERSION, 57);
 
     // Protocol 52: the shared money pool. The two players spend from ONE wallet,
     // so the join reports CHANGES and the host the authoritative TOTAL - swap
@@ -614,13 +614,23 @@ static void testFraming() {
 
     // HELLO: [u8 type][u16 version][u8 nameLen] - the version check that rejects
     // mismatched builds depends on this exact layout.
-    unsigned char hello[4];
+    // Byte-exact HELLO, hand-laid rather than memcpy'd from the struct: this is
+    // the one test that would catch the struct and the WIRE drifting apart.
+    // Layout (protocol 57, packed): type u8 | version u16 | modsHash u32 |
+    // modsCount u16 | nameLen u8.
+    unsigned char hello[sizeof(HelloPacket)];
     hello[0] = (unsigned char)PKT_HELLO;
     hello[1] = (unsigned char)(PROTOCOL_VERSION & 0xFF);
     hello[2] = (unsigned char)((PROTOCOL_VERSION >> 8) & 0xFF);
-    hello[3] = 0;
+    hello[3] = 0xEF; hello[4] = 0xBE; hello[5] = 0xAD; hello[6] = 0xDE; // modsHash
+    hello[7] = 0x67; hello[8] = 0x00;                                   // modsCount
+    hello[9] = 0;                                                       // nameLen
     HelloPacket h;
-    CHECK("HELLO parses from raw bytes", readPacket(hello, 4, &h));
+    CHECK("HELLO parses from raw bytes",
+          readPacket(hello, (unsigned)sizeof(hello), &h));
+    CHECK_EQ("HELLO modsHash field offset", (unsigned long)h.modsHash,
+             (unsigned long)0xDEADBEEFu);
+    CHECK_EQ("HELLO modsCount field offset", (int)h.modsCount, 103);
     CHECK_EQ("HELLO version field offset", h.version, PROTOCOL_VERSION);
     CHECK("HELLO version mismatch detectable", ((u16)(PROTOCOL_VERSION + 1)) != h.version);
 

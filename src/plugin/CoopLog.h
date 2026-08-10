@@ -51,6 +51,23 @@ unsigned long monoUs();
 void logLine(const char* msg);
 void logErrLine(const char* msg);
 
+// Order-sensitive fingerprint of <Kenshi>/data/mods.cfg, exchanged at handshake.
+//
+// Two clients that share a SAVE but load it against different mods are running
+// two different worlds, and every symptom of that looks like a replication bug:
+// furniture present on one side only, an NPC that exists for one player, a
+// weather stringID the peer cannot resolve. That cost most of a play session on
+// 2026-08-10 before anyone thought to compare the two lists.
+//
+// Order matters (later mods override earlier ones), so this hashes the lines in
+// file order. Blank lines, comments and CR are ignored so a trivially different
+// text file with the same load order still matches.
+//
+// `outCount` receives the number of significant lines. Returns 0 and leaves
+// count 0 when the file cannot be read - an UNKNOWN fingerprint, which the
+// handshake must not report as a mismatch.
+unsigned int modsFingerprint(unsigned int* outCount);
+
 // ---- Main-thread liveness watchdog -----------------------------------------
 //
 // A main-thread HANG and a crash are indistinguishable in this log: in both, the

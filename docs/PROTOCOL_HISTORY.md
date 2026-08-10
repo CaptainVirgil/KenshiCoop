@@ -440,3 +440,35 @@ an orphan caption in mid-air reads as a bug.
 both forward what they witnessed and skip their own echo. No seq, no change
 gate, no re-assert: a spoken line is an EVENT, and re-showing a stale one is
 worse than missing it.
+
+---
+
+## 57 — the mod-set fingerprint (2026-08-10) — EVIDENCED
+
+`HelloPacket` and `WelcomePacket` each gain `u32 modsHash` + `u16 modsCount`
+(4 → 10 bytes and 7 → 13 bytes respectively). Both sides carry it, because
+either player can be the one with the odd load order.
+
+**Why it earned a bump.** Two players shared a SAVE while loading it against
+DIFFERENT mod sets, and spent most of a play session reporting what looked like
+replication bugs: furniture that vanished on one screen and not the other, NPCs
+that existed for one player, a weather stringID the peer could not resolve.
+Every one of those is a real consequence of two different worlds, and none is a
+network fault. Nobody thought to diff the two `mods.cfg` files for hours.
+
+Kenshi bakes mod content into a save by index, so a shared save plus differing
+mods is not a soft mismatch — it is two worlds. Protocol version already gets a
+hard reject for a far less damaging condition (packets the peer cannot parse).
+
+**It WARNS, it does not reject.** A version mismatch is unarguable: the bytes
+cannot be read. A mods mismatch parses perfectly and then describes something
+the peer does not have — and some load-order differences are genuinely harmless
+(cosmetic mods, retextures). That makes it the players' call, so the handshake
+states the fact loudly and continues.
+
+**The fingerprint is order-sensitive and normalised.** Later mods override
+earlier ones, so order is content: lines are folded in file order. CR, blank
+lines, `#` comments and surrounding whitespace are ignored, and the text is
+case-folded, so two byte-different files describing the same load order still
+match. `0` means the file could not be read — UNKNOWN, never reported as a
+mismatch, on the same rule the census follows about absence.

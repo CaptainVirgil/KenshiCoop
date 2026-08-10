@@ -8,6 +8,7 @@
 #include <string>
 
 #include <windows.h>
+#include <fstream>
 #include <cstdio>
 #include <cstring>
 
@@ -150,6 +151,55 @@ bool logRetag(const char* newPath, const char* newTag) {
     }
     LeaveCriticalSection(&g_cs);
     return moved;
+}
+
+// <Kenshi>/data/mods.cfg, resolved from the EXE rather than from our own DLL:
+// the DLL sits at <Kenshi>\mods\KenshiCoop\, and walking two levels up from it
+// would break the moment the mod folder is nested differently. The exe is the
+// game root by definition.
+static std::string modsCfgPath() {
+    char buf[MAX_PATH];
+    DWORD n = GetModuleFileNameA(0, buf, MAX_PATH); // 0 == the running exe
+    if (n == 0 || n >= MAX_PATH) return "data\\mods.cfg";
+    std::string p(buf, n);
+    size_t slash = p.find_last_of("\\/");
+    p = (slash != std::string::npos) ? p.substr(0, slash + 1) : std::string();
+    return p + "data\\mods.cfg";
+}
+
+unsigned int modsFingerprint(unsigned int* outCount) {
+    if (outCount) *outCount = 0;
+    std::ifstream f(modsCfgPath().c_str(), std::ios::binary);
+    if (!f) return 0; // unknown, NOT a mismatch
+    unsigned int h = 2166136261u; // FNV-1a
+    unsigned int n = 0;
+    std::string line;
+    while (std::getline(f, line)) {
+        // Normalise: drop CR, trim both ends, skip blanks and comments. The
+        // load ORDER is the meaningful content, so significant lines are folded
+        // in sequence and whitespace-only differences do not register.
+        while (!line.empty() &&
+               (line[line.size() - 1] == '\r' || line[line.size() - 1] == '\n' ||
+                line[line.size() - 1] == ' '  || line[line.size() - 1] == '\t'))
+            line.erase(line.size() - 1);
+        size_t b = line.find_first_not_of(" \t");
+        if (b == std::string::npos) continue;
+        if (line[b] == '#') continue;
+        for (size_t i = b; i < line.size(); ++i) {
+            // Case-fold: Windows paths are case-insensitive and the two players'
+            // launchers can differ in casing for the same mod.
+            char c = line[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            h ^= (unsigned char)c;
+            h *= 16777619u;
+        }
+        h ^= (unsigned char)'\n';
+        h *= 16777619u;
+        ++n;
+    }
+    if (outCount) *outCount = n;
+    // 0 is the "unreadable" sentinel, so never return it for a real file.
+    return h ? h : 1u;
 }
 
 void logLine(const char* msg)    { writeLine("INFO",  msg); }

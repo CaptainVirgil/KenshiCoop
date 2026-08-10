@@ -1897,10 +1897,28 @@ bool applyWeather(const WeatherRead& in, int* outWhy) {
     }
     // An unresolvable stringID means the sender's season table is not ours.
     // Leave the sky alone rather than writing a half-state: stale beats wrong.
-    void* w = findWeatherBySidSeh(r, in.sid);
-    if (in.sid[0] && !w) {
-        if (outWhy) *outWhy = WEATHER_NO_SID;
-        return false;
+    // Fast path, and the case that actually matters: the sender's weather is the
+    // one we are ALREADY running. Then the weather pointer needs no change at
+    // all, and searching the season table for it is both pointless and - proven
+    // live on 2026-08-10 - broken. That session logged
+    //   sid-not-in-our-table '46961-Newwworld.mod' ours='46961-Newwworld.mod'
+    // with matched mods and the same season on both clients: the receiver could
+    // not find its OWN active weather in the table it searches, so every packet
+    // was dropped and strength/effect/time never synced even when both sides
+    // already agreed on which weather it was. Compare against what we are
+    // running before walking anything.
+    WeatherRead mine;
+    memset(&mine, 0, sizeof(mine));
+    const bool haveMine = readWeatherSeh(r, &mine);
+    void* w = 0;
+    if (haveMine && in.sid[0] && strcmp(mine.sid, in.sid) == 0) {
+        w = 0;  // same weather: leave WX_INST_WEATHER alone, sync the rest
+    } else {
+        w = findWeatherBySidSeh(r, in.sid);
+        if (in.sid[0] && !w) {
+            if (outWhy) *outWhy = WEATHER_NO_SID;
+            return false;
+        }
     }
     bool changed = false;
     if (!applyWeatherSeh(r, w, &in, &changed)) return false; // stays WEATHER_FAULT

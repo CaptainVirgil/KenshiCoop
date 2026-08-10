@@ -305,8 +305,8 @@ int main() {
     check(sizeof(EntityState) == 79,       "sizeof(EntityState) == 79");
     check(sizeof(EntityBatchHeader) == 14, "sizeof(EntityBatchHeader) == 14");
     check(sizeof(NpcCensusHeader) == 7,    "sizeof(NpcCensusHeader) == 7");
-    check(sizeof(HelloPacket) == 4,        "sizeof(HelloPacket) == 4");
-    check(sizeof(WelcomePacket) == 7,      "sizeof(WelcomePacket) == 7");
+    check(sizeof(HelloPacket) == 10,       "sizeof(HelloPacket) == 10");
+    check(sizeof(WelcomePacket) == 13,     "sizeof(WelcomePacket) == 13");
 
     InitializeCriticalSection(&g_pipeCs);
     check(enet_initialize() == 0, "enet_initialize");

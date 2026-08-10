@@ -630,6 +630,7 @@ void reloadPeerFromFile(Config& c);
 // sessions included), instead of having to reconstruct it from env + file.
 std::string describeConfig(const Config& c);
 
+
 } // namespace coop
 
 #endif // KENSHICOOP_CONFIG_H

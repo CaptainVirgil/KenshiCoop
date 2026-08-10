@@ -48,6 +48,50 @@ void netErr(const char* msg) {
     coop::logErrLine(buf);
 }
 
+// Protocol 57: compare the peer's mods.cfg fingerprint with ours.
+//
+// WARNS, never rejects. A version mismatch is a hard reject because the two
+// builds cannot parse each other's packets; a mods mismatch parses perfectly and
+// then describes a world the peer does not have. That is a gameplay decision,
+// not a protocol error - some load-order differences are harmless - so this
+// reports and lets the players choose.
+//
+// The reason it exists: on 2026-08-10 two players shared a SAVE while loading it
+// against different mod sets, and spent most of a session chasing furniture that
+// appeared on one screen only, NPCs that existed for one of them, and a weather
+// id the peer could not resolve. Every one of those reads as a replication bug.
+// Nobody thought to diff the two mod lists for hours. One line at handshake.
+static void checkModsFingerprint(const char* peerLabel, u32 peerHash, u16 peerCount) {
+    unsigned int mineCount = 0;
+    const unsigned int mineHash = coop::modsFingerprint(&mineCount);
+    char b[256];
+    if (mineHash == 0 || peerHash == 0) {
+        // Unreadable on one side is UNKNOWN, and unknown is not a mismatch -
+        // the same rule the census follows about absence.
+        _snprintf(b, sizeof(b) - 1,
+                  "[mods] fingerprint unavailable (ours=%s %s=%s); not compared",
+                  mineHash ? "ok" : "unreadable", peerLabel,
+                  peerHash ? "ok" : "unreadable");
+        b[sizeof(b) - 1] = '\0'; netLog(b);
+        return;
+    }
+    if (mineHash == (unsigned int)peerHash && mineCount == (unsigned int)peerCount) {
+        _snprintf(b, sizeof(b) - 1, "[mods] match: %u mods, fingerprint %08x",
+                  mineCount, mineHash);
+        b[sizeof(b) - 1] = '\0'; netLog(b);
+        return;
+    }
+    _snprintf(b, sizeof(b) - 1,
+              "[mods] MISMATCH: ours %u mods (%08x), %s has %u (%08x). You are "
+              "sharing a save across DIFFERENT mod sets - missing furniture, "
+              "one-sided NPCs and unresolvable weather all follow from this, and "
+              "none of them are network faults. Compare data/mods.cfg (order "
+              "matters) before reporting a sync bug.",
+              mineCount, mineHash, peerLabel, (unsigned)peerCount,
+              (unsigned)peerHash);
+    b[sizeof(b) - 1] = '\0'; netErr(b);
+}
+
 // Monotonic ms clock for the batch send stamp (v35). QPC, not GetTickCount:
 // the receiver reconstructs snapshot SPACING from consecutive stamps, and
 // GetTickCount's ~15 ms granularity would re-introduce the very quantization
@@ -485,6 +529,10 @@ void NetLink::threadLoop() {
                         // Introduce ourselves with our protocol version.
                         HelloPacket h;
                         h.type = (u8)PKT_HELLO; h.version = PROTOCOL_VERSION; h.nameLen = 0;
+                        h.modsCount = 0;
+                        { unsigned int mc = 0;
+                          h.modsHash = coop::modsFingerprint(&mc);
+                          h.modsCount = (u16)(mc > 65535u ? 65535u : mc); }
                         ENetPacket* out = enet_packet_create(&h, sizeof(h), ENET_PACKET_FLAG_RELIABLE);
                         enet_peer_send(ev.peer, CH_RELIABLE, out);
                         netLog("connected to host; sent HELLO");
@@ -544,8 +592,13 @@ void NetLink::threadLoop() {
                                     break;
                                 }
                                 ev.peer->data = (void*)(size_t)id;
+                                checkModsFingerprint("peer", h.modsHash, h.modsCount);
                                 WelcomePacket w;
                                 w.type = (u8)PKT_WELCOME; w.version = PROTOCOL_VERSION; w.playerId = id;
+                                w.modsCount = 0;
+                                { unsigned int mc = 0;
+                                  w.modsHash = coop::modsFingerprint(&mc);
+                                  w.modsCount = (u16)(mc > 65535u ? 65535u : mc); }
                                 ENetPacket* out =
                                     enet_packet_create(&w, sizeof(w), ENET_PACKET_FLAG_RELIABLE);
                                 enet_peer_send(ev.peer, CH_RELIABLE, out);
@@ -561,6 +614,8 @@ void NetLink::threadLoop() {
                     } else if (!isHost_ && type == PKT_WELCOME) {
                         WelcomePacket w;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &w)) {
+                            if (w.version == PROTOCOL_VERSION)
+                                checkModsFingerprint("host", w.modsHash, w.modsCount);
                             if (w.version != PROTOCOL_VERSION) {
                                 char b[128];
                                 _snprintf(b, sizeof(b) - 1,
