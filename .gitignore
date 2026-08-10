@@ -72,3 +72,13 @@ nul
 
 # Local-only maintainer notes (release process, etc.) - not for the public repo
 *.local.md
+
+# Kit staging produced by scripts/linux/make_kit.sh (the zip is the artifact,
+# and it is attached to a GitHub release rather than committed).
+dist/kit/
+dist/KenshiCoop-kit-*.zip
+# Per-release staging + payloads. make_release.sh regenerates these from the
+# build every time, and they are already published as GitHub release assets -
+# tracking them put a 1 MB DLL and a 578 KB tarball into git per release.
+dist/release-*/
+dist/*.tar.gz

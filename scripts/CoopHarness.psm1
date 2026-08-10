@@ -84,6 +84,44 @@ $script:CoopDiagEnvKeys = @(
     # a fail-open proof rather than a co-test. Note this one is not merely cleared
     # but pinned to "0" below: the DLL default is ON, so clearing would OPT IN.
     'KENSHICOOP_CELL_AUTH'
+    # --- per-channel cadences + self-heal debounces (SyncTuning via Config.cpp) ---
+    # Every one of these also has a coop_config.json key of the same name in
+    # lowerCamel, and env wins over the file. Two groups matter more than the rest:
+    #
+    #   MID_BAND_MAX / MID_SLICE_MAX - how many far NPCs get motion between census
+    #   beats. At the old 48/16 a shared-cell fight left most bodies running on local
+    #   AI until a census beat snapped them hundreds of units.
+    #
+    #   *_HEAL_DEBOUNCE_MS - how long the stream must keep asserting a condition
+    #   before a self-heal reproduces it. Set either to 0 and the heal fires on the
+    #   delayed sample again, which is how a drop reads as a pickup on the peer.
+    'KENSHICOOP_MONEY_MIN_SEND_MS'
+    'KENSHICOOP_MONEY_RESEND_MS'
+    'KENSHICOOP_FACTION_SAMPLE_MS'
+    'KENSHICOOP_FACTION_RESEND_MS'
+    'KENSHICOOP_DOOR_SAMPLE_MS'
+    'KENSHICOOP_DOOR_RESEND_MS'
+    'KENSHICOOP_DOOR_ECHO_HOLD_MS'
+    'KENSHICOOP_PROD_SAMPLE_MS'
+    'KENSHICOOP_PROD_RESEND_MS'
+    'KENSHICOOP_RESEARCH_SAMPLE_MS'
+    'KENSHICOOP_RESEARCH_RESEND_MS'
+    'KENSHICOOP_DEED_SAMPLE_MS'
+    'KENSHICOOP_DEED_RESEND_MS'
+    'KENSHICOOP_BUILD_SAMPLE_MS'
+    'KENSHICOOP_BUILD_RESEND_MS'
+    'KENSHICOOP_BDOOR_SAMPLE_MS'
+    'KENSHICOOP_BDOOR_RESEND_MS'
+    'KENSHICOOP_CARRY_HEAL_DEBOUNCE_MS'
+    'KENSHICOOP_FURN_HEAL_DEBOUNCE_MS'
+    'KENSHICOOP_KO_RELEASE_DEBOUNCE_MS'
+    'KENSHICOOP_INV_RESEND_MS'
+    'KENSHICOOP_INV_RESEND_BIG_MS'
+    'KENSHICOOP_INV_RESEND_BIG_N'
+    'KENSHICOOP_MID_BAND_MAX'
+    'KENSHICOOP_MID_SLICE_MAX'
+    # --- diagnostics (default OFF; the tracer is a cost paid on every exception) --
+    'KENSHICOOP_CRASH_TRACER'
     # --- combat speed cap (Config.cpp) ------------------------------------------
     # The speed arbiter pins the sim to 1x while either player squad fights, which
     # is right for players and wrong for a scenario whose job is to cover 100 k u:

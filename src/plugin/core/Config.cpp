@@ -98,6 +98,27 @@ std::string fileOr(const std::map<std::string, std::string>& f, const char* key,
     return std::string(def);
 }
 
+// One unsigned tunable, resolved env > coop_config.json > the value already in the
+// struct (i.e. the SyncTuning constructor default). Non-numeric or negative input
+// keeps the default rather than silently becoming 0, because a 0 cadence here means
+// "send every tick" and a 0 debounce means "the bug is back".
+void tuneU(unsigned long& slot, const std::map<std::string, std::string>& f,
+           const char* envKey, const char* jsonKey) {
+    char def[32];
+    _snprintf(def, sizeof(def) - 1, "%lu", slot);
+    def[sizeof(def) - 1] = '\0';
+    std::string v = envOr(envKey, fileOr(f, jsonKey, def).c_str());
+    long parsed = std::atol(v.c_str());
+    if (parsed > 0 || (parsed == 0 && v == "0")) slot = (unsigned long)(parsed < 0 ? 0 : parsed);
+}
+
+void tuneUInt(unsigned int& slot, const std::map<std::string, std::string>& f,
+              const char* envKey, const char* jsonKey) {
+    unsigned long wide = slot;
+    tuneU(wide, f, envKey, jsonKey);
+    slot = (unsigned int)wide;
+}
+
 } // namespace
 
 void loadConfig(Config& c) {
@@ -129,6 +150,14 @@ void loadConfig(Config& c) {
                   (envOr("KENSHICOOP_PROBE_AISUSPEND", "") == "1");
     c.noDetach  = envOr("KENSHICOOP_NO_DETACH", "") == "1";
     c.damageGuard = envOr("KENSHICOOP_DAMAGE_GUARD", "1") != "0";
+    c.splitAuthority = envOr("KENSHICOOP_SPLIT_AUTHORITY",
+                             fileOr(f, "splitAuthority", "0").c_str()) != "0";
+    c.damageFloaters = envOr("KENSHICOOP_DAMAGE_FLOATERS",
+                             fileOr(f, "damageFloaters", "1").c_str()) != "0";
+    c.weatherSync    = envOr("KENSHICOOP_WEATHER_SYNC",
+                             fileOr(f, "weatherSync", "1").c_str()) != "0";
+    c.dialogueSync   = envOr("KENSHICOOP_DIALOGUE_SYNC",
+                             fileOr(f, "dialogueSync", "1").c_str()) != "0";
     // Divergence-gated authority promoted to DEFAULT ON (step-4 A/B, 2026-07-05:
     // trusted-set engaged in 4/4 runs - grants 5-8, trusted ~5 of 12 driven - with
     // npc_track/pose gates at parity; the single red run was a host crash that
@@ -207,6 +236,39 @@ void loadConfig(Config& c) {
     // edges + self-healing carried state for player-squad members. Without
     // it the peer's down-enforcement drags/teleports a carried KO'd body
     // along the ground behind its carrier. "0" is the A/B escape hatch.
+    c.crashTracer = envOr("KENSHICOOP_CRASH_TRACER", "0") == "1";
+
+    // Per-channel cadences and self-heal debounces. c.tuning starts at the
+    // SyncTuning defaults, so each call below only replaces what was actually
+    // supplied. Env name and JSON key are kept parallel on purpose.
+    tuneU(c.tuning.moneyMinSendMs,    f, "KENSHICOOP_MONEY_MIN_SEND_MS",   "moneyMinSendMs");
+    tuneU(c.tuning.moneyResendMs,     f, "KENSHICOOP_MONEY_RESEND_MS",     "moneyResendMs");
+    tuneU(c.tuning.factionSampleMs,   f, "KENSHICOOP_FACTION_SAMPLE_MS",   "factionSampleMs");
+    tuneU(c.tuning.factionResendMs,   f, "KENSHICOOP_FACTION_RESEND_MS",   "factionResendMs");
+    tuneU(c.tuning.doorSampleMs,      f, "KENSHICOOP_DOOR_SAMPLE_MS",      "doorSampleMs");
+    tuneU(c.tuning.doorResendMs,      f, "KENSHICOOP_DOOR_RESEND_MS",      "doorResendMs");
+    tuneU(c.tuning.doorEchoHoldMs,    f, "KENSHICOOP_DOOR_ECHO_HOLD_MS",   "doorEchoHoldMs");
+    tuneU(c.tuning.prodSampleMs,      f, "KENSHICOOP_PROD_SAMPLE_MS",      "prodSampleMs");
+    tuneU(c.tuning.prodResendMs,      f, "KENSHICOOP_PROD_RESEND_MS",      "prodResendMs");
+    tuneU(c.tuning.researchSampleMs,  f, "KENSHICOOP_RESEARCH_SAMPLE_MS",  "researchSampleMs");
+    tuneU(c.tuning.researchResendMs,  f, "KENSHICOOP_RESEARCH_RESEND_MS",  "researchResendMs");
+    tuneU(c.tuning.deedSampleMs,      f, "KENSHICOOP_DEED_SAMPLE_MS",      "deedSampleMs");
+    tuneU(c.tuning.deedResendMs,      f, "KENSHICOOP_DEED_RESEND_MS",      "deedResendMs");
+    tuneU(c.tuning.buildSampleMs,     f, "KENSHICOOP_BUILD_SAMPLE_MS",     "buildSampleMs");
+    tuneU(c.tuning.buildResendMs,     f, "KENSHICOOP_BUILD_RESEND_MS",     "buildResendMs");
+    tuneU(c.tuning.bdoorSampleMs,     f, "KENSHICOOP_BDOOR_SAMPLE_MS",     "bdoorSampleMs");
+    tuneU(c.tuning.bdoorResendMs,     f, "KENSHICOOP_BDOOR_RESEND_MS",     "bdoorResendMs");
+    tuneU(c.tuning.carryHealDebounceMs, f, "KENSHICOOP_CARRY_HEAL_DEBOUNCE_MS",
+                                          "carryHealDebounceMs");
+    tuneU(c.tuning.furnHealDebounceMs,  f, "KENSHICOOP_FURN_HEAL_DEBOUNCE_MS",
+                                          "furnHealDebounceMs");
+    tuneU(c.tuning.koReleaseDebounceMs, f, "KENSHICOOP_KO_RELEASE_DEBOUNCE_MS",
+                                          "koReleaseDebounceMs");
+    tuneU(c.tuning.invResendMs,       f, "KENSHICOOP_INV_RESEND_MS",       "invResendMs");
+    tuneU(c.tuning.invResendBigMs,    f, "KENSHICOOP_INV_RESEND_BIG_MS",   "invResendBigMs");
+    tuneUInt(c.tuning.invResendBigN,  f, "KENSHICOOP_INV_RESEND_BIG_N",    "invResendBigN");
+    tuneUInt(c.tuning.midBandMax,     f, "KENSHICOOP_MID_BAND_MAX",        "midBandMax");
+    tuneUInt(c.tuning.midSliceMax,    f, "KENSHICOOP_MID_SLICE_MAX",       "midSliceMax");
     c.carrySync = envOr("KENSHICOOP_CARRY_SYNC", "1") != "0";
 
     // Furniture occupancy sync (protocol 19, DEFAULT ON): reliable enter/exit
@@ -389,6 +451,7 @@ std::string describeConfig(const Config& c) {
         { "med",     c.medSync },      { "speed",   c.speedSync },
         { "speedCombatCap", c.speedCombatCap },
         { "stats",   c.statsSync },    { "carry",   c.carrySync },
+        { "crashTracer", c.crashTracer },
         { "furn",    c.furnSync },     { "chain",   c.chainSync },
         { "stealth", c.stealthSync },  { "prone",   c.proneSync },
         { "money",   c.moneySync },
@@ -403,6 +466,10 @@ std::string describeConfig(const Config& c) {
         { "latejoin",c.latejoinSync }, { "aiSuspend", c.aiSuspend },
         { "gateAuth",c.gateAuthority },{ "camInterest", c.camInterest },
         { "censusFreezeAi", c.censusFreezeAi },
+        { "splitAuth", c.splitAuthority },
+        { "dmgFloat", c.damageFloaters },
+        { "weather",  c.weatherSync },
+        { "dialogue", c.dialogueSync },
     };
     s += " on=[";
     bool first = true;
@@ -430,6 +497,18 @@ std::string describeConfig(const Config& c) {
               c.attentionRadius, c.cellAuth ? 1 : 0);
     b[sizeof(b) - 1] = '\0';
     s += b;
+    // The tunables that change how much of the world actually reaches the peer, and
+    // the debounces that decide whether a self-heal can undo a reliable event. Both
+    // classes have produced player-visible bugs at their old values, so a session log
+    // has to say what they were set to.
+    char t[192];
+    _snprintf(t, sizeof(t) - 1,
+              " midBand=%u/%u healDeb=%lu/%lu doorHold=%lu koRel=%lu",
+              c.tuning.midBandMax, c.tuning.midSliceMax,
+              c.tuning.carryHealDebounceMs, c.tuning.furnHealDebounceMs,
+              c.tuning.doorEchoHoldMs, c.tuning.koReleaseDebounceMs);
+    t[sizeof(t) - 1] = '\0';
+    s += t;
     return s;
 }
 

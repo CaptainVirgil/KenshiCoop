@@ -36,6 +36,19 @@ void Replicator::logHardSnap(Character* c, const EntityState& out, const char* k
     skipped = 0;
 }
 
+// A self-heal may fire only when BOTH are true: the debounce window has elapsed,
+// and the stream has produced a genuinely NEWER sample that still asserts the
+// condition. Wall clock alone is not enough - sample() re-serves the same snapshot
+// for seconds after a peer goes quiet, so a purely time-based debounce expires
+// against the very sample it was meant to wait out, which is the bug it exists to
+// prevent. Requiring the ring to advance ties the wait to the peer still talking.
+static bool healDue(unsigned long now, unsigned long seeTick, unsigned long seeSample,
+                    unsigned long debounceMs, const EntityInterp& in) {
+    if (seeTick == 0) return false;
+    if ((now - seeTick) < debounceMs) return false;
+    return in.newestMs() > seeSample;
+}
+
 void Replicator::applyTargets(GameWorld* gw) {
     (void)gw;
     unsigned long now = nowMs();
@@ -410,8 +423,13 @@ void Replicator::applyTargets(GameWorld* gw) {
         // (slaveOwner) while the driven copy is locally chained, and re-apply if it
         // has lost the chain. Scoped to the masked case (chained AND in a cage/bed);
         // a pole-only chained body is handled by the kind=3 self-heal below.
-        if (chainSync_ && (out.bodyState & BODY_CHAINED) &&
-            (out.bodyState & (BODY_IN_CAGE | BODY_IN_BED))) {
+        if (chainSync_ && (out.bodyState & (BODY_IN_CAGE | BODY_IN_BED))) {
+            // BOTH directions, because the masked case emits no event either way:
+            // the kind priority reports the cage, so neither locking nor unlocking a
+            // caged prisoner's shackle produces an EVT. The continuous BODY_CHAINED
+            // bit is the only signal, which makes it the actuator - and an actuator
+            // has to be able to say "off".
+            const bool streamChained = (out.bodyState & BODY_CHAINED) != 0;
             engine::ShackleRead lsr;
             bool haveSr = engine::readShackle(c, &lsr) && lsr.valid;
             if (haveSr && lsr.chained &&
@@ -419,7 +437,34 @@ void Replicator::applyTargets(GameWorld* gw) {
                 for (int fi = 0; fi < 5; ++fi) d.chainOwner[fi] = lsr.owner[fi];
                 d.haveChainOwner = true;
             }
-            if (haveSr && !lsr.chained &&
+            if (!streamChained) { d.chainSeeTick = 0; d.chainSeeSample = 0; }
+            if (streamChained)  d.chainNoSeeTick = 0;
+            // RELEASE: the stream stopped reporting the shackle while our copy still
+            // wears it. Debounced like every other destructive direction - a dropped
+            // batch must not free a prisoner.
+            if (!streamChained && haveSr && lsr.chained) {
+                if (d.chainNoSeeTick == 0) {
+                    d.chainNoSeeTick = now;
+                } else if ((now - d.chainNoSeeTick) > FURN_EXIT_MS) {
+                    d.chainNoSeeTick = 0;
+                    bool ok = engine::applyFurniture(gw, c,
+                                                     d.haveChainOwner ? d.chainOwner : 0,
+                                                     3, false);
+                    char b[160]; _snprintf(b, sizeof(b) - 1,
+                        "[furn] SHACKLE RELEASE occ=%u,%u ok=%d",
+                        out.hIndex, out.hSerial, ok ? 1 : 0);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
+            }
+            // RELOCK: debounced against the render delay, or a relock races ahead of
+            // the peer's own unshackle and wins.
+            if (streamChained && haveSr && !lsr.chained && d.chainSeeTick == 0) {
+                d.chainSeeTick   = now;
+                d.chainSeeSample = d.interp.newestMs();
+            }
+            if (streamChained && haveSr && !lsr.chained &&
+                healDue(now, d.chainSeeTick, d.chainSeeSample,
+                        tuning_.furnHealDebounceMs, d.interp) &&
                 (now - d.chainHealTick) >= FURN_HEAL_MS) {
                 d.chainHealTick = now;
                 // Remembered owner if we have one, else the body's own slaveOwner
@@ -493,7 +538,17 @@ void Replicator::applyTargets(GameWorld* gw) {
             // host's work pose at rest). Cage/bed (kinds 1-2) remain true
             // transform anchors below.
             if (streamKind == 3) {
+                // Debounced like every other heal. This one matters MORE than the
+                // caged case, not less: a pole-chained body does emit a reliable
+                // EVT_EXIT_FURNITURE when it is released, so an undebounced re-chain
+                // here re-shackles a prisoner the peer just freed, off a stale batch.
+                if (haveFr && localKind != 3 && d.furnSeeTick == 0) {
+                    d.furnSeeTick   = now;
+                    d.furnSeeSample = d.interp.newestMs();
+                }
                 if (haveFr && localKind != 3 &&
+                    healDue(now, d.furnSeeTick, d.furnSeeSample,
+                            tuning_.furnHealDebounceMs, d.interp) &&
                     (now - d.furnHealTick) >= FURN_HEAL_MS) {
                     d.furnHealTick = now;
                     // A local bed/cage the stream does NOT vouch for is a
@@ -544,9 +599,35 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // rebuilt every drive tick, so this self-clears the moment the host
                 // stops streaming the furniture bit (body released) and its AI resumes.
                 if (aiSuspend_) engine::addAiSuspend(c);
+                // Debounce against the render delay, exactly as the carry heal does.
+                // `out.bodyState` is the interpolated sample and lags real time by a
+                // send interval, so it still reports the cage a reliable
+                // EVT_EXIT_FURNITURE has already ended here - and healing on sight
+                // re-cages the prisoner the peer just freed, which reads on this
+                // client as the peer IMPRISONING someone. FURN_HEAL_MS is only a gap
+                // between attempts and cannot help when the first attempt is already
+                // wrong. The heal repairs a LOST event, so waiting costs nothing.
+                if (haveFr && localKind == streamKind) { d.furnSeeTick = 0; d.furnSeeSample = 0; }
+                if (haveFr && localKind != streamKind && d.furnSeeTick == 0) {
+                    d.furnSeeTick   = now;
+                    d.furnSeeSample = d.interp.newestMs();
+                }
                 if (haveFr && localKind != streamKind &&
+                    healDue(now, d.furnSeeTick, d.furnSeeSample,
+                            tuning_.furnHealDebounceMs, d.interp) &&
                     (now - d.furnHealTick) >= FURN_HEAL_MS) {
                     d.furnHealTick = now;
+                    // Search for the fixture around the NEWEST received position, not
+                    // the render-delayed one: a body that left its cage and started
+                    // walking would otherwise be re-seated into whatever fixture sits
+                    // within FURN_MATCH_DIST of where it used to be.
+                    float fsx = out.x, fsy = out.y, fsz = out.z;
+                    {
+                        EntityState newestFurn;
+                        if (d.interp.latest(&newestFurn, 0, 0, 0)) {
+                            fsx = newestFurn.x; fsy = newestFurn.y; fsz = newestFurn.z;
+                        }
+                    }
                     // Chain (kind 3) has no searchable building and needs the
                     // OWNER: re-apply setChainedMode with the remembered owner,
                     // or - for a prisoner that spawned into interest already
@@ -562,7 +643,7 @@ void Replicator::applyTargets(GameWorld* gw) {
                            ? engine::applyFurniture(gw, c, d.chainOwner, 3, true)
                            : engine::applyFurniture(gw, c, 0, 3, true))
                         : engine::enterFurnitureNearPos(
-                            gw, c, streamKind, out.x, out.y, out.z, FURN_MATCH_DIST);
+                            gw, c, streamKind, fsx, fsy, fsz, FURN_MATCH_DIST);
                     // Drop the in-progress escape/attack action so the body doesn't
                     // finish breaking out before the suspend takes hold. endAction is
                     // SEH-guarded (same call the rest-park path uses).
@@ -592,7 +673,9 @@ void Replicator::applyTargets(GameWorld* gw) {
                 d.parked = false; d.haveDest = false;
                 if (haveActual) { d.haveActual = true; d.lx = ax; d.ly = ay; d.lz = az; }
                 continue;
-            } else if (localKind == 1 && hostMoving) {
+            } else if (localKind == 1 && hostMoving &&
+                       (d.furnEnterHoldMs == 0 ||
+                        (long)(now - d.furnEnterHoldMs) >= 0)) {
                 // Bed fast-exit (conscious sleep wake): a bed pose has NO
                 // reliable EXIT edge (publishOwned suppresses furniture edges
                 // while taskIsBedPose), so a host that wakes and WALKS would
@@ -606,6 +689,14 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // drop the in-progress sleep action, release the held pose, and
                 // FALL THROUGH (no continue) so the unified drive follows the
                 // host this same tick.
+                //
+                // The one thing it must NOT outrun is a reliable ENTER that just
+                // landed: `hostMoving` comes off the delayed sample, so right after
+                // the peer lays a KO'd body into a bed the stale batch still shows
+                // its carrier walking, and this would dump the body back on the
+                // floor. furnEnterHoldMs keeps the fast path for the case it exists
+                // for and stands down for the window where the event is newer than
+                // the stream.
                 bool ok = engine::applyFurniture(gw, c, lfr.furn, 1, false);
                 engine::endAction(c);
                 d.furnNoSeeTick = 0;
@@ -670,6 +761,8 @@ void Replicator::applyTargets(GameWorld* gw) {
                 continue;
             } else {
                 d.furnNoSeeTick = 0;
+                // Stream asserts no occupancy: nothing to heal toward.
+                d.furnSeeTick   = 0; d.furnSeeSample = 0;
             }
         }
         // ---- Crawl carve-out (protocol 53) -------------------------------------
@@ -686,6 +779,48 @@ void Replicator::applyTargets(GameWorld* gw) {
         // still wins absolutely - a corpse does not crawl.
         bool crawling = proneSync_ && coop::bodyIsCrawling(out.bodyState) &&
                         !d.deathLatched;
+        // ---- KO-latch release on the owner's continuous word --------------------
+        // The comment above promises "when the host reports the body upright again,
+        // release the KO once". Nothing did that: EVT_REVIVE was the ONLY thing that
+        // could clear koLatched, so a revive that was never sent - or that landed
+        // while this client was mid-stall and not receiving - pinned the body down
+        // for the rest of the session. The crawl carve-out directly above is the
+        // narrow version of this fix, added when one shape of it was reported; this
+        // is the general one, and it subsumes nothing (a crawler is still down by
+        // bodyIsDown, so it still needs its own carve-out).
+        //
+        // Debounced exactly like the carry and furniture heals, for the same reason:
+        // out.bodyState comes from the INTERPOLATED sample, which lags real time, so
+        // an upright reading can predate an EVT_KNOCKOUT that has already applied.
+        // Releasing on sight would stand up a body the owner just knocked down -
+        // the inverted-action class of bug. healDue additionally requires the ring
+        // to have ADVANCED, so a peer that went quiet cannot expire the wait against
+        // the very sample the wait was meant to outlast.
+        //
+        // deathLatched is untouched. A corpse does not stand up, and that latch is
+        // the only thing holding a body dead across a hand re-key.
+        if (d.koLatched && !d.deathLatched) {
+            if (coop::bodyIsDown(out.bodyState)) {
+                d.koSeeTick = 0; d.koSeeSample = 0;   // owner still says down
+            } else {
+                if (d.koSeeTick == 0) {
+                    d.koSeeTick   = now;
+                    d.koSeeSample = d.interp.newestMs();
+                }
+                if (healDue(now, d.koSeeTick, d.koSeeSample,
+                            tuning_.koReleaseDebounceMs, d.interp)) {
+                    d.koLatched = false;
+                    d.koSeeTick = 0; d.koSeeSample = 0;
+                    ++koReleases_;
+                    char b[144]; _snprintf(b, sizeof(b) - 1,
+                        "[ko] RELEASE hand=%u,%u (owner stream upright, no EVT_REVIVE)",
+                        out.hIndex, out.hSerial);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
+            }
+        } else if (d.koSeeTick != 0) {
+            d.koSeeTick = 0; d.koSeeSample = 0;
+        }
         // A latched EVT_DEATH/EVT_KNOCKOUT forces the down treatment every tick,
         // which is what keeps a corpse pinned. That latch lives on this Driven
         // record, so it MUST survive a hand re-key - rekeyPeerBody carries
@@ -928,7 +1063,23 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // spikes converge - they never warp.
                 bool correctFight = localFighting && !wrongLocalTgt;
                 float softBand  = hostWaiting ? COMBAT_WAIT_DIST : combatSoftDist_;
-                float leaveBand = correctFight ? combatSnapDist_ : softBand;
+                // hostWaiting is tested FIRST, and the order is the whole fix.
+                // This used to read `correctFight ? combatSnapDist_ : softBand`,
+                // which took the correct-fight branch before the waiting band could
+                // ever apply - so the tighter COMBAT_WAIT_DIST was unreachable in
+                // exactly the case it was written for. The owner reporting a body
+                // as slot-QUEUED is a statement about that body; this client's copy
+                // having independently picked a fight is a local divergence, and it
+                // was being allowed to claim a fighting copy's 20 u of footwork.
+                // A body that should be standing still wandered most of a screen
+                // from where its owner had it, and the constant's own comment says
+                // the opposite ("a queued body should not wander").
+                //
+                // trueLeave already honoured hostWaiting, so the warp was never the
+                // problem - only the slide band was.
+                float leaveBand = hostWaiting  ? COMBAT_WAIT_DIST
+                                : correctFight ? combatSnapDist_
+                                               : softBand;
                 if (drift > combatSnapDist_) {
                     if (d.combatOverTick == 0) d.combatOverTick = now;
                 } else {
@@ -1039,7 +1190,19 @@ void Replicator::applyTargets(GameWorld* gw) {
                 bool carryingRight = haveCr && lcr.carrying &&
                                      lcr.carried[3] == out.sIndex &&
                                      lcr.carried[4] == out.sSerial;
+                if (carryingRight) { d.carrySeeTick = 0; d.carrySeeSample = 0; }
+                // Debounce the heal against the render delay. `out` is the
+                // interpolated sample and lags real time, so a carry it still
+                // reports may already have ended here via the reliable
+                // EVT_DROP_BODY - healing on sight re-lifts a body the peer just
+                // put down. Require the stream to keep asserting the carry.
+                if (haveCr && !carryingRight && d.carrySeeTick == 0) {
+                    d.carrySeeTick   = now;
+                    d.carrySeeSample = d.interp.newestMs();
+                }
                 if (haveCr && !carryingRight &&
+                    healDue(now, d.carrySeeTick, d.carrySeeSample,
+                            tuning_.carryHealDebounceMs, d.interp) &&
                     (now - d.carryHealTick) >= CARRY_HEAL_MS) {
                     d.carryHealTick = now;
                     unsigned int ch[5] = { out.sType, out.sContainer,
@@ -1081,6 +1244,8 @@ void Replicator::applyTargets(GameWorld* gw) {
                     continue;
                 }
             } else {
+                // Stream stopped asserting a carry: nothing left to heal toward.
+                d.carrySeeTick = 0; d.carrySeeSample = 0;
                 engine::CarryRead lcr;
                 if (engine::readCarry(c, &lcr) && lcr.carrying) {
                     if (d.carryNoSeeTick == 0) {
@@ -1337,6 +1502,26 @@ void Replicator::applyTargets(GameWorld* gw) {
         // the release also skips the AI suspend below, so the local AI can
         // idle the body naturally between host movements.
             if (!isSquad && midTier && !npcMoving) {
+                // Re-assert the owner's REST POSE once per fresh keepalive
+                // before letting go. The release hands the body to local AI,
+                // and local AI does not idle it - it resumes the NPC's own
+                // schedule, so the copy walks away from where its owner has it
+                // standing or seated, and nothing corrects that until the
+                // 120 u park teleports it (standing, seat broken). Until the
+                // publisher's stationary keepalive existed there was nothing
+                // to assert: a still mid body was never streamed, so its pose
+                // was not on the wire at all. Gated on the sample TIME, so this
+                // costs one applyRest per body per keepalive (~0.67 Hz), not
+                // one per tick - the per-tick drive cost is what starved the
+                // engine in run 112835 and this deliberately does not re-enter
+                // it. Stream asserts, exactly as the doctrine wants.
+                unsigned long newestMs = d.interp.newestMs();
+                if (newestMs != 0 && newestMs != d.stillPoseMs) {
+                    d.stillPoseMs = newestMs;
+                    if (d.walkBranchPrev || d.restEnterMs == 0) d.restEnterMs = now;
+                    applyRest(c, d, out, haveActual, ax, ay, az, now, isSquad);
+                    d.walkBranchPrev = false;
+                }
                 drivenChars_.erase(c);
                 drivenSeen_.erase(c); // wide pass may census-park it again
                 d.parked = false; d.haveDest = false;
@@ -1566,13 +1751,40 @@ void Replicator::applyTargets(GameWorld* gw) {
                 float lead = vlen * leadSec;
                 tx += vx / vlen * lead; ty += vy / vlen * lead; tz += vz / vlen * lead;
             }
+            // The commanded speed is built against the source's MEASURED
+            // translation, not its speed SETTING. out.cSpeed is
+            // CharMovement::currentSpeed as captured on the owner, and the
+            // engine moves a body faster than that setting (slope and other
+            // modifiers land outside currentSpeed): the first live two-client
+            // session (2026-08-09) measured srcVel=64.7 against cSpeed=43.4 on
+            // a running player character - a 1.5x deficit. A copy commanded at
+            // 43 never catches a source doing 65, so the gap ratcheted to the
+            // ~78 u snap gate every ~4 s and teleported. No lead distance can
+            // fix that; only a speed that beats the source can.
+            float srcSpeed = (vlen > out.cSpeed) ? vlen : out.cSpeed;
+            float spd = srcSpeed + gapNewest * catchupK_;
+            float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+            // 1.5x, not 2.5x. A commanded speed the body cannot actually
+            // achieve does not make it hurry - it makes it stall against its
+            // own clamp, and a stalled body covers no ground at all. Measured
+            // live at 2.5x: a driven world NPC failed to translate on 1127 of
+            // 1519 active frames (74%), which renders as a walk cycle playing
+            // with the body barely moving, then a lurch when the snap collects
+            // it. 1.5x still closes any bounded gap in bounded time and stays
+            // inside what the same character model can deliver.
+            float cap = base * 1.5f;
+            if (spd > cap) spd = cap;
+            // Re-issue distance scales with speed. A fixed 1.0 u against a lead
+            // point that advances ~1.1 u per frame at 65 u/s re-orders EVERY
+            // frame, restarting the engine's path plan every frame - exactly the
+            // stutter the block comment above warns about, and it costs the copy
+            // part of even the speed it does have. ~150 ms of travel keeps the
+            // destination fresh without the restart.
+            float reissueDist = REISSUE_DIST;
+            if (vlen * 0.15f > reissueDist) reissueDist = vlen * 0.15f;
             float moved = d.haveDest ? dist3(tx, ty, tz, d.dx, d.dy, d.dz)
-                                     : (REISSUE_DIST + 1.0f);
-            if (moved > REISSUE_DIST) {
-                float spd = out.cSpeed + gapNewest * catchupK_;
-                float base = (out.cSpeed > 1.0f) ? out.cSpeed : 12.0f;
-                float cap = base * 2.5f;
-                if (spd > cap) spd = cap;
+                                     : (reissueDist + 1.0f);
+            if (moved > reissueDist) {
                 engine::walkTo(c, tx, ty, tz, spd);
                 if (isSquad) ++walkReissueSquad_;
                 else         ++walkReissueNpc_;
@@ -1590,9 +1802,31 @@ void Replicator::applyTargets(GameWorld* gw) {
             // setDesiredSpeed on the CharMovement path, so they keep the
             // no-mirror behavior (the engine picks their clip from the locomotion
             // it actually performs); mirroring an NPC here would fight that.
-            if (isSquad)
-                engine::applyMotion(c, true, out.cSpeed,
+            //
+            // Mirror a boosted speed, NOT the raw out.cSpeed. This write lands
+            // on currentSpeed and desiredSpeed every frame, so passing the raw
+            // streamed setting here CLOBBERED the catch-up speed computed above
+            // the same frame it was set - the boost existed in the walkTo call
+            // and was erased before the copy ever moved on it. That is why
+            // catchupK looked inert for squad bodies while working for NPCs.
+            //
+            // But mirror it CAPPED WELL BELOW walkTo's 2.5x. currentSpeed is
+            // what the engine integrates the body along its path with, and
+            // handing it a figure the character cannot actually achieve makes
+            // it stall against its own clamp: measured live, mirroring the full
+            // boost (~184 u/s on a 73 u/s character) took the copy's
+            // zero-movement share of active frames from 1% to 32%, and that
+            // stutter IS the teleporting it was supposed to fix - the body
+            // stalls, falls behind, and the snap gate collects it. 1.25x is
+            // enough to close a gap over a few seconds while staying inside
+            // what the engine will deliver, and tighter than walkTo's own cap
+            // because this write lands on the integrator every single frame.
+            if (isSquad) {
+                float mirrorCap = srcSpeed * 1.25f;
+                float mirrorSpd = (spd > mirrorCap) ? mirrorCap : spd;
+                engine::applyMotion(c, true, mirrorSpd,
                                     out.cMotionX, out.cMotionY, out.cMotionZ);
+            }
         } else {
             // At rest, task-authoritative: reproduce the host's sit/idle pose
             // at the same fixture, else quiet + park. Bar patrons sit
@@ -1770,11 +2004,12 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         _snprintf(b, sizeof(b) - 1,
             "[interp] lerp=%lu extrap=%lu clamp=%lu seg=%lu single=%lu "
             "snapSq=%lu snapNpc=%lu reissueSq=%lu reissueNpc=%lu restFlip=%lu "
-            "delay=%lu jit=%.1f starve=%u snapMid=%lu restFlipMid=%lu",
+            "delay=%lu jit=%.1f starve=%u snapMid=%lu restFlipMid=%lu "
+            "haltDrv=%lu",
             interpLerp_, interpExtrap_, interpClampOld_, interpSegSnap_,
             interpSingle_, hardSnapSquad_, hardSnapNpc_,
             walkReissueSquad_, walkReissueNpc_, restFlipNpc_, maxDelay, maxJit,
-            starveHeldNow_, hardSnapMid_, restFlipMid_);
+            starveHeldNow_, hardSnapMid_, restFlipMid_, freezeSkipDriven_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
         // Worst zero-step contributor (Phase 2 smoothness diagnosis): name the
         // hand charging the most frozen-while-active frames to the oracle.
@@ -1822,9 +2057,15 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         unsigned int trusted = 0;
         for (std::map<Key, Driven>::iterator it = targets_.begin(); it != targets_.end(); ++it)
             if (it->second.trusted) ++trusted;
-        char b[112];
-        _snprintf(b, sizeof(b), "[trust] trusted=%u driven=%u grants=%lu revokes=%lu",
-                  trusted, (unsigned)targets_.size() - trusted, trustGrants_, trustRevokes_);
+        // koRel / koExp ride along here rather than getting their own line: both
+        // are per-session totals about the same map this line already reports the
+        // size of. koRel climbing means EVT_REVIVEs are going missing; koExp
+        // climbing means latched bodies are being abandoned by the owner's stream.
+        char b[176];
+        _snprintf(b, sizeof(b) - 1,
+                  "[trust] trusted=%u driven=%u grants=%lu revokes=%lu koRel=%lu koExp=%lu",
+                  trusted, (unsigned)targets_.size() - trusted, trustGrants_, trustRevokes_,
+                  koReleases_, koLatchExpired_);
         b[sizeof(b) - 1] = '\0';
         coop::logLine(b);
     }
@@ -1836,11 +2077,40 @@ void Replicator::ageOutStaleTargets(unsigned long now) {
     // (a dead body must stay dead even while unstreamed); everything else is
     // reconstructed from the stream if the entity ever returns.
     const unsigned long TARGET_STALE_MS = 30000;
+    // ...but "preserved" was implemented as "immortal", and that is a leak with a
+    // per-NPC cost. The KO/death edge loop in publishOwned runs over the whole
+    // captured set, streamed world NPCs included, so every NPC that was ever KO'd
+    // anywhere near a player kept a targets_ entry - and a per-tick iteration of
+    // it - for the rest of the session. A town brawl is dozens of them.
+    //
+    // A latch is a hold against a DROPPED BATCH: it exists so a body stays down
+    // when this tick's lossy sample momentarily reads upright. It was never meant
+    // to be memory that outlives the stream. Once the owner has not streamed the
+    // body AT ALL for LATCH_STALE_MS there is no sample to override, and no
+    // EVT_REVIVE can arrive either, because the event rides the same stream that
+    // stopped - so the entry is pinning a body down on evidence minutes old with
+    // no way left to learn otherwise.
+    //
+    // Nothing is lost on re-entry: every EntityState carries the down/dead bits,
+    // so a body that is still dead is driven down by the stream itself, and the
+    // spawn path re-latches from SpawnInfoPacket.dead (ReplicatorSpawn.cpp) for a
+    // minted proxy. The window where neither applies is the single tick between
+    // re-entry and the first sample - which is already the case for every
+    // unlatched body and has never been the reported problem.
+    //
+    // Ten minutes, not thirty seconds: this is the backstop for a stream that
+    // ended, not the ordinary release. The ordinary release is the owner reporting
+    // the body upright, which applyTargets now acts on (koReleases_).
+    const unsigned long LATCH_STALE_MS = 600000;
     for (std::map<Key, Driven>::iterator it = targets_.begin(); it != targets_.end(); ) {
         Driven& d = it->second;
         bool stale   = (d.lastSeenMs == 0) || (now - d.lastSeenMs > TARGET_STALE_MS);
         bool latched = d.deathLatched || d.koLatched;
-        if (stale && !latched) targets_.erase(it++);
+        bool gone    = (d.lastSeenMs != 0) && (now - d.lastSeenMs > LATCH_STALE_MS);
+        if (stale && (!latched || gone)) {
+            if (latched) ++koLatchExpired_;
+            targets_.erase(it++);
+        }
         else ++it;
     }
     // The authority hysteresis counters are pruned in enforceHostAuthority (by

@@ -237,7 +237,8 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             unsigned long cNow = nowMs();
             unsigned int kept = 0;
             for (unsigned int i = 0; i < got; ++i) {
-                if (!weAuthor(gw, ownerId, buf[n + i].x, buf[n + i].z)) continue;
+                if (!weAuthorBody(gw, ownerId, buf[n + i].x, buf[n + i].z,
+                                  keyOf(buf[n + i]))) continue;
                 // The peer's census is the other half of incumbent-holds. weAuthor
                 // asks a question about OUR copy's position, and two copies of one
                 // fighting NPC drift apart far enough to answer it differently on
@@ -281,7 +282,7 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         const unsigned int nearEnd = n;
         unsigned int sz = (unsigned int)midBand_.size();
         unsigned int quota = (sz + 9) / 10;
-        if (quota > 16) quota = 16;
+        if (quota > tuning_.midSliceMax) quota = tuning_.midSliceMax;
         // Advance the slice on the NET-TICK cadence (50 ms), not per frame:
         // publishOwned runs every render frame but the net thread samples
         // the latest snapshot only at 20 Hz, so per-frame rotation dropped
@@ -291,12 +292,47 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // guaranteed on the wire: quota/10th of the list every 50 ms = each
         // mid NPC at ~2 Hz, deterministically.
         unsigned long nowPub = nowMs();
+        bool sliceAdvanced = false;
         if (midSliceMs_ == 0 || (nowPub - midSliceMs_) >= 50) {
             midSliceMs_ = nowPub;
             midCursor_ += quota; // linear cursor, index mod size below
+            sliceAdvanced = true;
         }
-        unsigned int tried = 0, added = 0;
-        while (tried < sz && added < quota && n < MAX_PUBLISH) {
+        // Bound the SCAN, not just the send. The stationary skip below deliberately
+        // does not consume quota, so a field of parked NPCs walks the whole band -
+        // and this loop runs every render frame while the cursor only advances at
+        // 20 Hz, so the same walk is repeated 3-4x before it can even produce a
+        // different answer. At midBandMax 256 that is up to 256 hand-resolves and
+        // captures per frame to ship at most `quota` bodies. A budget of a few
+        // times quota keeps the reach past parked bodies that the skip exists for,
+        // while making the worst case independent of how large the band is.
+        const unsigned int scanBudget = (quota * 4 < sz) ? quota * 4 : sz;
+        // Keepalives may take at most a quarter of the slice, so a town full of
+        // standing NPCs can never crowd out the movers this band exists for.
+        unsigned int stillQuota = quota / 4;
+        if (stillQuota == 0) stillQuota = 1;
+        // Scan ONCE PER SLICE, not once per render frame.
+        //
+        // The cursor only advances on the 50 ms net tick, so at 60 fps this
+        // loop used to run three times per slice and produce the identical
+        // answer twice over - and it is not a cheap answer: every scanned body
+        // costs a captureNpcByHand, which is unconditionally FULL (13-15 engine
+        // calls), and scanBudget is quota*4. That is thousands of engine calls
+        // per frame on whichever client authors the town, which is the HOST
+        // whenever both players stand in one cell. It shows up as the host's
+        // own local NPCs stuttering - bodies the plugin never drives and cannot
+        // desync, starved by the plugin's publish cost instead.
+        //
+        // Caching the emitted rows for the slice window is safe by the same
+        // argument the slice cadence itself rests on: a row is at most 50 ms
+        // old on a body the band streams at ~2 Hz. It also makes the keepalive
+        // decision naturally once-per-slice.
+        if (sliceAdvanced || midRowsMs_ == 0) {
+        midRows_.clear();
+        unsigned int tried = 0, added = 0, stillSent = 0;
+        EntityState row;
+        while (tried < scanBudget && added < quota &&
+               (nearEnd + midRows_.size()) < MAX_PUBLISH) {
             const Key mk = midBand_[(midCursor_ + tried) % sz].k;
             ++tried;
             bool dup = false;
@@ -304,17 +340,62 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
                 dup = buf[i].hIndex == mk.i && buf[i].hSerial == mk.s;
             if (dup) continue;
             if (engine::captureNpcByHand(gw, mk.i, mk.s, mk.t, mk.c, mk.cs,
-                                         &buf[n])) {
-                // Movers only (Phase 2 refinement, run 112835): a stationary
-                // far NPC is covered by the 1 Hz census position (park
-                // fallback) - streaming it just fed the join a body to drive
-                // and starved Kenshi's character-update budget town-wide.
-                // Skipping WITHOUT consuming quota lets the scan reach past
-                // parked bodies, so a lone approaching raid effectively
-                // streams at near-full rate while a busy field shares ~2 Hz.
-                if (buf[n].cMoving == 0 && buf[n].cSpeed <= 0.25f) continue;
-                ++n;
+                                         &row)) {
+                // Movers first (Phase 2 refinement, run 112835): streaming every
+                // stationary far NPC every tick fed the join a whole town to
+                // drive and starved Kenshi's character-update budget.
+                //
+                // But streaming a still body NEVER is the opposite error, and it
+                // is the one the doctrine names: absence is not evidence. The
+                // peer's only word on a stationary mid body was the 1 Hz census
+                // POSITION, which carries no task and no pose - so the peer read
+                // the silence as "at rest, release to local AI", the local AI
+                // walked the NPC's own schedule, and the copy diverged until the
+                // 120 u park teleported it - standing, wherever it had wandered,
+                // seat broken. The first live session measured that loop running
+                // continuously: ~900 culls, ~900 restores, 828 parks and a
+                // freeze log saturating its own 4/s throttle, all on the join,
+                // whose frame budget then starved its OWN outbound stream.
+                //
+                // So a still body gets a KEEPALIVE: one full sample (position,
+                // task and pose) every MID_STILL_KEEPALIVE_MS, which is inside
+                // the interp staleness window, so the peer holds it where the
+                // owner says it is instead of releasing it to wander. Costs
+                // ~180 bodies / 1.5 s x 79 B = ~9 KB/s against a measured
+                // steady-state of ~43 KB/s.
+                // Now decided once per slice (the scan itself is), so the row
+                // simply persists in the cache for the whole 50 ms window and
+                // is guaranteed to be in whichever frame the net thread samples.
+                if (row.cMoving == 0 && row.cSpeed <= 0.25f) {
+                    if (stillSent >= stillQuota) continue;
+                    std::map<Key, unsigned long>::iterator sit = midStillMs_.find(mk);
+                    const unsigned long lastSent = (sit != midStillMs_.end()) ? sit->second : 0;
+                    if (lastSent != 0 &&
+                        (midSliceMs_ - lastSent) < MID_STILL_KEEPALIVE_MS) continue;
+                    midStillMs_[mk] = midSliceMs_;
+                    ++stillSent;
+                }
+                midRows_.push_back(row);
                 ++added;
+            }
+        }
+        midRowsMs_ = nowPub;
+        }
+        // Emit the cached slice every frame: setOwnedEntities overwrites the
+        // published snapshot each time, and the net thread samples whichever
+        // frame it lands on.
+        for (unsigned int r = 0; r < (unsigned int)midRows_.size() && n < MAX_PUBLISH; ++r)
+            buf[n++] = midRows_[r];
+        // The map is keyed by hand and the band is rebuilt every census, so
+        // without a prune it accumulates one entry per NPC ever seen - the same
+        // unbounded-growth shape InvRecv::seenMs was added to fix. Drop entries
+        // no keepalive has touched in a minute; a body that comes back simply
+        // sends one keepalive immediately, which is the correct answer anyway.
+        if (midStillMs_.size() > 512) {
+            for (std::map<Key, unsigned long>::iterator pit = midStillMs_.begin();
+                 pit != midStillMs_.end(); ) {
+                if (nowPub - pit->second > 60000) midStillMs_.erase(pit++);
+                else                              ++pit;
             }
         }
     }
@@ -756,8 +837,10 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     // diverge - without the margin a real NPC wandering near the boundary
     // (inside the join's scan, outside the host's) would be false-culled.
     bool trunc = false;
+    // The census wire row carries the hand and the position and nothing else, so
+    // the cheap capture is the whole requirement here too.
     unsigned int n = engine::listNpcsWide(gw, censusRadius_ * 1.25f, chars, states,
-                                          NPC_CENSUS_MAX, &trunc);
+                                          NPC_CENSUS_MAX, &trunc, auditRows_);
     // A truncated census is an ACTIVE falsehood, not just a thin one: every NPC
     // past the cap is broadcast as "does not exist on the host", and the join
     // culls its real local copy against that. The fill is per-anchor, so a dense
@@ -803,7 +886,50 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     unsigned int m = 0;          // rows that survived the gate
     unsigned int nNotMine = 0;   // omitted because another client authors them
     unsigned int nProxyRow = 0;  // rows published under a bound key, not a local one
-    for (unsigned int i = 0; i < n; ++i) {
+
+    // Walk NEAREST-FIRST when the enumeration hit its cap. A census row's absence
+    // is read as "does not exist" and the peer culls its real copy against it, so
+    // a truncated census is an active falsehood - and the enumeration fills
+    // per-anchor, meaning a dense region around one anchor can consume the whole
+    // budget and silently declare another anchor's neighbourhood empty. We publish
+    // 25% wider than the peer culls against, so ordering by distance puts the
+    // sacrificed rows in that margin, outside the radius the peer actually judges,
+    // instead of wherever the enumeration happened to stop.
+    //
+    // This narrows the lie; it does not end it. If the count inside the peer's own
+    // cull radius exceeds the cap, real bodies are still broadcast as absent, and
+    // no ordering fixes that - the receiver has to be TOLD the list was truncated,
+    // which is a wire change (NpcCensusHeader has no flag) and therefore a protocol
+    // bump. Recorded in docs/PROTOCOL_HISTORY.md as the next one worth spending.
+    static unsigned int order[NPC_CENSUS_MAX]; // main-thread only
+    for (unsigned int i = 0; i < n; ++i) order[i] = i;
+    if (trunc && n > 1) {
+        float rawA[12];
+        unsigned int nA = engine::interestAnchors(gw, rawA);
+        static float dist2[NPC_CENSUS_MAX];
+        for (unsigned int i = 0; i < n; ++i) {
+            float best = 3.4e38f;
+            for (unsigned int a = 0; a < nA; ++a) {
+                const float dx = states[i].x - rawA[a * 3 + 0];
+                const float dz = states[i].z - rawA[a * 3 + 2];
+                const float d2 = dx * dx + dz * dz;
+                if (d2 < best) best = d2;
+            }
+            dist2[i] = (nA > 0) ? best : 0.0f;
+        }
+        // Insertion sort: n is bounded by NPC_CENSUS_MAX and this runs at 1 Hz,
+        // only while truncated. C++03, no lambdas, no std::sort comparator object.
+        for (unsigned int i = 1; i < n; ++i) {
+            const unsigned int key = order[i];
+            const float kd = dist2[key];
+            unsigned int j = i;
+            while (j > 0 && dist2[order[j - 1]] > kd) { order[j] = order[j - 1]; --j; }
+            order[j] = key;
+        }
+    }
+
+    for (unsigned int oi = 0; oi < n; ++oi) {
+        const unsigned int i = order[oi];
         Key k = keyOf(states[i]);
         std::map<Character*, Key>::const_iterator px = proxyKeyOf.find(chars[i]);
         if (px != proxyKeyOf.end()) { k = px->second; ++nProxyRow; }
@@ -826,7 +952,11 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         // get to make it about cells we own. Without this the two clients would
         // each broadcast the whole overlapping walk and each cull the other's
         // bodies against it.
-        if (cellAuth_ && !weAuthor(gw, ownerId, states[i].x, states[i].z)) {
+        // Body-aware, and in LOCKSTEP with the near/mid capture gates: the
+        // census is the existence claim behind the peer's culling, so if we
+        // stop STREAMING a body we must also stop CLAIMING it - otherwise the
+        // peer's suppression stands down on a body nobody is writing.
+        if (cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z, k)) {
             ++nNotMine;
             continue;
         }
@@ -874,7 +1004,8 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
             }
             if (best < 0.0f || best <= MID_NEAR_EDGE) continue; // near tier
             // Same ownership rule as the near band: we drive what we author.
-            if (cellAuth_ && !weAuthor(gw, ownerId, states[i].x, states[i].z)) continue;
+            if (cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z,
+                                           keyOf(states[i]))) continue;
             if (cellAuth_ && nPeerAnch > 0 &&
                 !observedByPeer(keyOf(states[i]), peerAnch, nPeerAnch,
                                 states[i].x, states[i].y, states[i].z)) continue;
@@ -891,10 +1022,12 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         // Nearest-first BUDGET: driving every census NPC measurably slowed
         // the join's sim (run 111445: slewSkip 7949 vs baseline ~1-2.6k, and
         // the sim-tick/render-frame ratio degraded enough to fail the
-        // smoothness gate on bodies that WERE tracking). The nearest ~48
-        // cover everything the join player can meaningfully watch; the far
-        // remainder keeps the census-park fallback it always had.
-        const unsigned int MID_BAND_MAX = 48;
+        // smoothness gate on bodies that WERE tracking). Nearest-first, so the
+        // far remainder keeps the census-park fallback it always had -- but the
+        // cap is now tuning_.midBandMax rather than a flat 48, because 48 is
+        // below what a shared-cell fight puts on screen and everything past it
+        // ran on local AI until a census beat snapped it. See SyncTuning.h.
+        const unsigned int MID_BAND_MAX = tuning_.midBandMax;
         if (midBand_.size() > MID_BAND_MAX) midBand_.resize(MID_BAND_MAX);
         if (midCursor_ >= midBand_.size()) midCursor_ = 0;
     }

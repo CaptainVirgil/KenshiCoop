@@ -15,6 +15,29 @@
 
 namespace coop {
 
+// Bound an (ownerId, id) dedupe set without letting one sender's history be
+// evicted to make room for another's.
+//
+// erase(begin()) looks like "drop the oldest", and the comment at each call site
+// said so, but the set is ordered by the PAIR: it removes the lowest ownerId
+// first and exhausts that player's entire history before touching anyone else's.
+// The host holds the low id, so a host resend was always the one that found its
+// dedupe entry already gone - and a re-applied drop/pickup/transfer is a
+// duplicated item, which is the single thing these sets exist to prevent.
+//
+// Evicting within the sender we just inserted for is both correct and fair: ids
+// ARE per-sender monotonic, so the lowest one for that sender really is its
+// oldest, and a sender that floods only ever discards its own history. O(log n),
+// no walk.
+static void capAppliedSet(std::set<std::pair<u32, u32> >& s, u32 ownerId,
+                          unsigned int totalMax) {
+    if (s.size() <= totalMax) return;
+    std::set<std::pair<u32, u32> >::iterator lo =
+        s.lower_bound(std::make_pair(ownerId, (u32)0));
+    if (lo != s.end() && lo->first == ownerId) s.erase(lo);
+    else s.erase(s.begin());   // unreachable: the caller just inserted for ownerId
+}
+
 void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
     // Author the inventory of every container we OWN. ownHands_ is the per-tick set of
     // owned squad-member hands (a character's own hand IS its personal-inventory
@@ -56,9 +79,10 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
     // INV_ITEMS_MAX at 64 a full snapshot is ~10 KB, so a censused chest farm re-asserting
     // every 5 s would cost real bandwidth for nothing; big snapshots re-assert on the slow
     // interval instead. Small ones keep the historical cadence.
-    const unsigned long INV_RESEND_MS      = 5000;
-    const unsigned long INV_RESEND_BIG_MS  = 30000;
-    const unsigned int  INV_RESEND_BIG_N   = 24;   // entries above which "big" applies
+    // Defaults live in SyncTuning; overridable per session from coop_config.json.
+    const unsigned long INV_RESEND_MS      = tuning_.invResendMs;
+    const unsigned long INV_RESEND_BIG_MS  = tuning_.invResendBigMs;
+    const unsigned int  INV_RESEND_BIG_N   = tuning_.invResendBigN;
     // A changed snapshot must be STABLE this long before we publish it. A change that only
     // REARRANGES or ADDS (entry count >= last sent) settles fast. A change that REMOVES an
     // entry settles much longer: mid-drag the UI holds the dragged item on the CURSOR, out
@@ -152,6 +176,23 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
         u8 sflags = trunc ? INV_FLAG_TRUNCATED : (u8)0;
         net.queueInvSnapshot(ownerId, keyKind, wireKey, items, n, sflags);
         pub.hash = hash; pub.lastSendMs = now; pub.lastSentN = n; pub.lastSentUnits = units;
+        // The periodic leg queues WITHOUT the SEND log below, which is how a
+        // 0 ms resend cadence flooded the reliable channel invisibly for a
+        // whole session (2026-08-09). Keep it quiet per send - the healthy
+        // cadence is one per container per 5/30 s - but never silent: a
+        // 60 s rollup makes the channel's real rate readable in any log.
+        if (periodic) {
+            invResentCount_++;
+            if (invResentRollupMs_ == 0) invResentRollupMs_ = now;
+            if (now - invResentRollupMs_ >= 60000) {
+                char r[120];
+                _snprintf(r, sizeof(r) - 1,
+                    "[inv] resent %lu unchanged snapshot(s) in %lus",
+                    invResentCount_, (unsigned long)((now - invResentRollupMs_) / 1000));
+                r[sizeof(r) - 1] = '\0'; coop::logLine(r);
+                invResentCount_ = 0; invResentRollupMs_ = now;
+            }
+        }
         if (changed) {
             char b[200];
             _snprintf(b, sizeof(b) - 1,
@@ -178,6 +219,32 @@ void Replicator::publishInventories(GameWorld* gw, NetLink& net, u32 ownerId) {
 
 void Replicator::applyInventories(GameWorld* gw) {
     if (invRecv_.empty()) return;
+    // Age out containers whose hand has stopped resolving. Walking away from a
+    // storage building leaves its snapshot behind otherwise, and a long session in
+    // a town accumulates them without bound - both the memory and the cost of every
+    // subsequent pass over the map. The horizon is generous because leaving and
+    // returning to a building is ordinary play; only a genuine departure crosses it.
+    {
+        const unsigned long INV_FORGET_MS = 60000;
+        const unsigned long now = nowMs();
+        for (std::map<Key, InvRecv>::iterator it = invRecv_.begin(); it != invRecv_.end(); ) {
+            const Key& k = it->first;
+            if (engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs) != 0 ||
+                ownedContainers_.count(k) != 0 || ownHands_.count(k) != 0) {
+                it->second.seenMs = now;
+                ++it;
+                continue;
+            }
+            if (it->second.seenMs == 0) { it->second.seenMs = now; ++it; continue; }
+            if ((now - it->second.seenMs) < INV_FORGET_MS) { ++it; continue; }
+            // swap-with-a-temporary, not clear(): under this toolchain clear() keeps
+            // the vector's capacity, which is the whole 10 KB being reclaimed.
+            std::vector<InvItemEntry>().swap(it->second.items);
+            xferBase_.erase(k); xferSeeded_.erase(k);
+            xferPend_.erase(k); xferDefer_.erase(k);
+            invRecv_.erase(it++);
+        }
+    }
     for (std::map<Key, InvRecv>::iterator it = invRecv_.begin(); it != invRecv_.end(); ++it) {
         if (!it->second.dirty) continue;
         it->second.dirty = false;
@@ -494,7 +561,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
 
     // ---- Stream new/changed + HANDLE-based cull over every track -----------
     WorldItemEntry send[WORLD_ITEMS_MAX]; unsigned int ns = 0;
-    u32 removed[256]; unsigned int nr = 0;
+    u32 removed[WORLD_IDS_PER_PACKET]; unsigned int nr = 0;
     unsigned int deferred = 0;
     // TEST-ONLY: shrink the per-tick batch (KENSHICOOP_WI_BATCH_MAX) so a scenario can overflow
     // it with a handful of drops. Filling the real 16-entry batch needs a crowd of simultaneous
@@ -515,7 +582,18 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
             // Baseline (save-native) tracks were never streamed, so the peer has
             // no proxy to remove - just drop our track. Streamed tracks emit a
             // remove so the peer despawns its proxy.
-            if (!tr.baseline) { if (nr < 256) removed[nr++] = tr.netId; }
+            if (!tr.baseline) {
+                if (nr >= WORLD_IDS_PER_PACKET) {
+                    // This tick's cull datagram is full. DEFER - do not erase the
+                    // track. Erasing it while its removal never goes out strands
+                    // the peer's proxy forever, because the cull is driven by our
+                    // track and we would have just thrown away the only thing that
+                    // could ever emit it. Next tick has room.
+                    ++it;
+                    continue;
+                }
+                removed[nr++] = tr.netId;
+            }
             if (dumpWi) { char b[112]; _snprintf(b, sizeof(b) - 1,
                 "[wi] CULL netId=%u (gone/picked-up) baseline=%d", tr.netId, tr.baseline ? 1 : 0);
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
@@ -607,10 +685,21 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
             // netId simply finds nothing and is ignored.
             worldProxies_.erase(pi++);
         }
+        // CHUNK, do not clamp. queueWorldClaim silently truncates to the u8 wire
+        // count, and the proxies these ids refer to have ALREADY been erased from
+        // worldProxies_ above - so a truncated tail is not a deferred claim, it is
+        // a lost one, and the author keeps a real item on its ground that this
+        // client already put in a bag. That is the duplicate the claim channel was
+        // added to remove.
         for (std::map<u32, std::vector<u32> >::iterator ci = claims.begin();
-             ci != claims.end(); ++ci)
-            net.queueWorldClaim(ownerId, ci->first, &ci->second[0],
-                                (unsigned int)ci->second.size());
+             ci != claims.end(); ++ci) {
+            const std::vector<u32>& ids = ci->second;
+            for (unsigned int off = 0; off < ids.size(); off += WORLD_IDS_PER_PACKET) {
+                unsigned int n = (unsigned int)ids.size() - off;
+                if (n > WORLD_IDS_PER_PACKET) n = WORLD_IDS_PER_PACKET;
+                net.queueWorldClaim(ownerId, ci->first, &ids[off], n);
+            }
+        }
     }
 }
 
@@ -674,10 +763,17 @@ void Replicator::applyWorldItems(GameWorld* gw, Inbound& in) {
     // cannot schedule itself into it. Injecting here makes it certain: without the hand
     // check the cull below is a second GameWorld::destroy on freed memory, which Kenshi
     // reports as "alredy has destroy reason coop-worlditem-cull" (world_item_stale).
+    // Harness-only. This one frees a live object on purpose, so a Release build must
+    // not be able to reach it from the environment at all - compile it out rather than
+    // default it off, the way KENSHICOOP_TEST_CRASH is handled in Plugin.cpp.
     static int testStale = -1;
     if (testStale < 0) {
+#ifdef KENSHICOOP_HARNESS
         const char* e = getenv("KENSHICOOP_WI_TEST_STALE");
         testStale = (e && e[0] == '1') ? 1 : 0;
+#else
+        testStale = 0;
+#endif
     }
 
     // Culls: destroy the proxy and drop the mapping (scoped to the authoring owner).
@@ -1047,9 +1143,9 @@ void Replicator::applyWeaponDrops(GameWorld* gw, Inbound& in) {
         std::pair<u32, u32> id(p.ownerId, p.dropId);
         if (appliedDrops_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedDrops_.insert(id);
-        // Bounded (step 6): ids are per-sender monotonic, so evicting the smallest
-        // discards the oldest - far outside any plausible reliable-channel replay.
-        if (appliedDrops_.size() > 4096) appliedDrops_.erase(appliedDrops_.begin());
+        // Bounded (step 6), per sender - see capAppliedSet for why the obvious
+        // erase(begin()) was evicting the host's whole history first.
+        capAppliedSet(appliedDrops_, p.ownerId, 4096);
         Key ok; ok.t = p.oType; ok.c = p.oContainer; ok.cs = p.oContainerSerial;
         ok.i = p.oIndex; ok.s = p.oSerial;
         if (ownHands_.count(ok) != 0) continue;     // we own this char -> we dropped it locally
@@ -1117,9 +1213,13 @@ void Replicator::applyWeaponDrops(GameWorld* gw, Inbound& in) {
 // reproduced a different bug - the picker could name nothing, suppressed the intent as
 // increase-untracked, and the author was never even asked.
 static bool injectForgetTrack(bool authored) {
+#ifndef KENSHICOOP_HARNESS
+    (void)authored; return false; // test lever: harness builds only
+#else
     static int on = -1;
     if (on < 0) { const char* e = getenv("KENSHICOOP_WD_FORGET_TRACK"); on = (e && e[0] == '1') ? 1 : 0; }
     return on == 1 && authored;
+#endif
 }
 
 void Replicator::parkPendingPickup(const unsigned int targetHand[5], const char* sid,
@@ -1185,6 +1285,9 @@ int containerHoldsItemState(GameWorld* gw, const unsigned int cHand[5], const ch
 // Consulted by BOTH re-home attempts (the pickup apply and the reconcile retry), or "refuse
 // always" would be quietly satisfied by the retry.
 bool injectRehomeRefusal() {
+#ifndef KENSHICOOP_HARNESS
+    return false; // test lever: harness builds only
+#else
     static int mode = -1; // 0 = off, 1 = first only, 2 = always
     if (mode < 0) {
         const char* all = getenv("KENSHICOOP_WD_REFUSE_REHOME_ALL");
@@ -1195,6 +1298,7 @@ bool injectRehomeRefusal() {
     if (mode == 1) mode = 0;
     coop::logLine("[wd] REHOME-REFUSE-INJECTED (test lever: re-home refused)");
     return true;
+#endif
 }
 
 // TEST-ONLY fault injection: KENSHICOOP_WD_TRANSIENT_DEAD=N makes the first N PICKUP-time
@@ -1209,6 +1313,9 @@ bool injectRehomeRefusal() {
 // copy next to the item the peer now holds; parking it lets the next read - which succeeds -
 // finish the re-home.
 static bool injectTransientDead() {
+#ifndef KENSHICOOP_HARNESS
+    return false; // test lever: harness builds only
+#else
     static int budget = -1;
     if (budget < 0) {
         const char* e = getenv("KENSHICOOP_WD_TRANSIENT_DEAD");
@@ -1219,6 +1326,7 @@ static bool injectTransientDead() {
     --budget;
     coop::logLine("[wd] TRANSIENT-DEAD-INJECTED (test lever: this read reports the object gone)");
     return true;
+#endif
 }
 
 // Resolve a tracked ground item to a LIVE free ground object, or 0 if it is no longer one.
@@ -1401,7 +1509,8 @@ void Replicator::applyWeaponPickups(GameWorld* gw, Inbound& in) {
         std::pair<u32, u32> id(p.ownerId, p.pickupId);
         if (appliedPickups_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedPickups_.insert(id);
-        if (appliedPickups_.size() > 4096) appliedPickups_.erase(appliedPickups_.begin());
+        // Bounded per sender, not globally - see capAppliedSet.
+        capAppliedSet(appliedPickups_, p.ownerId, 4096);
         Key ok; ok.t = p.oType; ok.c = p.oContainer; ok.cs = p.oContainerSerial;
         ok.i = p.oIndex; ok.s = p.oSerial;
         if (ownHands_.count(ok) != 0) continue;        // we own this char -> we picked it up locally
@@ -1742,7 +1851,8 @@ void Replicator::applyTransfers(GameWorld* gw, Inbound& in, NetLink& net, u32 lo
         std::pair<u32, u32> id(p.ownerId, p.xferId);
         if (appliedXfers_.count(id) != 0) continue; // idempotent (reliable resend / replay)
         appliedXfers_.insert(id);
-        if (appliedXfers_.size() > 4096) appliedXfers_.erase(appliedXfers_.begin());
+        // Bounded per sender, not globally - see capAppliedSet.
+        capAppliedSet(appliedXfers_, p.ownerId, 4096);
         unsigned int sHand[5] = { p.sType, p.sContainer, p.sContainerSerial, p.sIndex, p.sSerial };
         unsigned int dHand[5] = { p.dType, p.dContainer, p.dContainerSerial, p.dIndex, p.dSerial };
         Key sk; sk.t = p.sType; sk.c = p.sContainer; sk.cs = p.sContainerSerial;
@@ -1765,6 +1875,11 @@ void Replicator::applyTransfers(GameWorld* gw, Inbound& in, NetLink& net, u32 lo
             // A worn CONTAINER (backpack) NEVER fabricates: the template mints an EMPTY bag,
             // so the trade would land as a contents-less duplicate the moment our real copy
             // resolves. A short container transfer stays short and reconcile corrects it.
+            // Deliberately default ON, inverting the house "flags default off" idiom:
+            // OFF is the riskier setting, not the safer one. A gear transfer whose real
+            // item does not resolve simply arrives short, and the receiver is left
+            // waiting on reconcile to notice. Keep the default; the env is the A/B
+            // escape hatch for proving a duplication report against it.
             static int gearFab = -1;
             if (gearFab < 0) { const char* e = getenv("KENSHICOOP_WEAPON_FAB"); gearFab = (e && e[0] == '0') ? 0 : 1; }
             if ((!isGearType(p.itemType) || gearFab) && !engine::isContainerItemType(p.itemType))

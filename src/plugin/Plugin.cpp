@@ -34,7 +34,21 @@
 #include "net/NetLink.h"
 #include "net/SteamP2P.h"
 #include "net/SteamInvite.h"
+#include <vector>
+#include <cstring>
+// Written by the build scripts (build/generated/DepsPin.h), naming the KenshiLib
+// and vendored-ENet checkouts this DLL was compiled against. Guarded by a FLAG the build script
+// defines, not by __has_include: this is a C++03 (v100) compiler, where
+// __has_include is not a thing and `#if __has_include(...)` quietly evaluates to
+// 0 - so the header was silently skipped and every build logged "unstamped"
+// while appearing to succeed.
+#ifdef KENSHICOOP_HAVE_DEPS_PIN
+#include "DepsPin.h"
+#endif
 #include "game/Engine.h"
+// GetFileVersionInfo* for logHostVersions. A pragma rather than three edits to
+// the vcxproj's AdditionalDependencies, so every build path picks it up.
+#pragma comment(lib, "version.lib")
 #include "game/EngineUi.h"       // Phase 5a: F2 co-op panel + status overlay
 #include "game/EngineScenario.h" // Phase 5a: auto-bake scene builders
 #include "sync/Replicator.h"
@@ -207,6 +221,9 @@ void (*g_titleUpdate_orig)(TitleScreen*)   = 0;
 // mainLoop_hook can hand their addresses to coopPanelTick.
 void startNetworking();
 void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId);
+// When the current connection attempt started, so the panel can escalate from
+// "connecting" to "here is what to check" instead of waiting silently forever.
+static unsigned long g_connectStartMs = 0;
 void coopUiDisconnect();
 
 // Log to BOTH our dedicated per-line-flushed file (what the test runner reads)
@@ -431,6 +448,30 @@ void driveSaveSync() {
             char name[sizeof(it->pkt.name) + 1];
             memcpy(name, it->pkt.name, sizeof(it->pkt.name));
             name[sizeof(it->pkt.name)] = '\0';
+            // A 60-byte packet asks the host to run a full engine save and then
+            // stream the whole folder back. Unthrottled and un-deduped, that is a
+            // remote trigger for multi-second stalls repeated as fast as packets
+            // arrive - and reqId exists precisely to identify a repeat, but was
+            // only ever logged.
+            static unsigned long lastReqTick = 0;
+            static unsigned int  lastReqId   = 0;
+            const unsigned long  nowTick     = GetTickCount();
+            const unsigned long  REQ_MIN_GAP_MS = 30000;
+            if (it->pkt.reqId != 0 && it->pkt.reqId == lastReqId) {
+                coopLog("[save] REQ ignored (duplicate reqId)");
+                continue;
+            }
+            if (lastReqTick != 0 && (nowTick - lastReqTick) < REQ_MIN_GAP_MS) {
+                char tb[144];
+                _snprintf(tb, sizeof(tb) - 1,
+                          "[save] REQ ignored (throttled; %lums since the last one)",
+                          nowTick - lastReqTick);
+                tb[sizeof(tb) - 1] = '\0'; coopLog(tb);
+                continue;
+            }
+            lastReqTick = nowTick;
+            lastReqId   = it->pkt.reqId;
+
             char b[144];
             _snprintf(b, sizeof(b) - 1,
                       "[save] REQ from join id=%u name='%s' -> saving",
@@ -752,14 +793,50 @@ void coopPanelDrive() {
     ps.peerPresent  = g_peerPresent;
     ps.isHost       = g_cfg.isHost;
     ps.transportSel = (g_cfg.transport == "steam") ? 0 : 1;
+    // A player staring at "Connecting..." has no way to tell a wrong Steam ID from
+    // a version mismatch from a friend who has not gone online yet. The net thread
+    // and the Steam layer both KNOW which it is; everything below is about saying
+    // so. Order matters: report the definite faults before the guesses.
     std::string detail;
     int ostate;
+    char nb[224];
     if (g_peerPresent) {
         detail = g_cfg.isHost ? "Connected - peer joined" : "Connected to host";
         ostate = 2;
+    } else if (g_net.lastFault() == coop::NetLink::FAULT_VERSION) {
+        _snprintf(nb, sizeof(nb) - 1,
+                  "Version mismatch: your friend is on protocol v%u, you are on v%u. "
+                  "Both players must install the same release.",
+                  (unsigned)g_net.peerVersion(), (unsigned)coop::PROTOCOL_VERSION);
+        nb[sizeof(nb) - 1] = '\0';
+        detail = nb; ostate = 0;
+    } else if (g_net.lastFault() == coop::NetLink::FAULT_THIRD_PLAYER) {
+        detail = "A third player tried to join. KenshiCoop supports two players.";
+        ostate = 0;
     } else if (g_net.isRunning()) {
-        detail = g_cfg.isHost ? "Hosting - waiting for peer..." : "Connecting...";
-        ostate = 1;
+        // Escalate on time. The first twenty seconds of "waiting" are normal; after
+        // that it is a misconfiguration, and the two that actually happen are both
+        // players picking HOST, and pasting your own ID instead of your friend's.
+        unsigned long waited = (g_connectStartMs != 0) ? (GetTickCount() - g_connectStartMs) : 0;
+        int steamErr = coop::steamp2p::lastSessionError();
+        if (steamErr == 1) {
+            detail = "Your friend is not in Kenshi with KenshiCoop loaded yet.";
+            ostate = 1;
+        } else if (steamErr == 3) {
+            detail = "Your friend's Steam is offline - they need to be online for this to connect.";
+            ostate = 1;
+        } else if (steamErr == 4) {
+            detail = "Could not reach your friend through Steam. Check the ID you pasted.";
+            ostate = 1;
+        } else if (waited > 20000) {
+            detail = g_cfg.isHost
+                ? "Still waiting. Check: your friend set Role: JOIN, pasted YOUR Steam ID, and went ONLINE."
+                : "Still connecting. Check: your friend set Role: HOST and is ONLINE, and that you pasted THEIR ID.";
+            ostate = 1;
+        } else {
+            detail = g_cfg.isHost ? "Hosting - waiting for peer..." : "Connecting...";
+            ostate = 1;
+        }
     } else {
         detail = "Offline - press F2, then set Connection to ONLINE";
         ostate = 0;
@@ -771,6 +848,21 @@ void coopPanelDrive() {
     // the F2 panel. The percent is whole-number so the panel only rebuilds ~100x
     // over a transfer, not every chunk. Null when not streaming.
     std::string transfer;
+    // The HOST arm did not exist: while it pushed a multi-MB save its panel said
+    // "Connected - peer joined" and nothing else, so a long transfer was
+    // indistinguishable from a hang on both sides at once.
+    if (g_cfg.isHost && coop::savexfer::sending()) {
+        unsigned __int64 sent = coop::savexfer::sentBytes();
+        unsigned __int64 tot  = coop::savexfer::sendTotalBytes();
+        int pct = (tot > 0) ? (int)((sent * 100) / tot) : 0;
+        if (pct > 100) pct = 100;
+        char hb[96];
+        _snprintf(hb, sizeof(hb) - 1,
+                  "Sending your world to your friend... %d%% (%.1f/%.1f MB)", pct,
+                  (double)sent / (1024.0 * 1024.0), (double)tot / (1024.0 * 1024.0));
+        hb[sizeof(hb) - 1] = '\0';
+        transfer = hb;
+    }
     if (!g_cfg.isHost && g_net.isRunning() && !g_gameStarted) {
         if (coop::savexfer::receiving()) {
             unsigned __int64 got = coop::savexfer::recvBytes();
@@ -784,6 +876,14 @@ void coopPanelDrive() {
                       (double)tot / (1024.0 * 1024.0));
             tb[sizeof(tb) - 1] = '\0';
             transfer = tb;
+            // A transfer that has stopped moving looks exactly like one that is
+            // moving slowly, and the receiver had no watchdog - so a host that quit
+            // mid-stream left this line frozen at a percentage indefinitely.
+            const unsigned long stalled = coop::savexfer::recvStalledMs();
+            if (stalled > 20000) {
+                transfer = "World transfer stalled - your friend may have disconnected. "
+                           "Toggle Connection OFFLINE then ONLINE to retry.";
+            }
         } else if (!g_loadAfterCommit.empty()) {
             // NACK sent (host baking/streaming) or committed + about to load.
             transfer = "Preparing host world...";
@@ -1057,6 +1157,40 @@ static coop::SyncContext replCtx(GameWorld* gw) {
 // host additionally streams world NPCs. Ingest received targets BEFORE the engine
 // tick so apply targets are current. worldLive is sampled ONCE pre-engine by the
 // caller (see the comment there); every channel is gated by its own Config knob.
+// Per-frame cost of the plugin's two replication stages, rolled up every 5 s.
+//
+// A NEW log prefix on purpose: the existing lines are parsed by the PowerShell
+// oracles and their field lists are API. Reports the mean and the WORST frame
+// of the window for each stage, plus how many frames in the window blew a 2 ms
+// budget - the mean hides exactly the spikes that are felt as a stutter, and
+// the worst frame alone cannot say how often it happens.
+//
+// Publish cost lands on whichever client AUTHORS the bodies in interest; apply
+// cost lands on whichever DRIVES them. With both players in one cell those are
+// the same client for the whole town, which is why one machine can stutter
+// while the other is idle.
+static void logTickBudget(unsigned long pubUs, unsigned long appUs) {
+    static unsigned long winMs = 0, frames = 0, over = 0;
+    static unsigned long pubSum = 0, pubMax = 0, appSum = 0, appMax = 0;
+    const unsigned long now = coop::wallClockMs();
+    if (winMs == 0) winMs = now;
+    ++frames;
+    pubSum += pubUs; appSum += appUs;
+    if (pubUs > pubMax) pubMax = pubUs;
+    if (appUs > appMax) appMax = appUs;
+    if (pubUs + appUs > 2000ul) ++over;
+    if ((now - winMs) < 5000ul || frames == 0) return;
+    char b[200];
+    _snprintf(b, sizeof(b) - 1,
+        "[budget] pub avg=%luus max=%luus apply avg=%luus max=%luus "
+        "frames=%lu over2ms=%lu",
+        pubSum / frames, pubMax, appSum / frames, appMax, frames, over);
+    b[sizeof(b) - 1] = '\0';
+    coop::logLine(b);
+    winMs = now; frames = 0; over = 0;
+    pubSum = pubMax = appSum = appMax = 0;
+}
+
 void tickReplicatePublish(GameWorld* gw, bool worldLive) {
     if (worldLive) {
         g_repl.ingest(g_inbound);
@@ -1205,6 +1339,8 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // applies against this tick's consensus state.
         if (g_cfg.timeSync)
             g_repl.syncTime(gw, g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+            g_repl.syncWeather(g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+            g_repl.syncDialogue(gw, g_inbound, g_net, g_net.localId());
         // Runtime-spawn proxy replication (protocol 21): the join asks about
         // streamed hands it couldn't resolve last tick (host RUNTIME spawns)
         // and mints local proxy bodies from the host's replies; the host
@@ -1659,7 +1795,14 @@ void mainLoop_hook(GameWorld* gw, float dt) {
 
     // Replication publish (pre-engine, worldLive-gated): ingest received targets,
     // then stream every owned channel so applied state is current this tick.
+    //
+    // Timed. The plugin's per-frame cost scales with how many bodies are in
+    // interest, and until now NOTHING measured it - which left "the game
+    // stutters" as an argument rather than a number. Whichever client authors
+    // a town pays the publish side; whichever drives it pays the apply side.
+    const unsigned long tPub0 = coop::monoUs();
     tickReplicatePublish(gw, worldLive);
+    const unsigned long tPub1 = coop::monoUs();
 
     // Coordinated save + load (protocols 31/32): run under g_gameStarted (NOT
     // worldLive) so they keep pumping DURING a world swap - they only touch net
@@ -1675,7 +1818,10 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     // Replication apply (post-engine): our transform is the last word the renderer
     // samples. Re-checks gameplayLive so a swap STARTED by this engine tick skips
     // apply (its caches are now stale; the reset runs next tick's reload edge).
+    const unsigned long tApp0 = coop::monoUs();
     tickReplicateApply(gw, worldLive);
+    const unsigned long tApp1 = coop::monoUs();
+    logTickBudget(tPub1 - tPub0, tApp1 - tApp0);
 
     // Coordinated load deferred-signal backstop: if the LOADGAME signal stalls
     // past the grace window, pump SaveManager::execute() once from end-of-tick.
@@ -1791,15 +1937,32 @@ void startNetworking() {
     // UDP loudly when Steam is unavailable so a misconfigured session still
     // behaves like the stock build instead of silently doing nothing.
     if (g_cfg.transport == "steam") {
+        // Both fallbacks below drop to UDP against g_cfg.ip, which defaults to
+        // 127.0.0.1 - so the session dials the player's own loopback and waits
+        // forever, while the panel still reads "over Steam" because transport was
+        // never updated. Say what actually happened, and make the panel agree.
         if (g_cfg.steamPeer == 0) {
-            coopErr("[steam] KENSHICOOP_TRANSPORT=steam requires KENSHICOOP_STEAM_PEER=<partner steamid64>; falling back to UDP");
+            coopErr("[steam] no friend Steam ID set - click 'Paste friend's Steam ID' in the F2 panel. "
+                    "Falling back to direct UDP, which will NOT reach your friend.");
+            g_cfg.transport = "udp";
         } else if (!coop::steamp2p::init()) {
-            coopErr("[steam] init failed (Steam not running / offline?); falling back to UDP");
+            coopErr("[steam] Steam is not running, or is in offline mode. "
+                    "Falling back to direct UDP, which will NOT reach your friend.");
+            g_cfg.transport = "udp";
         } else {
             coop::steamp2p::setPeer(g_cfg.steamPeer);
             g_net.setSteamTransport(g_cfg.steamPeer);
             coopLog("[steam] transport=steam armed (connect by SteamID; no port forwarding)");
         }
+    }
+    // Disarm on every non-Steam path, including the two fallbacks above. NetLink
+    // decides whether to install the Steam socket hooks from `steamPeer_ != 0`, and
+    // that member was only ever written, never cleared - so switching Transport to
+    // UDP after any Steam session left the tunnel armed and routed a "direct UDP"
+    // session back through the Steam hooks. The panel said UDP; the packets did not.
+    if (g_cfg.transport != "steam") {
+        g_net.setSteamTransport(0);
+        coop::steamp2p::shutdown();
     }
 
     bool ok;
@@ -1819,10 +1982,53 @@ void startNetworking() {
 // the Replicator/Inbound session state is reset for a clean handshake).
 void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId) {
     if (g_net.isRunning()) g_net.stop();
+    // A new attempt is not the old attempt: drop the previous rejection so the
+    // panel does not keep explaining a version mismatch the player just fixed.
+    g_net.clearFault();
+    g_connectStartMs = GetTickCount();
     coop::steamp2p::shutdown();
     // World is live here (reconnect from within a running game): despawn minted
     // proxies before clearing maps so a re-connect leaves no orphaned duplicates.
     sessionResetForUi();
+
+    // Re-name the log to match the role actually being played. The file was
+    // opened at plugin load from the CONFIGURED role, and THIS is where the role
+    // is really decided - so a player whose coop_config.json said "host" and who
+    // then pressed JOIN wrote their entire session into KenshiCoop_host.log. The
+    // trap was documented twice instead of fixed, which helped nobody reading a
+    // log to work out whose it was.
+    //
+    // Only when the path is still one of the two defaults: an explicit
+    // KENSHICOOP_LOG is the operator naming their own file, and moving it would
+    // be worse than the problem. logRetag falls back to the old path if the
+    // rename fails, so this cannot cost a session its logging.
+    if (g_cfg.isHost != isHost) {
+        const char* kHostLog = "KenshiCoop_host.log";
+        const char* kJoinLog = "KenshiCoop_join.log";
+        if (g_cfg.logPath == kHostLog || g_cfg.logPath == kJoinLog) {
+            const char* want = isHost ? kHostLog : kJoinLog;
+            bool moved = coop::logRetag(want, isHost ? "HOST" : "JOIN");
+            char b[192]; _snprintf(b, sizeof(b) - 1,
+                "[role] panel role is %s; log %s '%s' (was '%s')",
+                isHost ? "HOST" : "JOIN",
+                moved ? "renamed to" : "COULD NOT be renamed to, still",
+                want, g_cfg.logPath.c_str());
+            b[sizeof(b) - 1] = '\0'; coopLog(b);
+            if (moved) g_cfg.logPath = want;
+        }
+    }
+
+    // Steam transport with no Steam is not a connection that will ever succeed,
+    // and it is not recoverable without a game restart: the Steam client has to be
+    // running BEFORE Kenshi starts, because the process resolves steam_api64 once
+    // at launch. Starting Steam now and pressing Connect again does nothing, which
+    // is precisely the loop players get stuck in. Say so instead of sitting in
+    // "Connecting..." until the timeout.
+    if (useSteam && coop::steamp2p::selfId() == 0) {
+        coopErr("KenshiCoop: Steam is not running, so the Steam transport cannot "
+                "connect. Start Steam and then RESTART Kenshi - Steam has to be up "
+                "before the game launches. (Or switch Transport to UDP.)");
+    }
 
     g_cfg.isHost    = isHost;
     g_cfg.transport = useSteam ? "steam" : "udp";
@@ -1885,6 +2091,118 @@ void coopUiDisconnect() {
 
 // Startup log roster: load banner, fake-skew notice, build stamp, role line,
 // and the effective (resolved) config summary. Answerable from the log alone.
+// Which KenshiLib is actually serving us at runtime, and which one we compiled
+// against.
+//
+// They are aligned now - both KenshiLib 0.4.0 - but they were not for this fork's
+// entire history, and nothing recorded the pair. The build was pinned at v0.1 while
+// the DLL resolving our member-function stubs was whatever RE_Kenshi shipped: three
+// minor versions of unmanaged drift, held together by the stub ABI happening to be
+// stable rather than by anyone checking.
+//
+// Alignment is not permanent - RE_Kenshi updates on its own schedule and a player
+// can be on a KenshiLib newer than the one this DLL was built against at any time.
+// So the pair is still logged, and still compared.
+//
+// This does not refuse to run on an unexpected version. It has no basis to: the
+// combination usually works, and refusing would strand players on a newer
+// RE_Kenshi for no demonstrated reason. It records both, and says plainly when the
+// runtime is one this build has never been verified against - so the first
+// question after a mystery crash report ("what were they running?") is answered
+// by the log instead of guessed at.
+static void logHostVersions() {
+    // Every runtime KenshiLib this build has actually been exercised against.
+    // Add to it only after a real launch, not on the strength of it compiling.
+    static const char* const kVerified[] = { "0.4.0" };
+    const int nVerified = (int)(sizeof(kVerified) / sizeof(kVerified[0]));
+
+    // KenshiLib.dll carries NO version resource - GetFileVersionInfo returns
+    // nothing for it, which is how the first attempt at this failed. What it does
+    // carry is the literal string RE_Kenshi prints at startup ("KenshiLib 0.4.0"),
+    // so read that out of the file on disk.
+    //
+    // The FILE, not the mapped image: the module is already loaded, but scanning a
+    // live image means walking sections and guarding every read, for no benefit.
+    // One ~900 KB read at startup is cheaper than being clever.
+    char runtimeVer[64];
+    runtimeVer[0] = '\0';
+
+    HMODULE kl = GetModuleHandleA("KenshiLib.dll");
+    if (kl) {
+        char path[MAX_PATH];
+        if (GetModuleFileNameA(kl, path, MAX_PATH)) {
+            FILE* f = fopen(path, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long len = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                // Sanity-bound it: this should be ~1 MB. A wildly different size
+                // means we are not looking at what we think we are.
+                if (len > 0 && len < 64 * 1024 * 1024) {
+                    std::vector<char> buf((size_t)len + 1, 0);
+                    size_t got = fread(&buf[0], 1, (size_t)len, f);
+                    static const char kTag[] = "KenshiLib ";
+                    const size_t tagLen = sizeof(kTag) - 1;
+                    for (size_t i = 0; got > tagLen && i + tagLen < got; ++i) {
+                        if (std::memcmp(&buf[i], kTag, tagLen) != 0) continue;
+                        const char* v = &buf[i] + tagLen;
+                        // Accept only digits and dots, so a stray match on prose
+                        // cannot masquerade as a version.
+                        size_t n = 0;
+                        while (n < sizeof(runtimeVer) - 1 &&
+                               ((v[n] >= '0' && v[n] <= '9') || v[n] == '.')) ++n;
+                        if (n >= 3 && v[0] >= '0' && v[0] <= '9') {
+                            std::memcpy(runtimeVer, v, n);
+                            runtimeVer[n] = '\0';
+                            break;
+                        }
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+
+#ifdef KENSHICOOP_DEPS_PIN
+    const char* builtAgainst = KENSHICOOP_DEPS_PIN;
+#else
+    const char* builtAgainst = "unstamped";
+#endif
+
+    char b[256];
+    _snprintf(b, sizeof(b) - 1, "[host] KenshiLib runtime=%s built-against=%s",
+              runtimeVer[0] ? runtimeVer : "UNREADABLE", builtAgainst);
+    b[sizeof(b) - 1] = '\0';
+    coopLog(b);
+
+#ifdef KENSHICOOP_ENET_PIN
+    const char* enetPin = KENSHICOOP_ENET_PIN;
+#else
+    const char* enetPin = "unstamped";
+#endif
+    _snprintf(b, sizeof(b) - 1, "[host] ENet vendored=%s", enetPin);
+    b[sizeof(b) - 1] = '\0';
+    coopLog(b);
+
+    if (!runtimeVer[0]) {
+        coopLog("[host] WARNING could not read KenshiLib.dll's version. If anything "
+                "misbehaves, this build's compatibility with it is unknown.");
+        return;
+    }
+    bool known = false;
+    for (int i = 0; i < nVerified; ++i)
+        if (std::strcmp(kVerified[i], runtimeVer) == 0) { known = true; break; }
+    if (!known) {
+        _snprintf(b, sizeof(b) - 1,
+                  "[host] WARNING KenshiLib %s has never been verified against this "
+                  "build (known good: %s). It will probably work - the stub ABI is "
+                  "stable - but mention this version first in any bug report.",
+                  runtimeVer, kVerified[0]);
+        b[sizeof(b) - 1] = '\0';
+        coopLog(b);
+    }
+}
+
 void logStartupBanner() {
     coopLog("KenshiCoop loaded! (clean rebuild)");
     if (g_cfg.fakeClockSkewMs != 0) {
@@ -1937,6 +2255,73 @@ bool installMainLoopHook() {
 void configureReplicator() {
     coop::engine::resolve();
 
+    // ---- Capability report ----------------------------------------------------
+    // The CAP_* registry evaluated itself at the end of resolve() and then nothing
+    // read it: capAvailable() had no call sites at all. This is its first consumer.
+    //
+    // It REPORTS; it does not disable. The temptation is to force the feature off,
+    // and that is the wrong trade here. The engine wrappers already fail safe on
+    // an unresolved pointer - every one null-checks and returns false - so a
+    // missing capability costs a no-op, not a crash. Turning the feature off on
+    // the strength of this table instead risks the opposite error: capEvaluate is
+    // deliberately fail-closed, so a capability whose required rows do not all
+    // resolve reads as unavailable even where the code only ever calls the subset
+    // that DID resolve. That would disable something that works, on a machine
+    // nobody can reproduce, which is strictly worse than the silence being fixed.
+    //
+    // The silence is the actual complaint, and a line in the log answers it: two
+    // players staring at beds that will not sync currently have no way to learn
+    // that this build could not resolve setBedMode, because nothing failed. Making
+    // this gate rather than report is a follow-up, and it needs one real
+    // observation of a capability coming up false on a healthy install first.
+    //
+    // Not listed: features with no single capability behind them (spawn, recruit,
+    // research, inventory, squad), which resolve through hand translation and the
+    // object factory rather than one named lever. CAP_HAND_RESOLVE is the CORE
+    // capability and is checked elsewhere - without it nothing works at all.
+    {
+        struct FeatureCap {
+            const bool*              flag;
+            coop::engine::Capability cap;
+            const char*              name;
+        };
+        const FeatureCap kGates[] = {
+            { &g_cfg.carrySync,   coop::engine::CAP_CARRY,     "carry"     },
+            { &g_cfg.furnSync,    coop::engine::CAP_FURNITURE, "furniture" },
+            { &g_cfg.chainSync,   coop::engine::CAP_CHAIN,     "chain"     },
+            { &g_cfg.stealthSync, coop::engine::CAP_STEALTH,   "stealth"   },
+            { &g_cfg.doorSync,    coop::engine::CAP_DOOR,      "door"      },
+            { &g_cfg.bdoorSync,   coop::engine::CAP_DOOR,      "bdoor"     },
+            { &g_cfg.buildSync,   coop::engine::CAP_BUILD,     "build"     },
+            { &g_cfg.prodSync,    coop::engine::CAP_MACHINE,   "prod"      },
+            { &g_cfg.deedSync,    coop::engine::CAP_DEED,      "deed"      },
+            { &g_cfg.timeSync,    coop::engine::CAP_TIME,      "time"      },
+            { &g_cfg.moneySync,   coop::engine::CAP_WALLET,    "money"     },
+            { &g_cfg.factionSync, coop::engine::CAP_FACTION,   "faction"   },
+            { &g_cfg.medSync,     coop::engine::CAP_LIMB,      "medical"   },
+            { &g_cfg.statsSync,   coop::engine::CAP_STATS,     "stats"     },
+            { &g_cfg.speedSync,   coop::engine::CAP_SPEED,     "speed"     },
+            { &g_cfg.saveSync,    coop::engine::CAP_SAVELOAD,  "save"      },
+            { &g_cfg.loadSync,    coop::engine::CAP_SAVELOAD,  "load"      }
+        };
+        const int nGates = (int)(sizeof(kGates) / sizeof(kGates[0]));
+        unsigned int missing = 0;
+        for (int i = 0; i < nGates; ++i) {
+            if (!*(kGates[i].flag)) continue;             // off by config: not a surprise
+            if (coop::engine::capAvailable(kGates[i].cap)) continue;
+            ++missing;
+            char b[208]; _snprintf(b, sizeof(b) - 1,
+                "[caps] WARNING %sSync is ON but the '%s' engine capability did not "
+                "resolve in this build - the feature will no-op silently",
+                kGates[i].name, coop::engine::capName(kGates[i].cap));
+            b[sizeof(b) - 1] = '\0'; coopLog(b);
+        }
+        char b[144]; _snprintf(b, sizeof(b) - 1,
+            "[caps] %u of %d enabled features are missing their engine capability",
+            missing, nGates);
+        b[sizeof(b) - 1] = '\0'; coopLog(b);
+    }
+
     // Stage 4: the host streams nearby world NPCs (host-authoritative) in addition
     // to its squad; the join resolves each by hand and drives it like a squad body.
     if (g_cfg.isHost || g_cfg.cellAuth) g_repl.setStreamNpcs(true);
@@ -1975,6 +2360,7 @@ void configureReplicator() {
                                g_cfg.combatBigSnapDist, g_cfg.combatSlideMax,
                                g_cfg.combatConvergeMs);
         g_repl.setSendStamp(g_cfg.sendStamp);
+        g_repl.setTuning(g_cfg.tuning);
         g_repl.setCensusRadius(g_cfg.censusRadius);
         g_repl.setSpawnMintRadius(g_cfg.spawnMintRadius);
         g_repl.setCensusParkDist(g_cfg.censusParkDist);
@@ -2112,6 +2498,23 @@ void installEngineDetours() {
         coopLog("[trust] divergence-gated authority ON (default; KENSHICOOP_GATE_AUTHORITY=0 disables)");
     }
 
+    // Hand-hash split of world-NPC duty inside a contested cell. BOTH clients
+    // must run the same setting: each computes the partition independently from
+    // the shared hand, so a one-sided enable makes both claim the same bodies.
+    g_repl.setWeatherSync(g_cfg.weatherSync);
+    g_repl.setDialogueSync(g_cfg.dialogueSync);
+    if (g_cfg.dialogueSync) {
+        if (coop::engine::installDialogueHooks())
+            coopLog("[dlg] speech-bubble capture installed; dialogue relay ON");
+        else
+            coopLog("[dlg] FAILED to hook DialogueSpeechBubble; dialogue relay OFF");
+    }
+    if (g_cfg.splitAuthority) {
+        g_repl.setSplitAuthority(true);
+        coopLog("[cell] contested-cell authority SPLIT by hand hash "
+                "(KENSHICOOP_SPLIT_AUTHORITY=1; BOTH clients must match)");
+    }
+
     // Damage guard (BOTH sides, DEFAULT ON): locally-simulated melee hits on
     // driven bodies are suppressed (HIT_MISSED) so cosmetic fights cannot diverge
     // the local-only medical model. The guard set is "every body this client
@@ -2128,9 +2531,16 @@ void installEngineDetours() {
             // the damage its player-squad melee WOULD have dealt to driven world-NPC
             // copies; publishCombatHits forwards it and the host wounds the real body.
             g_repl.setReportCombat(!g_cfg.isHost);
+            // The guard also swallows the engine's floating damage number,
+            // because that number is drawn by the hit path it skips. Draw our
+            // own from the amounts the guard is already holding.
+            coop::engine::setDamageFloaters(g_cfg.damageFloaters);
             coopLog(g_cfg.isHost
                 ? "[dmg] hitByMeleeAttack detour installed; damage guard ON (host, driven peer-squad bodies)"
                 : "[dmg] hitByMeleeAttack detour installed; damage guard ON + combat-hit report ON (join)");
+            if (g_cfg.damageFloaters)
+                coopLog("[dmg] suppressed-hit damage floaters ON "
+                        "(KENSHICOOP_DAMAGE_FLOATERS=0 disables)");
         } else {
             coopLog("[dmg] FAILED to install hitByMeleeAttack detour; damage guard disabled");
         }
@@ -2314,13 +2724,19 @@ __declspec(dllexport) void startPlugin() {
     // own dump is written from a late filter and carries no usable frames, which is
     // where the 2026-08-03 crash investigation dead-ended; ours chains to RE_Kenshi's
     // filter afterwards, so its emergency save is unaffected. See core/CrashDump.h.
-    {
+    //
+    // Opt-in (KENSHICOOP_CRASH_TRACER=1), because the cost is paid on every exception
+    // in the process rather than only on the fatal one: the handler is vectored at
+    // priority 1 and the engine throws routinely. Ask for it when taking a crash
+    // report; leave it off for a session that is merely being played.
+    if (g_cfg.crashTracer) {
         std::string dir = g_cfg.logPath;
         size_t cut = dir.find_last_of("\\/");
         dir = (cut == std::string::npos) ? std::string(".") : dir.substr(0, cut);
         coop::crashdump::install(dir.c_str(), g_cfg.isHost ? "host" : "join");
     }
 
+    logHostVersions();
     logStartupBanner();
 
     // Hook the main-thread tick FIRST (early-return on failure), then wire the

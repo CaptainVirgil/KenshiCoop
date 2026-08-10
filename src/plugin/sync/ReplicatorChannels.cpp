@@ -311,8 +311,11 @@ void Replicator::applyMedical(GameWorld* gw, Inbound& in, NetLink& net, u32 owne
     for (std::map<Key, MedRecv>::iterator it = medRecv_.begin(); it != medRecv_.end(); ++it) {
         const Key& k = it->first;
         MedRecv&   r = it->second;
-        if (!r.have || (now - r.lastFwdMs) < FWD_THROTTLE_MS) continue;
+        if (!r.have || (now - r.lastProbeMs) < FWD_THROTTLE_MS) continue;
         if (ownHands_.find(k) != ownHands_.end()) continue;
+        // Stamp the probe before doing it: the engine read below is the cost being
+        // throttled, and it happens whether or not anything is forwarded.
+        r.lastProbeMs = now;
         unsigned int hand[5] = { k.t, k.c, k.cs, k.i, k.s };
         engine::MedicalRead mr;
         if (!engine::readMedicalByHand(hand, &mr) || !mr.valid) continue;
@@ -449,11 +452,18 @@ void Replicator::publishStats(GameWorld* gw, NetLink& net, u32 ownerId) {
     for (std::set<Key>::const_iterator it = ownHands_.begin(); it != ownHands_.end(); ++it) {
         const Key& k = *it;
         unsigned int hand[5] = { k.t, k.c, k.cs, k.i, k.s };
+        // Throttle BEFORE the engine read, not after: readStatsByHand resolves
+        // the hand and walks the stat block, and it ran at frame rate (~60 Hz)
+        // only for the result to be dropped by a 1 Hz gate on the next line.
+        // Same pattern this file already states at "Stamp the probe before
+        // doing it: the engine read below is the cost being throttled."
+        // Output is unchanged - nothing between the old read and this test
+        // fed the test.
+        StatsPub& sp = statsPub_[k];
+        if (sp.lastSendMs != 0 && (now - sp.lastSendMs) < MIN_SEND_MS) continue;
         engine::StatsRead sr;
         if (!engine::readStatsByHand(hand, &sr) || !sr.valid) continue;
         u32 h = statsHash(sr);
-        StatsPub& sp = statsPub_[k];
-        if (sp.lastSendMs != 0 && (now - sp.lastSendMs) < MIN_SEND_MS) continue;
         if (h == sp.hash && (now - sp.lastSendMs) < RESEND_MS) continue;
         bool changed = (h != sp.hash);
         sp.hash = h; sp.lastSendMs = now;
@@ -814,6 +824,35 @@ void Replicator::publishDoors(const SyncContext& ctx) {
         Key k; k.t = r.hand[0]; k.c = r.hand[1]; k.cs = r.hand[2];
         k.i = r.hand[3]; k.s = r.hand[4];
         DoorRow& dr = doorRows_[k];
+        // A door belongs to whoever authors the ground it stands on, the same
+        // rule the near and mid bands already follow. Without it BOTH clients
+        // describe every door within 100 u, and since each engine opens doors
+        // for its own bodies, the two descriptions disagree the moment anyone
+        // walks through - which is the flapping bar door, not a lost packet.
+        // With cellAuth off this resolves to the host, which is the behaviour
+        // the world stream already assumes.
+        // cellAuth_-gated, matching the two analogous gates in ReplicatorPublish.
+        // authorityFor() resolves to the HOST whenever presence authority is off, so
+        // an unconditional test silently stops the join publishing doors at all in
+        // that configuration - which is how the whole scenario tier runs. The
+        // post-apply hold below is independent and stays unconditional: it damps the
+        // flapping bar door on its own, without needing to know who authors what.
+        if (cellAuth_ && !weAuthor(gw, ownerId, r.x, r.z)) {
+            // Keep the baseline current anyway: when the cell changes hands we
+            // must not mistake the peer's accumulated changes for our own.
+            dr.seeded = true; dr.knownOpen = r.open; dr.knownLocked = r.locked;
+            continue;
+        }
+        // Post-apply hold: the peer just told us about this door and Kenshi may
+        // not have kept what we wrote. Contradicting them now is what starts the
+        // ping-pong, so let their row stand for a beat.
+        if (dr.holdUntilMs != 0) {
+            if ((long)(now - dr.holdUntilMs) < 0) {
+                dr.knownOpen = r.open; dr.knownLocked = r.locked;
+                continue;
+            }
+            dr.holdUntilMs = 0;
+        }
         if (!dr.seeded) {
             // Both clients load the same save, so the baseline is shared: seed
             // silently and stream only genuine mid-session movement.
@@ -865,6 +904,7 @@ void Replicator::applyDoors(const SyncContext& ctx) {
         // write causes must not be re-detected as ours next sample.
         dr.knownOpen = (int)p.open; dr.knownLocked = (int)p.locked;
         dr.seeded = true;
+        dr.holdUntilMs = nowMs() + tuning_.doorEchoHoldMs;
         engine::DoorRead cur;
         if (!engine::readDoorByHand(p.hand, &cur))
             continue; // out-of-interest or runtime door - accepted edge
@@ -1463,6 +1503,65 @@ void Replicator::publishBuilds(const SyncContext& ctx) {
     }
 }
 
+// How often a refused building mint is retried, and how many times before this
+// client gives up on it.
+//
+// placeBuildingAt refuses for reasons that are almost always TEMPORARY on the
+// receiving side - the target zone is not streamed in here yet being the obvious
+// one - and PLACE is a one-shot edge, so without a local retry the first refusal
+// was final. The player-visible symptom is the plainest possible: you build
+// something and the other player never sees it, for the rest of the session.
+//
+// 5 s x 120 is ten minutes, which covers a zone load and a walk across it. It
+// terminates rather than retrying forever because a refusal CAN be permanent (a
+// template this install does not have), and an engine world-spawn attempt every
+// 5 s forever, per refused building, is not free. The give-up is logged: a
+// silent permanent failure is what this whole change is about.
+static const unsigned long BUILD_MINT_RETRY_MS  = 5000;
+static const unsigned int  BUILD_MINT_RETRY_MAX = 120;
+
+void Replicator::retryRefusedBuilds(GameWorld* gw, unsigned long now) {
+    for (std::map<Key, PeerBuild>::iterator it = peerBuilds_.begin();
+         it != peerBuilds_.end(); ++it) {
+        PeerBuild& pb = it->second;
+        if (pb.minted || pb.removed || !pb.haveAnn) continue;
+        if (pb.retryTick != 0 && (now - pb.retryTick) < BUILD_MINT_RETRY_MS) continue;
+        pb.retryTick = now;
+        ++pb.retries;
+
+        const BuildPlacePacket& p = pb.ann;
+        int rc = engine::placeBuildingAt(gw, p.sid, p.x, p.y, p.z, p.yaw,
+                                         /*completed*/false, pb.localHand);
+        if (rc == 1) {
+            pb.minted  = 1;
+            pb.haveAnn = false;   // nothing left to retry
+            Key lk; lk.t = pb.localHand[0]; lk.c = pb.localHand[1];
+            lk.cs = pb.localHand[2]; lk.i = pb.localHand[3]; lk.s = pb.localHand[4];
+            mintByLocal_[lk] = it->first;
+            char b[240];
+            _snprintf(b, sizeof(b) - 1,
+                      "[build] MINT-RETRY OK key=%u.%u.%u.%u.%u sid='%s' try=%u "
+                      "local=%u.%u.%u.%u.%u",
+                      p.key[0], p.key[1], p.key[2], p.key[3], p.key[4],
+                      p.sid, pb.retries,
+                      pb.localHand[0], pb.localHand[1], pb.localHand[2],
+                      pb.localHand[3], pb.localHand[4]);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            continue;
+        }
+        if (pb.retries >= BUILD_MINT_RETRY_MAX) {
+            pb.haveAnn = false;   // stop paying for it; the entry stays a tombstone
+            char b[224];
+            _snprintf(b, sizeof(b) - 1,
+                      "[build] MINT-RETRY GIVEUP key=%u.%u.%u.%u.%u sid='%s' "
+                      "tries=%u rc=%d - this building will not appear here",
+                      p.key[0], p.key[1], p.key[2], p.key[3], p.key[4],
+                      p.sid, pb.retries, rc);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+        }
+    }
+}
+
 void Replicator::applyBuilds(const SyncContext& ctx) {
     GameWorld* gw = ctx.gw; Inbound& in = *ctx.in;
     // Announcements first (same-channel ordered-reliable means a STATE row
@@ -1478,8 +1577,21 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
         if (p.sid[0] == '\0') continue;
         Key k; k.t = p.key[0]; k.c = p.key[1]; k.cs = p.key[2];
         k.i = p.key[3]; k.s = p.key[4];
-        if (peerBuilds_.find(k) != peerBuilds_.end())
-            continue; // already minted (or mint already refused) - dedupe
+        std::map<Key, PeerBuild>::iterator ex = peerBuilds_.find(k);
+        if (ex != peerBuilds_.end()) {
+            // Minted or tombstoned: genuine dedupe, nothing to do.
+            if (ex->second.minted || ex->second.removed) continue;
+            // Refused earlier and the placer is announcing it again (a
+            // connect-edge resync). That is fresh evidence the building still
+            // exists over there, so it buys a full new round of attempts rather
+            // than being swallowed by the dedupe - which is what used to happen,
+            // and why a refused mint was permanent.
+            memcpy(&ex->second.ann, &p, sizeof(ex->second.ann));
+            ex->second.haveAnn   = true;
+            ex->second.retryTick = 0;
+            ex->second.retries   = 0;
+            continue;
+        }
         PeerBuild& pb = peerBuilds_[k];
         // Mint INCOMPLETE always: the placer's STATE rows drive progress from
         // here (a real UI placement starts at 0 anyway).
@@ -1492,6 +1604,12 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
             Key lk; lk.t = pb.localHand[0]; lk.c = pb.localHand[1];
             lk.cs = pb.localHand[2]; lk.i = pb.localHand[3]; lk.s = pb.localHand[4];
             mintByLocal_[lk] = k;
+        } else {
+            // Retain the announcement so retryRefusedBuilds can try again.
+            memcpy(&pb.ann, &p, sizeof(pb.ann));
+            pb.haveAnn   = true;
+            pb.retryTick = 0;
+            pb.retries   = 0;
         }
         char b[240];
         _snprintf(b, sizeof(b) - 1,
@@ -1503,6 +1621,11 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
                   pb.localHand[3], pb.localHand[4]);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
+    // Before the STATE rows, because a mint that succeeds on retry should be able
+    // to take this tick's progress row rather than wait another one. Runs every
+    // tick regardless of whether any PLACE arrived - the whole point is that the
+    // placer is NOT going to announce it again.
+    retryRefusedBuilds(gw, nowMs());
     for (std::deque<InboundBuildState>::iterator it = states.begin();
          it != states.end(); ++it) {
         const BuildStatePacket& p = it->pkt;
@@ -1552,8 +1675,17 @@ void Replicator::applyBuilds(const SyncContext& ctx) {
         Key k; k.t = p.key[0]; k.c = p.key[1]; k.cs = p.key[2];
         k.i = p.key[3]; k.s = p.key[4];
         std::map<Key, PeerBuild>::iterator f = peerBuilds_.find(k);
-        if (f == peerBuilds_.end() || !f->second.minted || f->second.removed)
-            continue; // never minted here or already gone - nothing to remove
+        if (f == peerBuilds_.end() || f->second.removed)
+            continue; // unknown key or already gone - nothing to remove
+        if (!f->second.minted) {
+            // Never minted here, and now the placer has torn it down. There is
+            // nothing to destroy, but a pending retry must stop: otherwise this
+            // client spends ten minutes trying to place a building that no
+            // longer exists on the machine that owns it.
+            f->second.haveAnn = false;
+            f->second.removed = true;
+            continue;
+        }
         PeerBuild& pb = f->second;
         pb.removed = true;
         bool ok = engine::destroyBuildingByHand(gw, pb.localHand);
@@ -1658,39 +1790,55 @@ void Replicator::onPeerConnected(NetLink& net, u32 ownerId) {
     // phantom drop/KO edges rather than heal state.
     unsigned int nFac = 0, nDoor = 0, nBdoor = 0, nMed = 0, nStats = 0,
                  nMoney = 0, nInv = 0, nWorld = 0, nProd = 0, nDeed = 0;
+    // Stagger the reseed rather than flattening every stamp to 1. Every one of
+    // these caches resends on `now - lastSendMs >= RESEND_MS`, so setting them all
+    // to 1 makes the entire cached world become due in the SAME frame the peer
+    // connects: with storeSync on that is dozens of container snapshots at up to
+    // ~10 KB each, plus medical, stats, doors and production, dumped in one tick
+    // at exactly the moment the join is also loading a world and streaming a save.
+    // Spreading the stamps over RESEED_SPREAD_MS lets the existing per-channel
+    // sample throttles pace it for free, and the peer still has the full picture
+    // within a few seconds.
+    const unsigned long RESEED_SPREAD_MS = 5000;
+    unsigned long reseedN = 0;
+    // 1 means "infinitely old, send immediately". Walking the stamp forward from
+    // there hands out later and later due-times, without ever exceeding now.
+#define KC_RESEED_STAMP (1 + (unsigned long)((reseedN++ * 37) % RESEED_SPREAD_MS))
+
     for (std::map<std::string, FacRow>::iterator it = facRows_.begin();
          it != facRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nFac; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nFac; }
     for (std::map<Key, DoorRow>::iterator it = doorRows_.begin();
          it != doorRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nDoor; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nDoor; }
     for (std::map<std::pair<Key, int>, BdoorRow>::iterator it = bdoorRows_.begin();
          it != bdoorRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nBdoor; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nBdoor; }
     for (std::map<Key, MedPub>::iterator it = medPub_.begin();
          it != medPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nMed; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nMed; }
     for (std::map<Key, StatsPub>::iterator it = statsPub_.begin();
          it != statsPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nStats; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nStats; }
     // The money pool is a single value, not a row cache: age its send stamp so
     // publishMoneyPool re-broadcasts the authoritative total on its next sample.
     if (poolSentMs_ != 0) { poolSentMs_ = 1; nMoney = 1; }
     for (std::map<Key, InvPub>::iterator it = invPub_.begin();
          it != invPub_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nInv; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nInv; }
     for (std::map<Key, WorldTrack>::iterator it = worldTrack_.begin();
          it != worldTrack_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nWorld; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nWorld; }
     for (std::map<std::pair<int, Key>, ProdRow>::iterator it = prodRows_.begin();
          it != prodRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nProd; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nProd; }
     // Deeds send with resendUnsent, so a fresh peer would learn the owned set
     // on the next 1 Hz sample regardless; ageing the stamps just means it does
     // not wait out the 15 s resend window for deeds already published.
     for (std::map<Key, DeedRow>::iterator it = deedRows_.begin();
          it != deedRows_.end(); ++it)
-        if (it->second.lastSendMs != 0) { it->second.lastSendMs = 1; ++nDeed; }
+        if (it->second.lastSendMs != 0) { it->second.lastSendMs = KC_RESEED_STAMP; ++nDeed; }
+#undef KC_RESEED_STAMP
 
     char b[240];
     _snprintf(b, sizeof(b) - 1,
@@ -2045,6 +2193,23 @@ void Replicator::applyStealthFeedback(GameWorld* gw, Inbound& in) {
     }
 }
 
+// A peer's speed multiplier, made safe before anything can read it.
+//
+// SpeedPacket.speed is untrusted f32 straight off the wire and it is the only
+// wire field that reaches the engine's own clock rate. 5.0 is the ceiling
+// slewedEffective already enforces for the slewed value; 0 is pause, which is
+// legitimate.
+//
+// The `!(v >= 0.0f)` form is deliberate rather than `v < 0.0f`: it is false for
+// a NaN as well as for a negative, and NaN is the case that got through
+// everything downstream (every comparison against a NaN is false, so both of
+// slewedEffective's clamps decline to fire and it returns the NaN unchanged).
+static float sanePeerSpeed(float v) {
+    if (!(v >= 0.0f)) return 0.0f;   // NaN and negatives both land here
+    if (v > 5.0f) return 5.0f;
+    return v;
+}
+
 void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
                            bool isHost) {
     const unsigned long RESEND_MS        = 3000; // safety resend (late join / lost state)
@@ -2124,9 +2289,19 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
         if (p.seq != 0 && speedSeqSeen_ != 0 && (long)(p.seq - speedSeqSeen_) <= 0)
             continue;
         speedSeqSeen_ = p.seq;
-        bool pkPaused = (p.flags & SPEED_PAUSED) != 0 || p.speed <= EPS;
+        // Sanitize BEFORE anything reads it. This is the one field on the wire
+        // that lands directly in the engine's clock rate, and slewedEffective's
+        // clamps do not hold it: a NaN fails every comparison there, so both
+        // bounds tests are false and it is returned unchanged, and a NEGATIVE
+        // value takes the `eff <= 0.01f` paused early-out and is returned
+        // unclamped - a peer could hand this client a negative time scale.
+        // The host path is not safe either: speedPeerReq_ feeds a min()
+        // arbitration, and min() against a NaN is not defined to do anything
+        // useful.
+        const float pkSpeed = sanePeerSpeed(p.speed);
+        bool pkPaused = (p.flags & SPEED_PAUSED) != 0 || pkSpeed <= EPS;
         if (p.type == (u8)PKT_SPEED_REQ && isHost) {
-            float req = pkPaused ? 0.0f : p.speed;
+            float req = pkPaused ? 0.0f : pkSpeed;
             bool  cmb = (p.flags & SPEED_IN_COMBAT) != 0;
             if (speedPeerReq_ < 0.0f || fabs(req - speedPeerReq_) > EPS ||
                 cmb != speedPeerCombat_) {
@@ -2142,7 +2317,7 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
             // touching the UI buttons - they keep showing this player's VOTE.
             // The clock slew (protocol 25) folds in here: the join's sim runs
             // at effective * timeSlew_ until its game clock matches the host's.
-            float eff = pkPaused ? 0.0f : p.speed;
+            float eff = pkPaused ? 0.0f : pkSpeed;
             if (engine::writeGameSpeedQuiet(gw, slewedEffective(eff), pkPaused)) {
                 speedLastApplied_ = eff;
                 bool changed = (speedLastSet_ < 0.0f || fabs(eff - speedLastSet_) > EPS);
@@ -2241,6 +2416,129 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
     // snap the buttons back to the captured vote so the indicator self-heals
     // within a frame and always reflects the player's request.
     if (!userActed) engine::reconcileVoteButtons();
+}
+
+void Replicator::syncDialogue(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId) {
+    std::deque<InboundDialogue> got;
+    in.drainDialogue(got);
+    if (!dialogueSync_) return;
+
+    // Publish whatever was said HERE since last tick. Symmetric by design: the
+    // bubble spawns wherever the AI ran, so neither side is authoritative for
+    // speech and both simply forward what they witnessed.
+    engine::DialogueLine lines[16];
+    unsigned int n = engine::drainDialogue(lines, 16);
+    for (unsigned int i = 0; i < n; ++i) {
+        DialoguePacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.type    = (u8)PKT_DIALOGUE;
+        pkt.ownerId = ownerId;
+        pkt.x = lines[i].x; pkt.y = lines[i].y; pkt.z = lines[i].z;
+        std::strncpy(pkt.text, lines[i].text, sizeof(pkt.text) - 1);
+        net.queueDialogue(pkt);
+        char b[200];
+        _snprintf(b, sizeof(b) - 1, "[dlg] SEND '%.100s'", pkt.text);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+
+    // Show what the peer witnessed. No de-dup and no ordering: a spoken line is
+    // an event, and the worst case is one line arriving twice rather than a
+    // stale caption being re-asserted forever.
+    for (std::deque<InboundDialogue>::iterator it = got.begin(); it != got.end(); ++it) {
+        if (it->pkt.ownerId == ownerId) continue; // our own echo
+        engine::showDialogue(gw, it->pkt.x, it->pkt.y, it->pkt.z, it->pkt.text);
+        char b[200];
+        _snprintf(b, sizeof(b) - 1, "[dlg] RECV '%.100s'", it->pkt.text);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+}
+
+void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
+                             bool isHost) {
+    std::deque<InboundWeather> got;
+    in.drainWeather(got);
+    if (!weatherSync_) return;
+
+    if (isHost) {
+        // ~1 Hz sample of the ACTIVE biome region, change-gated: a settled sky
+        // sends nothing. The rate only has to beat a weather TRANSITION, which
+        // is minutes long, so this is a few dozen bytes a second at worst.
+        const unsigned long SEND_MS = 1000;
+        const unsigned long now = nowMs();
+        if (weatherLastSendMs_ != 0 && (now - weatherLastSendMs_) < SEND_MS) return;
+        weatherLastSendMs_ = now;
+        engine::WeatherRead wr;
+        if (!engine::readWeather(&wr) || !wr.valid) return;
+        // Change gate. endTimeMinutes and the season fields move rarely;
+        // weatherTime advances constantly, so it is deliberately NOT part of
+        // the comparison - otherwise this would send every beat and the gate
+        // would be decorative. The receiver still gets the fresh clock
+        // whenever anything else moves, and a transition always moves the
+        // name or the strengths.
+        if (weatherHave_ &&
+            std::strcmp(weatherLastName_, wr.sid) == 0 &&
+            weatherLastStrength_  == wr.strength &&
+            weatherLastEffect_    == wr.effectStrength &&
+            weatherLastEnd_       == wr.endTimeMinutes &&
+            weatherLastSeason_    == wr.seasonIndex &&
+            weatherLastSeasonEnd_ == wr.seasonEndDay) return;
+        std::strncpy(weatherLastName_, wr.sid, sizeof(weatherLastName_) - 1);
+        weatherLastName_[sizeof(weatherLastName_) - 1] = '\0';
+        weatherLastStrength_  = wr.strength;
+        weatherLastEffect_    = wr.effectStrength;
+        weatherLastEnd_       = wr.endTimeMinutes;
+        weatherLastSeason_    = wr.seasonIndex;
+        weatherLastSeasonEnd_ = wr.seasonEndDay;
+        weatherHave_ = true;
+        WeatherPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.type           = (u8)PKT_WEATHER;
+        pkt.ownerId        = ownerId;
+        pkt.seq            = weatherSeqOut_++;
+        std::strncpy(pkt.sid, wr.sid, sizeof(pkt.sid) - 1);
+        pkt.strength       = wr.strength;
+        pkt.effectStrength = wr.effectStrength;
+        pkt.endTimeMinutes = wr.endTimeMinutes;
+        pkt.weatherTime    = wr.weatherTime;
+        pkt.seasonIndex    = wr.seasonIndex;
+        pkt.seasonEndDay   = wr.seasonEndDay;
+        net.queueWeather(pkt);
+        char b[160];
+        _snprintf(b, sizeof(b) - 1, "[weather] SEND '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  pkt.sid, (double)pkt.strength, (double)pkt.effectStrength,
+                  pkt.endTimeMinutes, pkt.seasonIndex);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+        return;
+    }
+
+    // JOIN: newest wins. The channel is ordered-reliable, so the seq guard is
+    // belt-and-braces against a reconnect replay.
+    const WeatherPacket* newest = 0;
+    for (std::deque<InboundWeather>::iterator it = got.begin(); it != got.end(); ++it) {
+        if (!newest || (i32)(it->pkt.seq - newest->seq) > 0) newest = &it->pkt;
+    }
+    if (!newest) return;
+    if (weatherHave_ && (i32)(newest->seq - weatherSeqIn_) <= 0) return;
+    weatherSeqIn_ = newest->seq; weatherHave_ = true;
+    engine::WeatherRead wr;
+    memset(&wr, 0, sizeof(wr));
+    std::strncpy(wr.sid, newest->sid, sizeof(wr.sid) - 1);
+    wr.strength       = newest->strength;
+    wr.effectStrength = newest->effectStrength;
+    wr.endTimeMinutes = newest->endTimeMinutes;
+    wr.weatherTime    = newest->weatherTime;
+    wr.seasonIndex    = newest->seasonIndex;
+    wr.seasonEndDay   = newest->seasonEndDay;
+    wr.valid          = true;
+    // Logs only the EDGE: applyWeather returns true when it actually wrote
+    // something, so a matching sky is silent.
+    if (engine::applyWeather(wr)) {
+        char b[160];
+        _snprintf(b, sizeof(b) - 1, "[weather] APPLY '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  wr.sid, (double)wr.strength, (double)wr.effectStrength,
+                  wr.endTimeMinutes, wr.seasonIndex);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
 }
 
 void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,

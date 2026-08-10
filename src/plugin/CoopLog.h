@@ -35,9 +35,37 @@ unsigned long wallClockMs();
 // KENSHICOOP_FAKE_CLOCK_SKEW_MS (join only) BEFORE logInit. 0 = real clock.
 void logSetFakeSkewMs(long skewMs);
 
+// Monotonic MICROSECOND counter, for measuring work INSIDE one frame.
+//
+// Deliberately separate from wallClockMs() and never expressed in terms of it.
+// unsigned long is 32-bit under MSVC x64, so a microsecond counter wraps about
+// every 71 minutes - harmless for sub-frame deltas under unsigned subtraction,
+// and fatal for the ms deltas this codebase compares over minutes (30 s target
+// age-out, 60 s inventory forget, 60 s keepalive prune). Microseconds because
+// the thing being measured is a budget of one or two MILLIseconds; GetTickCount
+// (~15 ms granularity, the only clock Plugin.cpp had) cannot see it at all.
+// Thread-safe.
+unsigned long monoUs();
+
 // Append one INFO/ERROR line (timestamped, tagged) and flush. Thread-safe.
 void logLine(const char* msg);
 void logErrLine(const char* msg);
+
+// Re-point the log at a new path and mode tag, mid-session.
+//
+// The role a player actually plays is chosen in the F2 panel at Connect time,
+// but the log file is opened at plugin load from the CONFIGURED role - so a
+// player whose config said "host" and who then pressed JOIN wrote their whole
+// session into KenshiCoop_host.log. That trap was documented twice (CLAUDE.md,
+// PLAYING.md) instead of fixed, and it misleads everyone who reads a log,
+// including the person who wrote the warning.
+//
+// Flushes and closes, renames the file on disk (so the run so far is not lost),
+// and reopens in APPEND mode. Every failure path falls back to reopening the
+// ORIGINAL path in append mode: a log that ends up with the wrong name is a
+// nuisance, a session that silently stops logging is not. Returns true when the
+// file now lives at newPath. No-op if the path is unchanged.
+bool logRetag(const char* newPath, const char* newTag);
 
 // Flush and close the file. Called right before ExitProcess on test self-exit.
 void logClose();

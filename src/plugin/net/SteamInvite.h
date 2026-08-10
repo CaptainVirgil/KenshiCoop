@@ -1,5 +1,28 @@
 // SteamInvite - Steam overlay invite + lobby-based automatic SteamID exchange.
 //
+// ---- STATUS: the invite half of this module is UNREACHABLE -------------------
+// beginInvite / inviteFriend / pickerActive / friendCount / friendId /
+// friendName / friendState have NO callers anywhere outside this file. The F2
+// panel never exposes the picker, so no player can start an invite, which means
+// no player can receive one either. The whole flow described below is
+// aspirational, not shipped - the working path is the one it was meant to
+// replace: Copy my Steam ID, paste the friend's, Connect.
+//
+// It is NOT deleted, and must not be deleted casually, because the file also
+// carries two things the WORKING Steam transport depends on:
+//
+//   * onP2PSessionRequest -> steamp2p::accept(). This is what opens the inbound
+//     tunnel for EVERY Steam connection, invite or not. Delete it and the manual
+//     flow stops connecting.
+//   * the SteamAPI_RunCallbacks pump in tick(). Kenshi does not run one, so
+//     nothing else in the process dispatches Steam callbacks - including the one
+//     above.
+//
+// Removing the dead surface therefore means extracting those two into SteamP2P
+// first, which is a change to the connect path and needs a real two-machine test
+// to trust. Until then this notice is the honest version: the picker is not a
+// feature, and the rest of the file is load-bearing.
+//
 // The two-code exchange (SteamP2P's setPeer) is callback-free but forces players
 // to read out and type 17-digit SteamIDs. This module layers Steam's native
 // invite flow on top of the SAME P2P tunnel so nobody types an ID:

@@ -453,6 +453,10 @@ public:
     // setConstructionProgress via that map (per-key seq guard drops stale
     // rows; unknown keys are skipped silently).
     void applyBuilds(const SyncContext& ctx);
+    // Re-attempt building mints that placeBuildingAt refused. PLACE is a one-shot
+    // edge, so without this the first refusal - usually just an unloaded zone -
+    // was final and the building never appeared on this client.
+    void retryRefusedBuilds(GameWorld* gw, unsigned long now);
 
     // Placed-building sync master enable (KENSHICOOP_BUILD_SYNC).
     void setBuildSync(bool v) { buildSync_ = v; }
@@ -611,6 +615,17 @@ public:
     //    than fighting its continuous enforcement; when speedSync is off the
     //    channel degrades to offset logging (no lever to compose with).
     void syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId, bool isHost);
+    // Host-authoritative weather (protocol 55). Kenshi rolls weather per biome
+    // region from a weighted table with no exposed seed, so two clients in the
+    // same biome diverge by construction - the state has to be pushed.
+    void syncWeather(Inbound& in, NetLink& net, u32 ownerId, bool isHost);
+    // Dialogue relay (protocol 56). SYMMETRIC: a speech bubble spawns on
+    // whichever machine's AI ran the conversation, which is the host for world
+    // NPCs and either side for a player's own squad - so both ends publish what
+    // they saw said and show what they are told.
+    void syncDialogue(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId);
+    void setDialogueSync(bool v) { dialogueSync_ = v; }
+    void setWeatherSync(bool v) { weatherSync_ = v; }
 
     // Game-clock sync master enable (KENSHICOOP_TIME_SYNC).
     void setTimeSync(bool v) { timeSync_ = v; }
@@ -681,6 +696,9 @@ public:
     // KENSHICOOP_CENSUS_RADIUS: wide-radius existence culling reach (units);
     // <= 0 disables the census channel on both sides.
     void setCensusRadius(float r) { censusRadius_ = r; }
+    // Per-channel cadences and self-heal debounces, resolved from env/json in
+    // loadConfig. Applied whole rather than field-by-field: the struct IS the unit.
+    void setTuning(const SyncTuning& t) { tuning_ = t; }
 
     // KENSHICOOP_SPAWN_MINT_RADIUS (2026-07-11 "NPCs spawn on top of the join
     // player" fix): how far from our own squad a census-missing host NPC may
@@ -781,6 +799,14 @@ private:
         bool         downApplied;     // Stage 2: body is currently held in ragdoll (host says down)
         bool         koLatched;       // a reliable EVT_KNOCKOUT pinned this body down
         bool         deathLatched;    // a reliable EVT_DEATH pinned this body down PERMANENTLY
+        // The KO latch's second release path. EVT_REVIVE was the only one, so a
+        // revive that was never sent - or that landed while this client was not
+        // receiving - pinned the body down for the rest of the session. These arm
+        // when the owner's stream starts reporting the body upright and clear the
+        // moment it says down again; see tuning_.koReleaseDebounceMs for why the
+        // wait exists and koSeeSample for why wall clock alone is not enough.
+        unsigned long koSeeTick;
+        unsigned long koSeeSample;   // as carrySeeSample, for the KO-latch release
         bool         combatArmed;     // Stage 3c: a melee-attack order is currently issued
         unsigned long combatTick;     // when the attack order was (re-)issued (re-arm throttle)
         unsigned int combatOrders;    // orders issued this combat episode (re-issue backoff)
@@ -812,11 +838,30 @@ private:
         unsigned int agreeStreak;     // consecutive agreeing+in-position samples
         // Carried-body sync (protocol 18):
         unsigned long carryHealTick;  // last self-heal pickup attempt (throttle)
+        // First tick the stream reported this carry while our copy was not
+        // holding it. The mirror of carryNoSeeTick, and needed for the same
+        // reason: `out` is the INTERPOLATED sample, rendered up to a second in
+        // the past, so it still reports a carry the reliable EVT_DROP_BODY has
+        // already ended here. Healing on the first such tick re-lifts a body the
+        // peer just put down. See tuning_.carryHealDebounceMs.
+        unsigned long carrySeeTick;
+        // Ring time of the newest sample when carrySeeTick was armed. The heal may
+        // only fire once the stream has produced something NEWER that still says
+        // "carried" - wall clock alone would let a frozen stream satisfy the wait.
+        unsigned long carrySeeSample;
         unsigned long carryNoSeeTick; // first tick a locally-carrying copy's stream
                                       //   stopped reporting TASK_CARRY_BODY (the
                                       //   debounced host-side-drop detector)
         // Furniture occupancy sync (protocol 19):
         unsigned long furnHealTick;   // last self-heal enter attempt (throttle)
+        // First tick the stream reported an occupancy our copy is not in. The mirror
+        // of furnNoSeeTick, and needed for the same reason the carry heal needed
+        // carrySeeTick: `out.bodyState` is the interpolated sample and lags real
+        // time, so it still reports a cage a reliable EVT_EXIT_FURNITURE has already
+        // ended here. Healing on the first such tick re-cages a prisoner the peer
+        // just freed. See tuning_.furnHealDebounceMs.
+        unsigned long furnSeeTick;
+        unsigned long furnSeeSample;   // as carrySeeSample, for the occupancy heal
         unsigned long furnNoSeeTick;  // first tick a locally-occupying copy's stream
                                       //   stopped reporting the occupancy bit (the
                                       //   debounced owner-side-exit detector)
@@ -836,6 +881,19 @@ private:
         // self-heal; this guard re-asserts setChainedMode independently so a peer
         // PC's local lockpick can't leave the owner's prisoner unlocked on the peer.
         unsigned long chainHealTick;
+        // The two directions of that guard, both debounced against the delayed
+        // sample. chainSeeTick gates the relock; chainNoSeeTick gates the RELEASE,
+        // which did not exist at all before: for a body both caged and chained the
+        // owner emits no exit event when only the shackle comes off (the kind
+        // priority reports the cage), so a stale batch could re-lock a prisoner and
+        // nothing would ever unlock it again - a permanent divergence where one
+        // player sees a freed captive and the other sees a slave.
+        unsigned long chainSeeTick;
+        unsigned long chainSeeSample;  // as carrySeeSample, for the shackle relock
+        unsigned long chainNoSeeTick;
+        // Set when a reliable furniture ENTER is applied: the bed fast-exit must not
+        // undo it on the strength of a sample older than the event.
+        unsigned long furnEnterHoldMs;
         // Stealth sync (protocol 20):
         unsigned long sneakTick;      // last setStealthMode apply (mode-flap throttle)
         // Prone posture sync (protocol 53):
@@ -856,6 +914,10 @@ private:
         // March attribution: when this body last ENTERED the rest branch, and
         // which branch it took last frame (so the entry edge can be detected).
         unsigned long restEnterMs;
+        // Newest sample time whose rest pose was re-asserted while this body sat
+        // released at mid-rest. Keeps that re-assert at one per received
+        // keepalive instead of one per tick.
+        unsigned long stillPoseMs;
         bool         walkBranchPrev;
         // Per-hand smoothness attribution (Phase 2 diagnosis): cumulative
         // active/zero-step frames this body contributed to the oracle, so a
@@ -874,18 +936,21 @@ private:
                    issuedTask(TASK_NONE), taskApplied(false), taskBad(false),
                    taskTick(0), taskRetries(0), taskNoneTick(0), detached(false), downApplied(false),
                    koLatched(false), deathLatched(false),
+                   koSeeTick(0), koSeeSample(0),
                    combatArmed(false), combatTick(0), combatOrders(0),
                    combatTgtIdx(0), combatTgtSer(0),
                    combatSeenTick(0), combatSnapTick(0), combatSnapCount(0),
                    combatOverTick(0), npcSnapTick(0),
                    goalsCleared(false),
                    trusted(false), agreeStreak(0),
-                   carryHealTick(0), carryNoSeeTick(0),
-                   furnHealTick(0), furnNoSeeTick(0), furnPeerTick(0),
+                   carryHealTick(0), carrySeeTick(0), carrySeeSample(0), carryNoSeeTick(0),
+                   furnHealTick(0), furnSeeTick(0), furnSeeSample(0), furnNoSeeTick(0),
+                   furnPeerTick(0),
                    haveChainOwner(false), chainHealTick(0),
+                   chainSeeTick(0), chainSeeSample(0), chainNoSeeTick(0), furnEnterHoldMs(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
-                   restEnterMs(0), walkBranchPrev(false),
+                   restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
                    zeroF(0), activeF(0), midSeenMs(0) {
             chainOwner[0] = chainOwner[1] = chainOwner[2] = chainOwner[3] = chainOwner[4] = 0;
         }
@@ -955,6 +1020,23 @@ private:
     // streaming them. Keyed by hand so we restore the exact body when it re-enters
     // the host's streamed set.
     std::map<Key, Character*> suppressed_;
+    // Identity witness for the suppressed set: key -> hash of the body's template
+    // stringID, recorded when the hide is booked.
+    //
+    // The 2 s re-assert sweep proves an entry live by round-tripping the pointer
+    // through its own hand, and MIGRATES the hide to the new key when the hand
+    // changed (a combat detach re-containers a hidden body). But a pointer that
+    // round-trips to itself is not proof of the SAME BODY: the engine can despawn
+    // a suppressed character and allocate a different one at that address, and the
+    // recycled body round-trips just as cleanly. Migrating on that evidence alone
+    // moves a hide onto an innocent NPC, which is the worst outcome this subsystem
+    // has - an invisible solid body in a doorway.
+    //
+    // A key with no witness is NOT migrated. Pruning is safe in a way migrating is
+    // not: the ordinary authority pass re-judges the body under its new key and
+    // re-hides it if it should be, so the cost of being wrong here is a flicker,
+    // where the cost of being wrong the other way is permanent.
+    std::map<Key, u32> suppressedSid_;
     // Phase 2 (runtime-spawn sync): last time the suppressed set was re-hidden.
     // The engine can undo a one-shot hide on its own (ambush dialog/combat
     // re-tasks the body, zone streaming re-adds it to the update list), so the
@@ -995,8 +1077,14 @@ private:
     // hiccup doesn't suppress (needs ~1 s unstreamed) and a boundary NPC doesn't
     // flicker back (needs ~2 s streamed dwell to restore). Spike 18: the hard
     // interest edge had no dwell band, so boundary patrollers churned.
-    struct AuthCount { unsigned int unstreamed; unsigned int streamed;
-                       AuthCount() : unstreamed(0), streamed(0) {} };
+    // Dwell accumulators in MILLISECONDS, not frames. They used to count passes,
+    // which made suppression latency depend on frame rate - and once the wide sweep
+    // was throttled to 10 Hz the same 75 "frames" meant 1 s in the near band and
+    // 7.5 s in the wide one. docs/REPLICATION_PITFALLS.md section 1 says stop
+    // writing frame-denominated budgets; this is one of the ones it meant.
+    // lastMs is per-entry because the two passes visit a body on different cadences.
+    struct AuthCount { unsigned long unstreamed; unsigned long streamed; unsigned long lastMs;
+                       AuthCount() : unstreamed(0), streamed(0), lastMs(0) {} };
     std::map<Key, AuthCount>  authCount_;
     unsigned long             authSuppresses_; // churn counters (split_interest metric)
     unsigned long             authRestores_;
@@ -1030,6 +1118,15 @@ private:
     // the appended fields on the 5 s [audit] exist line.
     bool                      censusPubTrunc_;   // host: last publish hit NPC_CENSUS_MAX
     bool                      censusFreshPrev_;  // join: freshness at the last sample
+    // Armed when the census goes stale -> fresh: the next wide pass enumerates at a
+    // widened radius once, to reach bodies that drifted out while nothing was being
+    // judged. Without it those bodies are outside every later enumeration and leak
+    // permanently, which is what censusStaleEdges_ was counting.
+    bool                      censusRejudge_;
+    // When the wide sweep last actually enumerated. The sweep costs a spatial query
+    // per interest anchor out to censusRadius_ and it was running EVERY render
+    // frame to judge a census that only changes at 1 Hz.
+    unsigned long             wideSweepMs_;
     unsigned long             censusFreshChkMs_; // join: when we last sampled it
     unsigned long             censusStaleMs_;    // join: cumulative stale time
     unsigned long             censusStaleEdges_; // join: fresh -> stale transitions
@@ -1047,6 +1144,29 @@ private:
         bool operator<(const MidBandEntry& o) const { return dist < o.dist; }
     };
     std::vector<MidBandEntry> midBand_;
+    // Last keepalive send per STATIONARY mid-band body. A still body is skipped
+    // by the movers-only rule, which left the peer with no task/pose word on it
+    // at all; this stamps the periodic full sample that keeps it held rather
+    // than released to local AI. Pruned in publishOwned (bounded growth).
+    std::map<Key, unsigned long> midStillMs_;
+    // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
+    // slice cursor advances (50 ms), then re-emitted on every render frame:
+    // the scan behind it costs a full captureNpcByHand per body and used to run
+    // 3-4x per slice producing the identical answer, which is most of the
+    // publish cost on whichever client authors the town.
+    std::vector<EntityState>  midRows_;
+    unsigned long             midRowsMs_;
+    bool                      splitAuthority_;
+    // How many times the census freeze / proxy reconcile declined to halt a
+    // body because the drive was walking it. Printed in the 5 s [interp]
+    // rollup as haltDrv=: a climbing number is the marching bug being
+    // PREVENTED, and a zero says this collision is no longer happening.
+    unsigned long             freezeSkipDriven_;
+    // Cells claimed by MORE THAN ONE client this rebuild. rebuildClaimedCells
+    // resolves those to the host; the body split reads this to know where that
+    // tie-break happened, because a cell only one client stands in has nothing
+    // to share out.
+    std::set<std::pair<int, int> > contestedCells_;
     unsigned int              midCursor_;  // start of the CURRENT slice
     unsigned long             midSliceMs_; // last slice advance (50 ms cadence:
                                            // the slice must persist across a
@@ -1248,10 +1368,31 @@ private:
     struct InvPub { u32 hash; unsigned long lastSendMs; u32 pendingHash; unsigned long pendingSince; unsigned int lastSentN; unsigned int lastSentUnits; };
     // truncated (protocol 46): the author's container did not fit in INV_ITEMS_MAX, so
     // `items` is an INCOMPLETE description - reconcile additive-only, never delete.
-    struct InvRecv { u32 ownerId; std::vector<InvItemEntry> items; bool dirty; bool truncated; };
+    // seenMs: when this container's hand last resolved locally. An entry is created
+    // for every snapshot received and, before this existed, removed only by
+    // resetSession - so a session that walked past a lot of storage pinned ~10 KB of
+    // vector capacity per container FOREVER (INV_ITEMS_MAX 64 x 159 B), and every
+    // later pass walked all of them.
+    struct InvRecv { u32 ownerId; std::vector<InvItemEntry> items; bool dirty; bool truncated;
+                     unsigned long seenMs;
+                     InvRecv() : ownerId(0), dirty(false), truncated(false), seenMs(0) {} };
     std::set<Key>          ownedContainers_;
     std::map<Key, InvPub>  invPub_;
     std::map<Key, InvRecv> invRecv_;
+    // Periodic (unchanged-snapshot) resend rollup: count + window start for the
+    // 60 s "[inv] resent N" line. The periodic leg logs nothing per send, and a
+    // broken cadence flooded the reliable channel invisibly once (2026-08-09).
+    unsigned long          invResentCount_;
+    unsigned long          invResentRollupMs_;
+    // Local player-squad positions, refreshed a few times a second in
+    // enforceHostAuthority. Only consumer is the freeze's proximity exemption
+    // (a body you are standing next to is not a divergent wanderer, and
+    // suspending its AI crashes dialogue), so a coarse sample is plenty.
+    enum { PC_SAMPLE_MAX = 16 };
+    float                  pcSampleX_[PC_SAMPLE_MAX];
+    float                  pcSampleZ_[PC_SAMPLE_MAX];
+    unsigned int           pcSampleN_;
+    unsigned long          pcSampleMs_;
     // Protocol 34: the host's ~1 Hz container census result (LOCAL hands of
     // complete STORAGE/machine-class buildings in the interest spheres).
     // Folded into the authored set each publishInventories pass while
@@ -1669,7 +1810,13 @@ private:
     // per limb - first aid on a head wound forwards too.
     struct MedRecv {
         float recvBand[12]; float sentBand[12]; unsigned long lastFwdMs; bool have;
-        MedRecv() : lastFwdMs(0), have(false) {
+        // When this entry was last PROBED, as distinct from last forwarded.
+        // lastFwdMs is only written when a treatment actually crosses, so a body
+        // that never gets first aid - which is nearly all of them - has 0 forever
+        // and its engine probe runs on every single tick for the rest of the
+        // session. The throttle has to key off the probe, not the outcome.
+        unsigned long lastProbeMs;
+        MedRecv() : lastFwdMs(0), lastProbeMs(0), have(false) {
             for (int i = 0; i < 12; ++i) { recvBand[i] = -1.0f; sentBand[i] = -1.0f; }
         }
     };
@@ -1737,8 +1884,11 @@ private:
     struct DoorRow {
         int knownOpen; int knownLocked; unsigned long lastSendMs;
         u32 seqSeen; bool seeded;
+        // Set when we APPLY a peer row: until it passes, this door is the peer's
+        // to describe and we stay quiet about it. See tuning_.doorEchoHoldMs.
+        unsigned long holdUntilMs;
         DoorRow() : knownOpen(-1), knownLocked(-1), lastSendMs(0),
-                    seqSeen(0), seeded(false) {}
+                    seqSeen(0), seeded(false), holdUntilMs(0) {}
     };
     std::map<Key, DoorRow> doorRows_;
     u32           doorSeqOut_;
@@ -1772,7 +1922,22 @@ private:
         unsigned int localHand[5];
         int minted; u32 seqSeen;
         bool removed; // proxy destroyed on a REMOVE: tombstone (rows skip)
-        PeerBuild() : minted(0), seqSeen(0), removed(false) { memset(localHand, 0, sizeof(localHand)); }
+        // A refused mint used to be indistinguishable from a tombstone: the entry
+        // existed, minted stayed 0, the PLACE dedupe skipped every later row, and
+        // the building never appeared on this client again. But PLACE is a
+        // one-shot edge - the placer does not re-send it - and the likeliest
+        // reason placeBuildingAt refuses is that the target zone is not loaded
+        // here yet, which is temporary. So the announcement is RETAINED and the
+        // mint is retried locally; see BUILD_MINT_RETRY_MS in ReplicatorChannels.
+        BuildPlacePacket ann;
+        bool          haveAnn;    // ann holds a mint worth retrying
+        unsigned long retryTick;  // when the last attempt ran (0 = never)
+        unsigned int  retries;    // attempts so far, against BUILD_MINT_RETRY_MAX
+        PeerBuild() : minted(0), seqSeen(0), removed(false),
+                      haveAnn(false), retryTick(0), retries(0) {
+            memset(localHand, 0, sizeof(localHand));
+            memset(&ann, 0, sizeof(ann));
+        }
     };
     std::map<Key, OwnBuild>  ownBuilds_;
     std::map<Key, PeerBuild> peerBuilds_;
@@ -2161,6 +2326,23 @@ public:
     bool weAuthor(GameWorld* gw, u32 localId, float x, float z) const {
         return authorityFor(gw, x, z) == localId;
     }
+    // Same question for a BODY, which can be split by hand inside a contested
+    // cell (see splitAuthority_). Positions with no body - doors above all -
+    // must keep using weAuthor: a door is a fixed object each engine mutates
+    // for its own characters, and splitting the describer is what produced the
+    // flapping bar door.
+    u32 authorityForBody(GameWorld* gw, float x, float z, const Key& k) const;
+    bool weAuthorBody(GameWorld* gw, u32 localId, float x, float z,
+                      const Key& k) const {
+        return authorityForBody(gw, x, z, k) == localId;
+    }
+    // Split world-NPC duty by hand inside a CONTESTED cell (default OFF,
+    // KENSHICOOP_SPLIT_AUTHORITY=1). Cell authority partitions work by SPACE,
+    // so two players in one cell means one client authors the whole town and
+    // the other authors none - one machine pays every publish, the other pays
+    // every drive. A hash of the save-stable hand splits that with no spatial
+    // boundary, and therefore no handoff churn.
+    void setSplitAuthority(bool on) { splitAuthority_ = on; }
 private:
     // Recompute claimedCells_ from claimSlots_. Host wins a contested cell.
     void rebuildClaimedCells();
@@ -2209,6 +2391,21 @@ private:
     // multiplier (1.0 = no correction); the speed layer applies effective *
     // timeSlew_ in its quiet writes so the slew and the consensus compose.
     bool          timeSync_;
+    bool          weatherSync_;
+    bool          dialogueSync_;
+    unsigned long weatherLastSendMs_;
+    u32           weatherSeqOut_;
+    u32           weatherSeqIn_;
+    // Last state we published, so a settled sky is silent. Plain fields rather
+    // than engine::WeatherRead: this header is included where the engine facade
+    // is not, and the change gate only needs these.
+    char          weatherLastName_[48];
+    float         weatherLastStrength_;
+    float         weatherLastEffect_;
+    int           weatherLastEnd_;
+    int           weatherLastSeason_;
+    int           weatherLastSeasonEnd_;
+    bool          weatherHave_;
     float         timeSlew_;          // join: current slew factor (host: always 1)
     u32           timeSeqOut_;        // host: monotonic seq for PKT_TIME
     u32           timeSeqSeen_;       // join: newest sample seq applied
@@ -2318,6 +2515,13 @@ private:
     unsigned long        trustLogTick_;
     unsigned long        trustGrants_;   // trusted-mode entries this run
     unsigned long        trustRevokes_;  // trusted-mode exits (divergence/drift)
+    // KO latches released by the owner's continuous stream rather than by an
+    // EVT_REVIVE. A non-zero count means revives are going missing: the release
+    // is doing its job, and the reason it had to is worth knowing.
+    unsigned long        koReleases_;
+    // Latched entries dropped by the age-out because the owner stopped streaming
+    // them entirely. These are the leak this bounds; see ageOutStaleTargets.
+    unsigned long        koLatchExpired_;
 };
 
 } // namespace coop

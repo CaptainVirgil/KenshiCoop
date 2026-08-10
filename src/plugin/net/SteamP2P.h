@@ -53,6 +53,13 @@ void setPingPeer(SteamId id);
 // Cheap no-op when init() hasn't succeeded.
 void tick();
 
+// The last EP2PSessionError Steam reported for the watched peer, 0 when none.
+// Steam answers the exact question a stuck player is asking - 1 = they are not
+// running the game, 3 = their Steam is offline, 4 = could not reach them - and
+// this was being written to the log and thrown away while the panel said
+// "Connecting..." indefinitely. See coopPanelDrive.
+int lastSessionError();
+
 // Install/remove the ENet socket hooks that tunnel channel 0 over Steam P2P.
 // 'port' only fabricates the fake ENetAddress reported to ENet (the tunnel is
 // addressless). Install BEFORE enet_host_create, remove after enet_host_destroy.

@@ -57,7 +57,7 @@
 #include <kenshi/Inventory.h>       // Inventory (Phase 4a container contents)
 #include <kenshi/Item.h>            // Item / InventoryItemBase (quantity/quality/equipped)
 #include <kenshi/CharBody.h>        // CharBody::currentAction / _NV_setCurrentAction
-#include <kenshi/CombatClass.h>     // CombatClass::combatState (active-vs-waiting stance)
+#include <kenshi/combat/CombatClass.h> // CombatClass::combatState (active-vs-waiting stance)
 #include <kenshi/Damages.h>         // Damages (melee hit floats; protocol 45 join-dealt report)
 #include <kenshi/CharStats.h>       // CharStats (protocol 17 stats sync)
 #include <kenshi/Tasker.h>          // Tasker::key() -> TaskType, Tasker::subject (hand)
@@ -68,6 +68,11 @@
 #include <kenshi/Faction.h>         // Faction::getData / FactionManager::getFactionByStringID (protocol 21)
 #include <kenshi/FactionRelations.h> // FactionRelations (protocol 24 faction-relation sync)
 #include <kenshi/Platoon.h>         // Platoon / ActivePlatoon / Ownerships (wallets, protocol 52)
+// NOTE: kenshi/Weather.h is deliberately NOT included. The dump defines class
+// WeatherRegion in BOTH Weather.h and PhysicsCollection.h, and Weather.h uses
+// WeatherRegion/Weather/Season before declaring them - so it cannot coexist with
+// the rest of this prelude. The weather facade in EngineWorld.cpp reads the few
+// fields it needs through local offset mirrors instead (protocol 55).
 #include <kenshi/Building/DoorStuff.h> // DoorStuff (door/gate state, protocol 26)
 #include <kenshi/Building/FarmBuilding.h>      // FarmBuilding growth floats (protocol 33; pulls Production/Storage/UseableStuff)
 #include <kenshi/Building/CraftingBuilding.h>  // CraftingBuilding::operate override (protocol 33)
@@ -147,6 +152,11 @@ typedef void      (__fastcall* RagdollModeFn)(Character* self, bool on, int part
 // CharMovement::restore - the counterpart to destroy(), which re-creates the
 // movement controller's physics side (the HavokCharacter + collision hull).
 typedef void      (__fastcall* MoveRestoreFn)(CharMovement* self);
+// CharMovement::teleportCollisionHull - moves the Havok capsule independently of
+// the render transform. Suppression needs it: setVisible only hides the mesh, and
+// a hidden body that keeps its capsule is an invisible wall.
+typedef void      (__fastcall* HullTeleportFn)(CharMovement* self,
+                                               const Ogre::Vector3* pos);
 typedef void      (__fastcall* MedFloatFn)(MedicalSystem* self, float v);
 typedef void      (__fastcall* MedAmputateFn)(MedicalSystem* self, int limb,
                                               bool createSeveredItem,
@@ -400,6 +410,7 @@ extern SeparateSquadFn g_separateSquadFn;
 extern EndActionFn     g_endActionFn;
 extern RagdollModeFn   g_ragdollModeFn;
 extern MoveRestoreFn   g_moveRestoreFn;
+extern HullTeleportFn  g_hullTeleportFn;
 extern MedFloatFn      g_knockoutFn;
 extern MedFloatFn      g_knockoutForceFn;
 extern MedAmputateFn     g_medAmputateFn;

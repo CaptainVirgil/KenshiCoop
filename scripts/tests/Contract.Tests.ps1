@@ -327,6 +327,7 @@ $diagSpec = @{
     world_item_sync = @{ KENSHICOOP_WORLD_SYNC = '1' }
     world_item_join = @{ KENSHICOOP_WORLD_SYNC = '1' }
     limb_loss       = @{ KENSHICOOP_WORLD_SYNC = '1' }
+    rejoin_items    = @{ KENSHICOOP_WORLD_SYNC = '1' }
 }
 $specMiss = @()
 foreach ($name in $diagSpec.Keys) {
@@ -390,6 +391,94 @@ $adapter = Join-Path $gameDir "EngineInternal.h"
 $adapterHasInternal = (Test-Path $adapter) -and `
     ((Select-String -Path $adapter -Pattern $internalIncludeRe).Count -gt 0)
 Check "adapter EngineInternal.h carries the game-internal prelude" $adapterHasInternal
+
+# ---- wire string termination coverage -----------------------------------------
+# Every char[] that arrives over the wire has to be NUL-terminated on receipt:
+# a sender that omits the terminator turns the next std::string(...) into a read
+# past the end of the packet struct, and one of those fields is used to build a
+# filesystem path.
+#
+# Termination lives in ONE place - wireSanitize() in Wire.h, called by
+# readPacket() - precisely so no dispatch arm has to remember it. But the
+# overload set is hand-written, so a NEW packet with a char[] silently gets the
+# generic no-op overload and reintroduces the bug. That is what this check
+# catches: it reads the struct definitions out of Wire.h and requires every
+# char[] field to be named by a wireSanitize overload for its own struct.
+#
+# It failed on five packets the first time it was run (the whole save/load name
+# family), which is the argument for having it.
+Write-Host ""
+Write-Host "== wire string termination coverage =="
+$wireH = Join-Path $repoRoot "src/netproto/Wire.h"
+if (-not (Test-Path $wireH)) {
+    Check "src/netproto/Wire.h exists" $false
+} else {
+    $wireLines = Get-Content -LiteralPath $wireH
+
+    # Entry types are read in place out of the ENet buffer rather than through
+    # readPacket, so they cannot be sanitized by it. They are terminated where
+    # Inbound copies them; this check moves to that file for them instead of
+    # waiving them, because "exempt" and "covered somewhere else" must not look
+    # the same here.
+    $entryTypes = @{ "InvItemEntry" = $true; "WorldItemEntry" = $true }
+
+    # Pass 1: struct -> char[] field names, ignoring the wireSanitize block itself.
+    # Comment lines are skipped and the struct scope is closed at `};`, because
+    # Wire.h documents its variable-length tails in exactly the syntax of a field
+    # ("// char name[nameLen] follows") - without both, this reported two
+    # comments as unterminated fields.
+    $fieldsOf = @{}
+    $curStruct = $null
+    foreach ($line in $wireLines) {
+        if ($line -match '^\s*//') { continue }
+        if ($line -match '^\s*struct\s+(\w+)') { $curStruct = $matches[1]; continue }
+        if ($line -match '^\s*\}\s*;') { $curStruct = $null; continue }
+        if ($line -match '^\s*inline\s+void\s+wireSanitize') { $curStruct = $null; continue }
+        if ($null -eq $curStruct) { continue }
+        if ($line -match '\bchar\s+(\w+)\s*\[') {
+            if (-not $fieldsOf.ContainsKey($curStruct)) { $fieldsOf[$curStruct] = @() }
+            $fieldsOf[$curStruct] += $matches[1]
+        }
+    }
+    Check "Wire.h parsed: at least one char[] wire field found" ($fieldsOf.Count -gt 0)
+
+    # Pass 2: the overload set. Body may be on the same line or the next few.
+    $wireText = ($wireLines -join "`n")
+    $sanitizeOf = @{}
+    foreach ($m in [regex]::Matches($wireText,
+        '(?s)inline\s+void\s+wireSanitize\s*\(\s*(\w+)\s*&\s*\w*\s*\)\s*\{(.*?)\n?\s*\}')) {
+        $sanitizeOf[$m.Groups[1].Value] = $m.Groups[2].Value
+    }
+    Check "wireSanitize overload set is non-empty" ($sanitizeOf.Count -gt 0)
+
+    # readPacket must actually call it, or the whole overload set is decoration.
+    $callsIt = $wireText -match '(?s)inline\s+bool\s+readPacket.*?wireSanitize\s*\(\s*\*\s*out\s*\)'
+    Check "readPacket calls wireSanitize on every parsed packet" $callsIt
+
+    $uncovered = @()
+    $inboundText = ""
+    $inboundH = Join-Path $repoRoot "src/plugin/core/Inbound.h"
+    if (Test-Path $inboundH) { $inboundText = (Get-Content -LiteralPath $inboundH) -join "`n" }
+
+    foreach ($structName in ($fieldsOf.Keys | Sort-Object)) {
+        foreach ($field in $fieldsOf[$structName]) {
+            if ($entryTypes.ContainsKey($structName)) {
+                # Terminated on copy in Inbound.h rather than by readPacket.
+                if ($inboundText -notmatch ("wireTerm\s*\(\s*[\w\.\[\]]*\." + [regex]::Escape($field) + "\s*\)")) {
+                    $uncovered += "$structName.$field (entry type: no wireTerm in Inbound.h)"
+                }
+                continue
+            }
+            if (-not $sanitizeOf.ContainsKey($structName)) {
+                $uncovered += "$structName.$field (no wireSanitize overload for $structName)"
+            } elseif ($sanitizeOf[$structName] -notmatch ('\b' + [regex]::Escape($field) + '\b')) {
+                $uncovered += "$structName.$field (overload exists but does not name the field)"
+            }
+        }
+    }
+    if ($uncovered.Count -gt 0) { $uncovered | ForEach-Object { Write-Host "      $_" } }
+    Check "every char[] wire field is terminated on receipt" ($uncovered.Count -eq 0)
+}
 
 # ---- cleanup ------------------------------------------------------------------
 Remove-Item -Path $tmpH, $tmpJ -Force -ErrorAction SilentlyContinue

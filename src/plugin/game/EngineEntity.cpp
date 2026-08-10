@@ -169,6 +169,35 @@ void logSeatResolveOnce(const char* side, int task, u32 npcIdx, u32 npcSer,
 namespace {
 // SEH-guarded capture of a single Character into an EntityState. Kept in its own
 // __try frame (no C++ unwinding objects) so a bad pointer degrades to a skip.
+// The subset of captureOne the AUTHORITY passes actually consume: identity and
+// where the body is. Everything else captureOne gathers - task key and its
+// description, body state (five engine calls), combat state (six more), motion
+// vector - is read by nothing on that path, and it was being gathered for every
+// body in a 2000 u radius on every render frame, on both clients. That is the
+// single largest per-frame cost in the sync layer and all of it was discarded.
+//
+// The wire path (captureNpcs / captureNpcByHand / captureSquad) still uses the
+// full capture: the peer needs the state. This is only for the local judgment.
+bool captureLite(Character* c, EntityState* e) {
+    __try {
+        memset(e, 0, sizeof(*e));
+        const hand& h = c->handle;
+        e->hType            = (u32)h.type;
+        e->hContainer       = h.container;
+        e->hContainerSerial = h.containerSerial;
+        e->hIndex           = h.index;
+        e->hSerial          = h.serial;
+        Ogre::Vector3 p = c->getPosition();
+        e->x = p.x; e->y = p.y; e->z = p.z;
+        e->heading = c->getOrientation().getYaw().valueRadians();
+        e->task = TASK_NONE;
+        e->rawTask = TASK_NONE;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool captureOne(Character* c, EntityState* e) {
     __try {
         const hand& h = c->handle;
@@ -881,6 +910,10 @@ bool isLocalPlayerChar(GameWorld* gw, Character* c) {
     }
 }
 
+// Where a suppressed body's collision capsule is parked. Deep under the terrain,
+// keeping x/z so anything that reads the hull still sees a sane column.
+static const float HULL_VOID_Y = -100000.0f;
+
 bool suppressNpc(GameWorld* gw, Character* c) {
     if (!gw || !c || !g_removeUpdateFn) return false;
     __try {
@@ -889,18 +922,41 @@ bool suppressNpc(GameWorld* gw, Character* c) {
         // Freezing alone leaves the body standing/visible at its seat; hide it too
         // so a host-unstreamed NPC fully disappears (no standing-on-the-seat double).
         static_cast<RootObject*>(c)->setVisible(false);
+        // setVisible is the RENDER virtual and nothing more. The Havok capsule stays
+        // exactly where it was, and because the body is off the update list it no
+        // longer runs its own collision response either - so it cannot be shoved
+        // aside the way a live NPC would be. The result is an immovable invisible
+        // pillar, and stairwells and doorways are the narrowest corridors in the
+        // game, so that is where players hit it: passable for the peer, blocked for
+        // whoever suppressed the body. Park the capsule under the world instead.
+        // Safe precisely BECAUSE the body is off the update list: nothing re-syncs
+        // the hull to the render transform behind us, and the ~2 s re-assertion
+        // sweep re-parks it if the engine wakes the body up.
+        if (g_hullTeleportFn && c->movement) {
+            Ogre::Vector3 p = c->getPosition();
+            Ogre::Vector3 sunk(p.x, HULL_VOID_Y, p.z);
+            g_hullTeleportFn(c->movement, &sunk);
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }
 
-void restoreNpc(GameWorld* gw, Character* c) {
-    if (!gw || !c || !g_addUpdateFn) return;
+bool restoreNpc(GameWorld* gw, Character* c) {
+    if (!gw || !c || !g_addUpdateFn) return false;
     __try {
+        // Put the capsule back under the body before it can tick again, or the
+        // engine resumes a body whose collision is still under the map.
+        if (g_hullTeleportFn && c->movement) {
+            Ogre::Vector3 p = c->getPosition();
+            g_hullTeleportFn(c->movement, &p);
+        }
         g_addUpdateFn(gw, c);
         static_cast<RootObject*>(c)->setVisible(true);
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
 }
 
@@ -924,7 +980,7 @@ bool captureNpcByHand(GameWorld* gw, unsigned int hIndex, unsigned int hSerial,
 // can decide which are NOT in the host's streamed set and suppress them. Mirrors
 // captureNpcs' interest query so the join's local set matches the host's.
 unsigned int listNpcs(GameWorld* gw, Character** outChars, EntityState* outStates,
-                      unsigned int maxOut, bool* outTruncated) {
+                      unsigned int maxOut, bool* outTruncated, bool full) {
     if (outTruncated) *outTruncated = false;
     if (!g_getCharsFn || !gw || !outChars || !outStates || maxOut == 0) return 0;
     unsigned int n = 0;
@@ -952,7 +1008,8 @@ unsigned int listNpcs(GameWorld* gw, Character** outChars, EntityState* outState
                 for (unsigned int k = 0; k < n; ++k)
                     if (outChars[k] == ch) { dup = true; break; }
                 if (dup) continue;
-                if (captureOne(ch, &outStates[n])) { outChars[n] = ch; ++n; }
+                if (full ? captureOne(ch, &outStates[n])
+                         : captureLite(ch, &outStates[n])) { outChars[n] = ch; ++n; }
             }
             // Left this sphere's list unfinished: the only non-exhaustion exit
             // from the loop above is the maxOut cap.
@@ -966,7 +1023,7 @@ unsigned int listNpcs(GameWorld* gw, Character** outChars, EntityState* outState
 
 unsigned int listNpcsWide(GameWorld* gw, float radius, Character** outChars,
                           EntityState* outStates, unsigned int maxOut,
-                          bool* outTruncated) {
+                          bool* outTruncated, bool full) {
     if (outTruncated) *outTruncated = false;
     if (!g_getCharsFn || !gw || !outChars || !outStates || maxOut == 0) return 0;
     if (radius <= 0.0f) return 0;
@@ -994,7 +1051,8 @@ unsigned int listNpcsWide(GameWorld* gw, float radius, Character** outChars,
                 for (unsigned int k = 0; k < n; ++k)
                     if (outChars[k] == ch) { dup = true; break; }
                 if (dup) continue;
-                if (captureOne(ch, &outStates[n])) { outChars[n] = ch; ++n; }
+                if (full ? captureOne(ch, &outStates[n])
+                         : captureLite(ch, &outStates[n])) { outChars[n] = ch; ++n; }
             }
             if (i < total && outTruncated) *outTruncated = true;
         }

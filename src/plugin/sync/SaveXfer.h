@@ -125,6 +125,15 @@ std::string lastCommitName();
 bool             receiving();
 unsigned __int64 recvBytes();
 unsigned __int64 recvTotalBytes();
+// Milliseconds since the last chunk landed, 0 when not receiving. The receiver had
+// no watchdog at all: if the host quit mid-stream, g_recvActive stayed true and the
+// panel rendered "Streaming host world... 42%" for as long as the player cared to
+// look at it. A stall is not distinguishable from slow progress without this.
+unsigned long    recvStalledMs();
+// Host side of the same story: the sender's byte counters were never exported, so
+// while the host pushed a multi-MB save its panel said "Connected" and nothing more.
+unsigned __int64 sentBytes();
+unsigned __int64 sendTotalBytes();
 u16              recvFileCount();
 // HOST: the join's commit acknowledgement (Plugin.cpp feeds noteAck on the
 // PKT_SAVE_ACK drain). lastAckXferId 0 = none yet; lastAckOk 1 = the join

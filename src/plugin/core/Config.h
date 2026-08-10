@@ -8,6 +8,7 @@
 
 #include <string>
 #include <set>
+#include "../sync/SyncTuning.h" // per-channel cadences, settable like everything else
 
 namespace coop {
 
@@ -177,15 +178,53 @@ struct Config {
     // the drive the same tick. Doctrine 18 in INTENT_REPLICATION.md.
     bool          gateAuthority;
 
+    // Split world-NPC duty by a hash of the hand inside a CONTESTED cell
+    // (KENSHICOOP_SPLIT_AUTHORITY=1; DEFAULT OFF). Cell authority partitions
+    // work by SPACE, so two players standing in one cell hands the whole town
+    // to one client - measured live: the host authored all 216 NPCs and drove
+    // none, the join drove all 216 and authored none, and the loaded client's
+    // frame budget is what the other one's stream quality depends on. A hash of
+    // the save-stable hand splits the same set with no spatial boundary and
+    // therefore no handoff churn. Default off because it changes who is
+    // authoritative for a body mid-session; both clients must agree on the
+    // setting or each will claim bodies the other also claims.
+    bool          splitAuthority;
+
+    // Draw a floating damage number for a hit the damage guard suppressed
+    // (KENSHICOOP_DAMAGE_FLOATERS=0 disables; DEFAULT ON). The guard skips the
+    // engine's hit path on driven bodies, and that path is where the number
+    // comes from - so a swing that really did wound the owner's body showed the
+    // attacking player nothing. Presentation only: the wound itself already
+    // rides PKT_COMBAT_HIT and is applied by the owner.
+    bool          damageFloaters;
+
+    // Host-authoritative weather (KENSHICOOP_WEATHER_SYNC=0 disables; DEFAULT
+    // ON, protocol 55). Kenshi rolls weather per biome region from a weighted
+    // table with no exposed seed, so two clients standing in the SAME biome
+    // diverge by construction and nothing converges them - observed live with
+    // one player in rain and the other clear, metres apart. Not cosmetic: acid
+    // rain damages non-Skeletons and storms affect ranged combat.
+    bool          weatherSync;
+
+    // Dialogue relay (KENSHICOOP_DIALOGUE_SYNC=0 disables; DEFAULT ON,
+    // protocol 56). A speech bubble spawns only on the machine whose AI ran the
+    // conversation, so the peer never sees a word said. Nothing upstream ever
+    // carried dialogue - it was never built rather than broken.
+    bool          dialogueSync;
+
     // Damage guard, BOTH sides (KENSHICOOP_DAMAGE_GUARD != "0"; DEFAULT ON):
     // detour Character::hitByMeleeAttack so locally-simulated (cosmetic) fights
-    // apply no damage to DRIVEN bodies - Kenshi's medical model is local-only,
-    // so cosmetic damage would diverge forever. The guard set is "every body
-    // this client drives": peer world-NPC copies on the join; peer SQUAD-member
-    // copies on the host (extended 2026-07-06 after phase-1 player_combat
-    // measured the host copy of a join victim bleeding 40+ while join copies
-    // stayed 0). Outcomes stay owner-authoritative (KO/death/revive events).
-    // "0" is the escape hatch.
+    // apply no damage to DRIVEN bodies. Not because vitals "never cross the
+    // wire" - PKT_MEDICAL streams them, default ON - but because the guard is
+    // what KEEPS that stream authoritative: it blocks the per-frame local hits
+    // the change-gated stream could not out-write, preserves the only-deviates-
+    // upward invariant TreatmentPacket's first-aid detection needs, and is the
+    // protocol-45 capture point for join-dealt damage. The guard set is "every
+    // body this client drives": peer world-NPC copies on the join; peer
+    // SQUAD-member copies on the host (extended 2026-07-06 after phase-1
+    // player_combat measured the host copy of a join victim bleeding 40+ while
+    // join copies stayed 0). Outcomes stay owner-authoritative (KO/death/revive
+    // events). "0" is the escape hatch.
     bool          damageGuard;
 
     // Peer-ready scenario arming (KENSHICOOP_ARM_TIMEOUT_MS). A scenario's clock
@@ -299,6 +338,26 @@ struct Config {
     // session - and the peer's engine resolves REAL fights with those stale
     // numbers. "0" is the A/B escape hatch.
     bool          statsSync;
+
+    // Per-channel send cadences and self-heal debounces. Defaults live in the
+    // SyncTuning constructor; every field is overridable by env or coop_config.json
+    // (see loadConfig). Before this was wired, changing one meant rebuilding the
+    // DLL - which is a poor way to tune a value whose right setting depends on the
+    // session you are in the middle of.
+    //
+    // Prefer the JSON keys when telling a player to change something: the game is
+    // launched from Steam, so an env var means editing Steam launch options.
+    SyncTuning    tuning;
+
+    // KENSHICOOP_CRASH_TRACER (DEFAULT OFF): install the fault tracer from
+    // core/CrashDump.cpp. It is a diagnostic, not a shipping feature: it takes a
+    // vectored handler at priority 1, so it runs on EVERY exception on every
+    // thread, and Kenshi throws and catches C++ exceptions as routine traffic.
+    // On a reported fault it walks 28 stack frames and writes them through a
+    // logger that fflushes per line on the main thread. Worth all of that when
+    // chasing a crash, worth none of it in a session that is not crashing - so
+    // it is opt-in, and asking a player to set it is part of taking a report.
+    bool          crashTracer;
 
     // Carried-body sync (KENSHICOOP_CARRY_SYNC != "0"; DEFAULT ON;
     // protocol 18): reliable pickup/drop edges + self-healing carried state

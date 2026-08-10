@@ -40,6 +40,12 @@ Replicator::Replicator()
       nextWorldNetId_(1), worldSeeded_(false),
       nextDropId_(1), nextPickupId_(1), nextXferId_(1),
       xferScanMs_(0), nextTreatId_(1),
+      invResentCount_(0), invResentRollupMs_(0),
+      pcSampleN_(0), pcSampleMs_(0), midRowsMs_(0), splitAuthority_(false),
+      freezeSkipDriven_(0), weatherSync_(true), dialogueSync_(true), weatherLastSendMs_(0),
+      weatherSeqOut_(1), weatherSeqIn_(0),
+      weatherLastStrength_(0.0f), weatherLastEffect_(0.0f), weatherLastEnd_(0),
+      weatherLastSeason_(0), weatherLastSeasonEnd_(0), weatherHave_(false),
       quietRelapse_(0), crawlPhysRestore_(0),
       sitOrders_(0), detachUses_(0), noDetach_(false),
       dmgGuard_(false), reportCombat_(false), nextHitId_(1),
@@ -47,9 +53,12 @@ Replicator::Replicator()
       stealthSync_(true), proneSync_(true),
       gateAuthority_(false), trustLogTick_(0),
       trustGrants_(0), trustRevokes_(0),
+      koReleases_(0), koLatchExpired_(0),
       authSuppresses_(0), authRestores_(0), authReassertMs_(0), authPruned_(0),
       censusRadius_(0.0f), censusSendMs_(0), censusRecvMs_(0), censusCulls_(0),
-      censusPubTrunc_(false), censusFreshPrev_(false), censusFreshChkMs_(0),
+      censusPubTrunc_(false), censusFreshPrev_(false), censusRejudge_(false),
+      wideSweepMs_(0),
+      censusFreshChkMs_(0),
       censusStaleMs_(0), censusStaleEdges_(0), proxyDriftLogMs_(0),
       camHintSendMs_(0), peerCamMs_(0),
       midCursor_(0), midSliceMs_(0),
@@ -84,6 +93,7 @@ Replicator::Replicator()
       platoonT0_(0),
       lifeSweepMs_(0) {
     peerCam_[0] = peerCam_[1] = peerCam_[2] = 0.0f;
+    weatherLastName_[0] = '\0';
 }
 
 // ---- Phase 3: unified entity lifecycle ---------------------------------------
@@ -165,6 +175,21 @@ void Replicator::lifeSweep(GameWorld* gw, unsigned long now) {
         }
         ++it;
     }
+
+    // Same job, same cadence, for the throttle maps that had no release at all.
+    // The horizon matches life_'s PRUNE_MS: a hand not seen for that long has left
+    // interest or despawned, and its cooldown stamp is describing a world that is
+    // no longer in front of the player.
+    unsigned int dropped = 0;
+    dropped += pruneStaleStamps(parkMs_,         now, PRUNE_MS);
+    dropped += pruneStaleStamps(censusFrozen_,   now, PRUNE_MS);
+    dropped += pruneStaleStamps(buildPoseCapMs_, now, PRUNE_MS);
+    dropped += pruneStaleStamps(spawnReplyMs_,   now, PRUNE_MS);
+    if (dropped > 0) {
+        char pb[96];
+        _snprintf(pb, sizeof(pb) - 1, "[life] pruned throttle stamps=%u", dropped);
+        pb[sizeof(pb) - 1] = '\0'; coop::logLine(pb);
+    }
 }
 
 void Replicator::resetSession() {
@@ -176,6 +201,7 @@ void Replicator::resetSession() {
     jailObs_.clear();          // jail-observe spike per-captive last sample
     proxyByKey_.clear();
     suppressed_.clear();
+    suppressedSid_.clear();
     midBand_.clear();          // host mid-band round-robin (rebuilt by next census)
     midCursor_ = 0; midSliceMs_ = 0;
     life_.clear();             // Phase 3 lifecycle: the OLD world's journeys
@@ -192,6 +218,20 @@ void Replicator::resetSession() {
     combatCapMs_.clear();
     authCount_.clear();
     ownHands_.clear();
+    // Five members whose absence made the "clears every map" contract untrue.
+    // All five key off the OLD world's hands or geometry, so carrying them across
+    // a world swap means judging new bodies against dead state.
+    pendingHits_.clear();     // combat hits authored against the old world
+    censusFrozen_.clear();    // per-key AI freeze-holds
+    proxyDriftPrev_.clear();  // census position at the last proxy drift sample
+    buildPoseCapMs_.clear();  // per-key build-pose throttle
+    //
+    // peerClock_ is deliberately NOT cleared, and that is not an omission: it maps
+    // the peer's clock into ours, which is a property of the connection rather than
+    // of the world, and re-measuring it costs an interpolation starve window right
+    // when the new world needs smooth motion. Same reasoning as ownRanks_ and the
+    // outbound sequence counters below.
+
     // Protocol 36: the existence census describes the OLD world's hands; the
     // host re-publishes within a second of the new world going live.
     censusHands_.clear();
@@ -349,6 +389,31 @@ void Replicator::clearPeerReplicationState(GameWorld* gw) {
     }
     _snprintf(b, sizeof(b) - 1, "[leave] cleared worldProxies=%u stale=%u",
               wcleared, wstale);
+    b[sizeof(b) - 1] = '\0';
+    coop::logLine(b);
+    // Un-hide everything authority suppressed. resetSession() below only clears the
+    // map, and a suppressed body is off the update list, invisible, and (before the
+    // hull park) solid - so dropping the bookkeeping without restoring first leaves
+    // that body broken for the rest of the world, with nothing left that knows how
+    // to fix it. The world survives a peer leave, so these are the player's own NPCs
+    // being abandoned mid-hide.
+    //
+    // Same liveness proof the ~2 s re-assertion sweep uses: a body whose hand no
+    // longer resolves back to this pointer has been despawned by zone streaming, and
+    // touching it would be a use-after-free.
+    unsigned int restored = 0, gone = 0;
+    for (std::map<Key, Character*>::iterator si = suppressed_.begin();
+         si != suppressed_.end(); ++si) {
+        unsigned int h[5];
+        Character* live = 0;
+        if (gw && si->second && engine::readHand(si->second, h))
+            live = engine::resolveCharByHand(h[0], h[1], h[2], h[3], h[4]);
+        if (live != si->second) { ++gone; continue; }
+        if (engine::restoreNpc(gw, si->second)) ++restored;
+        else                                     ++gone;
+    }
+    _snprintf(b, sizeof(b) - 1, "[leave] restored suppressed=%u despawned=%u",
+              restored, gone);
     b[sizeof(b) - 1] = '\0';
     coop::logLine(b);
     // Now drop every map (proxyByKey_ included) back to freshly-launched state.

@@ -149,6 +149,30 @@ bool relPathSafe(const char* p, unsigned int len) {
     return true;
 }
 
+// A save NAME arrives off the wire and then selects a directory that gets deleted
+// and recreated (the staging folder, and on commit the final one). relPathSafe
+// guards the per-chunk relative paths but was never applied here, so a name of
+// "..\..\Something" pointed the whole transfer - including its removeTree - at a
+// directory of the sender's choosing. Same rule as relPathSafe, plus the Windows
+// path characters that have no business in a save name at all.
+bool saveNameSafe(const std::string& n) {
+    if (n.empty() || n.size() > 48) return false;
+    for (size_t i = 0; i < n.size(); ++i) {
+        const unsigned char ch = (unsigned char)n[i];
+        if (ch < 0x20) return false;                      // control bytes
+        if (ch == '\\' || ch == '/' || ch == ':') return false;  // separators, drives
+        if (ch == '*' || ch == '?' || ch == '"' ) return false;    // wildcards
+        if (ch == '<' || ch == '>' || ch == '|' ) return false;
+        if (ch == '.' && i + 1 < n.size() && n[i + 1] == '.') return false; // traversal
+    }
+    // Trailing dots and spaces are silently stripped by Windows, so "evil " and
+    // "evil" would name the same directory while comparing unequal here.
+    const char last = n[n.size() - 1];
+    if (last == ' ' || last == '.') return false;
+    if (n[0] == ' ') return false;
+    return true;
+}
+
 // ---- Sender state (host, main thread only) ------------------------------------
 #ifndef KENSHICOOP_PROTOTEST
 
@@ -200,6 +224,7 @@ HANDLE           g_recvHandle = INVALID_HANDLE_VALUE;
 std::vector<u32> g_recvCrcs;           // incremental FNV per fileIdx
 std::vector<u8>  g_recvSeen;           // fileIdx touched at least once
 unsigned long    g_recvStartTick = 0;
+unsigned long    g_recvLastChunkTick = 0; // watchdog: last chunk arrival
 
 // Scenario gate accessors' backing state.
 u32 g_lastSentXferId  = 0;
@@ -536,6 +561,20 @@ std::string lastCommitName() { return g_recvName; }
 bool             receiving()      { return g_recvActive; }
 unsigned __int64 recvBytes()      { return g_recvBytes; }
 unsigned __int64 recvTotalBytes() { return g_recvTotalBytes; }
+unsigned long    recvStalledMs() {
+    if (!g_recvActive || g_recvLastChunkTick == 0) return 0;
+    return GetTickCount() - g_recvLastChunkTick;
+}
+// The sender's state lives inside the !KENSHICOOP_PROTOTEST block above (prototest
+// exercises the RECEIVER only, with no ENet or engine), so these report nothing
+// there rather than referencing symbols that do not exist in that build.
+#ifndef KENSHICOOP_PROTOTEST
+unsigned __int64 sentBytes()      { return g_sendSentBytes; }
+unsigned __int64 sendTotalBytes() { return g_sendTotalBytes; }
+#else
+unsigned __int64 sentBytes()      { return 0; }
+unsigned __int64 sendTotalBytes() { return 0; }
+#endif
 u16              recvFileCount()  { return g_recvFileCount; }
 
 static u32 g_lastAckXferId = 0;
@@ -562,12 +601,36 @@ void onSaveBegin(const SaveBeginPacket& b) {
     memcpy(name, b.name, sizeof(b.name));
     name[sizeof(b.name)] = '\0';
 
+    // Bound what the peer may declare before any of it reaches the disk. fileCount
+    // is a u16 and totalBytes a u64 straight off the wire, and both size the work
+    // we are about to do on their say-so; the measured real transfer is ~3.7 MB.
+    const unsigned int      SAVE_XFER_MAX_FILES = 4096;
+    const unsigned __int64  SAVE_XFER_MAX_BYTES = 512ull * 1024ull * 1024ull;
+    if (b.fileCount > SAVE_XFER_MAX_FILES || b.totalBytes > SAVE_XFER_MAX_BYTES) {
+        char eb[176];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] REJECT begin: implausible transfer (files=%u bytes=%I64u)",
+                  (unsigned)b.fileCount, b.totalBytes);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        g_recvActive = false;
+        return;
+    }
+    if (!saveNameSafe(std::string(name))) {
+        char eb[160];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] REJECT begin: peer sent an unusable save name (xfer=%u)", b.xferId);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        g_recvActive = false;
+        return;
+    }
+
     g_recvName       = name;
     g_recvXferId     = b.xferId;
     g_recvFileCount  = b.fileCount;
     g_recvTotalBytes = b.totalBytes;
     g_recvBytes      = 0;
     g_recvStartTick  = GetTickCount();
+    g_recvLastChunkTick = g_recvStartTick;
     g_recvStaging    = saveFolderFor(g_recvName + "__incoming");
     g_recvCrcs.assign(b.fileCount, fnv1aInit());
     g_recvSeen.assign(b.fileCount, 0);
@@ -590,10 +653,26 @@ void onSaveBegin(const SaveBeginPacket& b) {
 void onSaveFile(const SaveFileHeader& h, const char* path, const unsigned char* data) {
     if (!g_recvActive || h.xferId != g_recvXferId) return; // stale/aborted transfer
     if (h.fileIdx >= g_recvFileCount) return;
+    // h.offset is a raw u32 from the wire and is passed to SetFilePointer, so a
+    // single 4 KB chunk could extend a staged file to ~4 GB - which NTFS will
+    // happily materialise. Nothing may land outside what BEGIN declared, and the
+    // running total may not exceed it either.
+    if ((unsigned __int64)h.offset + (unsigned __int64)h.dataLen > g_recvTotalBytes ||
+        g_recvBytes + (unsigned __int64)h.dataLen > g_recvTotalBytes) {
+        char eb[176];
+        _snprintf(eb, sizeof(eb) - 1,
+                  "[save] XFER chunk rejected: writes past the declared total "
+                  "(off=%u len=%u total=%I64u)",
+                  (unsigned)h.offset, (unsigned)h.dataLen, g_recvTotalBytes);
+        eb[sizeof(eb) - 1] = '\0'; coop::logErrLine(eb);
+        return;
+    }
     if (!relPathSafe(path, h.pathLen)) {
         coop::logErrLine("[save] XFER chunk rejected: unsafe relative path");
         return;
     }
+
+    g_recvLastChunkTick = GetTickCount();
 
     if (g_recvOpenIdx != (int)h.fileIdx) {
         recvCloseFile();

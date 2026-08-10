@@ -438,7 +438,12 @@ private:
         if (!l0 || !engine::readPos(l0, &lx, &ly, &lz)) return;
         static Character*  chars[MAX_NPCS]; // main-thread only
         static EntityState states[MAX_NPCS];
-        unsigned int n = engine::listNpcs(ctx.gw, chars, states, MAX_NPCS);
+        // full=true is REQUIRED here: the filter below reads bodyState, and the
+        // lite capture (the default) never populates it - so the down/dead test
+        // was reading a zeroed field and excluding nothing, letting npc_carry
+        // latch a corpse. The production call sites correctly pass auditRows_
+        // because they read only hand and position; this one does not.
+        unsigned int n = engine::listNpcs(ctx.gw, chars, states, MAX_NPCS, 0, true);
         int best = -1; float bestD2 = 1e18f;
         for (unsigned int i = 0; i < n; ++i) {
             if (coop::bodyIsDown(states[i].bodyState) ||

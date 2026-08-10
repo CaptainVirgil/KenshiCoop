@@ -13,6 +13,15 @@
 
 #include <string>
 #include "../../netproto/Wire.h"
+// The owned capability registry. Header-only and include-free (it names slots as
+// void** and capabilities as an enum), so pulling it into the PUBLIC facade does
+// not breach the Phase 5a boundary - no game-internal header comes with it.
+//
+// It is here because the registry previously lived only behind EngineInternal.h,
+// the adapter, which is exactly why capAvailable() had no call sites: no public
+// consumer could see the enum to ask a question with. A registry nobody can
+// reach gates nothing.
+#include "EngineCaps.h"
 
 class GameWorld;
 class Character;
@@ -254,7 +263,12 @@ bool suppressNpc(GameWorld* gw, Character* c);
 // SEH-guarded: hand a previously-suppressed NPC back to the engine's local AI
 // (when the host stops streaming it), so the world keeps living rather than
 // leaving a frozen body behind. Also makes the body visible again.
-void restoreNpc(GameWorld* gw, Character* c);
+// Returns true only once the body is back on the update list AND visible. A
+// failed un-hide must not be booked as success: the caller erases its
+// suppressed_ entry on the strength of this, and an entry erased after a failed
+// restore is a body left invisible, un-ticked and un-retryable for the rest of
+// the session - the exact leak the teardown restore exists to prevent.
+bool restoreNpc(GameWorld* gw, Character* c);
 
 // True if 'obj' is one of THIS client's player-squad members. Caller holds the
 // SEH frame. Exposed to the sync layer for the recruit membership audit (a
@@ -270,21 +284,25 @@ bool isPlayerSquad(GameWorld* gw, RootObject* obj);
 // caller that treats absence as authority (suppress/cull) would judge bodies it
 // never saw. A bare count cannot express this: n == maxOut is indistinguishable
 // from a list that happened to fit exactly.
+// `full` selects how much of each body is read: false (the default) captures
+// identity + transform only, which is everything the authority passes consume;
+// true does the whole ~14-engine-call capture and is what the diagnostic row
+// emitters need. The authority path used to always pay `full` and discard it.
 unsigned int listNpcs(GameWorld* gw, Character** outChars, EntityState* outStates,
-                      unsigned int maxOut, bool* outTruncated = 0);
+                      unsigned int maxOut, bool* outTruncated = 0, bool full = false);
 
 // SEH-guarded: WIDE-radius world-NPC enumeration (protocol 36 census). Same
 // exclusions as listNpcs (never the local player squad) but the query reaches
 // 'radius' units around every interest center instead of the ~200 u stream
 // bubble - the host builds its 1 Hz existence census from this, and the join
 // scans the same radius to find local-only ghosts to cull. States are hand +
-// position only in spirit (captureOne fills everything; callers use the hand).
+// position only (see `full`).
 // *outTruncated: see listNpcs. It matters more here - a truncated HOST census
 // silently reports "these NPCs do not exist" for everything past the cap, and
 // the join culls real bodies against it.
 unsigned int listNpcsWide(GameWorld* gw, float radius, Character** outChars,
                           EntityState* outStates, unsigned int maxOut,
-                          bool* outTruncated = 0);
+                          bool* outTruncated = 0, bool full = false);
 
 // SEH-guarded: how many world NPCs (never the local player squad) sit within
 // 'radius' of ONE point. Deliberately NOT anchor-driven: listNpcs/listNpcsWide
@@ -304,6 +322,14 @@ void charName(Character* c, char* out, unsigned int cap);
 // a colored text label pinned to a character; the engine's own projection
 // tracks the body every frame. colorId: 0 = green (host-driven), 1 = red
 // (hidden/suppressed), 2 = yellow (local-only ghost). Returns an opaque
+// Spawn a RISING damage-style floater over a character and forget it: the
+// lifetime is owned by a small internal ring, so callers hold no handle. Same
+// widget class the engine's own damage numbers use. Main-thread only, no-op
+// when the GUI is not up. Exists because the damage guard suppresses the
+// engine's hit path on driven bodies, and that path is what draws the number -
+// so a hit that really landed showed no feedback at all.
+void  floaterSpawn(Character* c, const char* text, int colorId);
+
 // ScreenLabel handle (null on fault / GUI not up). Main-thread only.
 void* markerCreate(Character* c, const char* text, int colorId);
 bool  markerUpdate(void* label, const char* text, int colorId);
@@ -1195,13 +1221,17 @@ unsigned int aiSuspendCount();
 bool         installTaskSelectSpikeHook();
 void         setTaskSelectSpike(bool on);
 
-// Join-side damage suppression (the "cosmetic fights are actually cosmetic"
+// Damage suppression, BOTH sides (the "cosmetic fights are actually cosmetic"
 // guard): detour Character::hitByMeleeAttack so that, for bodies in the guarded
 // set, a locally-simulated melee hit applies NO damage (returns HIT_MISSED
-// without running the engine's hit path). Kenshi's medical model is entirely
-// LOCAL (blood/limbs/bleed never cross the wire), so without this the join's
-// cosmetic copy of a host-authoritative fight accumulates real local damage that
-// nothing reconciles - a body could bleed toward a death the host never had.
+// without running the engine's hit path). The ENGINE never moves a driven
+// copy's vitals on its own (spikes 21-27), and our PKT_MEDICAL stream (default
+// ON) is what reconciles blood/limbs/bleed - but the guard stays load-bearing
+// three ways: the change-gated stream cannot out-write per-frame local hits
+// between snapshots; TreatmentPacket's race-free first-aid detection depends on
+// driven-copy state only ever deviating UPWARD (a local hit breaks it); and the
+// hook is the protocol-45 capture point where join-dealt damage is recorded for
+// the host to apply authoritatively.
 // Same pattern as the AI-suspend detour: pointer-compared set, rebuilt each tick
 // on the main thread, hook installed once.
 bool         installDamageGuardHook();
@@ -1222,6 +1252,10 @@ void         damageGuardStats(unsigned long* outGuarded, unsigned long* outPasse
 // sends a CombatHitPacket; the host applies it. setCombatReport(false) clears the
 // accumulator. The attacker set is rebuilt each tick (like the guard set).
 void         setCombatReport(bool on);
+// Draw a floating damage number for a hit the guard suppressed (default ON,
+// KENSHICOOP_DAMAGE_FLOATERS=0 disables). Presentation only - the wound itself
+// already rides PKT_COMBAT_HIT and is applied by the owner.
+void         setDamageFloaters(bool on);
 void         clearReportAttackers();
 void         addReportAttacker(Character* c);
 // Drain the accumulated join-dealt damage for one victim copy (returns false if
@@ -1726,6 +1760,53 @@ bool writeDoorByHand(const unsigned int dHand[5], int wantOpen, int wantLocked,
 // Ownerships block that holds the protocol-52 wallet). Both clients loaded the
 // same save, so the building's hand is the cross-client identity - the door
 // precedent, not the protocol-27 runtime-mint one.
+// ---- Protocol 55: weather ----------------------------------------------------
+// Kenshi rolls weather per BIOME REGION from a probability-weighted table with
+// no exposed seed, so two clients in the same biome diverge by construction.
+// These read and write the ACTIVE region (the one the camera is in), which is
+// the only one either client is looking at.
+//
+// The weather identity travels as its GameData stringID because Weather*
+// differs between processes; applyWeather resolves it against the receiver's own
+// current season table and does nothing when it cannot (a wrong weather is worse
+// than a stale one). All SEH-guarded; false means "could not read/apply", never
+// a partial write.
+// ---- Protocol 56: dialogue ---------------------------------------------------
+// Speech bubbles are LOCAL: the engine spawns one on the machine whose AI ran
+// the conversation, so the host sees dialogue the peer never does. There is no
+// dialogue packet upstream or in this fork - it was simply never built.
+//
+// Captured by hooking DialogueSpeechBubble::setText and ::setPosition and
+// correlating on the bubble pointer, because the static list of live bubbles is
+// the one dialogue symbol KenshiLib does NOT export. One row per bubble.
+struct DialogueLine {
+    float x, y, z;      // world position the bubble was placed at
+    char  text[128];    // what was said (truncated)
+};
+// Install the two capture hooks. False = dialogue relay silently off.
+bool installDialogueHooks();
+// Drain what has been said locally since the last call (host publishes these).
+unsigned int drainDialogue(DialogueLine* out, unsigned int maxOut);
+// Show a received line on THIS machine: finds the character nearest the given
+// position and floats the text over it, so it tracks the speaker as they move.
+// No-op when nothing is near enough - a bubble with no speaker is noise.
+void showDialogue(GameWorld* gw, float x, float y, float z, const char* text);
+
+struct WeatherRead {
+    char  sid[48];        // current weather's GameData stringID ("" when none)
+    float strength;
+    float effectStrength;
+    int   endTimeMinutes;
+    float weatherTime;
+    int   seasonIndex;
+    int   seasonEndDay;
+    bool  valid;
+};
+bool readWeather(WeatherRead* out);
+// Returns true when something was actually changed (so the caller can log an
+// edge rather than every beat). A name that does not resolve returns false.
+bool applyWeather(const WeatherRead& in);
+
 struct DeedRead {
     unsigned int hand[5]; // [type, container, containerSerial, index, serial]
     int   owned;          // 1 = owner faction IS the player faction

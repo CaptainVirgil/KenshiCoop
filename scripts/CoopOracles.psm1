@@ -64,16 +64,19 @@ function Merge-Status {
 # *Regex patterns) stays shared exactly as before the split. Order matters
 # only for readability - fragments define functions, they run nothing.
 # Importers (run_test.ps1, analyze_run.ps1, regress.ps1) are unchanged.
-. (Join-Path $PSScriptRoot 'oracles\Parsing.ps1')
-. (Join-Path $PSScriptRoot 'oracles\CoreChecks.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Npc.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Combat.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Medical.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Inventory.ps1')
-. (Join-Path $PSScriptRoot 'oracles\World.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Session.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Motion.ps1')
-. (Join-Path $PSScriptRoot 'oracles\Panel.ps1')
+# Each path is built by nesting Join-Path rather than embedding 'oracles\Name.ps1':
+# a literal backslash is a separator only on Windows, and these fixtures are meant
+# to run under pwsh on Linux too, where the module would otherwise fail to load.
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Parsing.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'CoreChecks.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Npc.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Combat.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Medical.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Inventory.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'World.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Session.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Motion.ps1')
+. (Join-Path (Join-Path $PSScriptRoot 'oracles') 'Panel.ps1')
 
 # ---- Manifest + top-level analysis ---------------------------------------------------
 

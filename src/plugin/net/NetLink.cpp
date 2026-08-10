@@ -81,10 +81,12 @@ NetLink::NetLink()
     : isHost_(false), port_(0),
       enetHost_(0), serverPeer_(0), inbound_(0),
       outOwner_(0), outStampMs_(0), haveOut_(false),
-      thread_(0), running_(0), stopFlag_(0), myId_(0),
+      thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0), myId_(0),
       sendEpoch_(0),
       steamPeer_(0),
+      unknownPkts_(0), unknownLogMs_(0),
       simDelayMs_(0), simJitterMs_(0), simLossPct_(0) {
+    memset(unknownTypeBits_, 0, sizeof(unknownTypeBits_));
     InitializeCriticalSection(&outCs_);
 }
 
@@ -173,7 +175,7 @@ void NetLink::queueWorldItems(u32 ownerId, const WorldItemEntry* items, unsigned
 void NetLink::queueWorldRemove(u32 ownerId, const u32* netIds, unsigned int count) {
     OutWorldRemove ow;
     ow.ownerId = ownerId;
-    if (count > 255) count = 255; // u8 count on the wire
+    if (count > WORLD_IDS_PER_PACKET) count = WORLD_IDS_PER_PACKET; // u8 count on the wire
     if (netIds && count > 0) ow.netIds.assign(netIds, netIds + count);
     pushLocked(outCs_, outWorldRemove_, ow);
 }
@@ -182,7 +184,7 @@ void NetLink::queueWorldClaim(u32 ownerId, u32 authorId, const u32* netIds,
                               unsigned int count) {
     OutWorldClaim ow;
     ow.ownerId = ownerId; ow.authorId = authorId;
-    if (count > 255) count = 255; // u8 count on the wire
+    if (count > WORLD_IDS_PER_PACKET) count = WORLD_IDS_PER_PACKET; // u8 count on the wire
     if (netIds && count > 0) ow.netIds.assign(netIds, netIds + count);
     pushLocked(outCs_, outWorldClaim_, ow);
 }
@@ -215,6 +217,8 @@ void NetLink::queueMoneyDelta(const MoneyDeltaPacket& pkt) { pushLocked(outCs_, 
 void NetLink::queueFaction(const FactionPacket& pkt) { pushLocked(outCs_, outFaction_, pkt); }
 
 void NetLink::queueTime(const TimePacket& pkt) { pushLocked(outCs_, outTime_, pkt); }
+void NetLink::queueWeather(const WeatherPacket& pkt) { pushLocked(outCs_, outWeather_, pkt); }
+void NetLink::queueDialogue(const DialoguePacket& pkt) { pushLocked(outCs_, outDialogue_, pkt); }
 
 void NetLink::queueDoor(const DoorPacket& pkt) { pushLocked(outCs_, outDoor_, pkt); }
 
@@ -374,12 +378,20 @@ void NetLink::threadLoop() {
         ENetAddress addr;
         addr.host = ENET_HOST_ANY;
         addr.port = (enet_uint16)port_;
-        enetHost_ = enet_host_create(&addr, 8 /*peers*/, CH_COUNT /*channels*/, 0, 0);
+        // 2 peers, not 8: the sync model is host + ONE join and a third is rejected
+        // at HELLO anyway, so the slots only ever served to let strangers occupy
+        // them. maximumPacketSize likewise - ENet defaults to 32 MB and allocates
+        // and reassembles a declared size BEFORE any of this plugin's own length
+        // checks run, so a peer could make us hold 32 MB per fragmented packet. The
+        // largest legitimate packet here is a 4 KB save chunk.
+        enetHost_ = enet_host_create(&addr, 2 /*peers*/, CH_COUNT /*channels*/, 0, 0);
         if (!enetHost_) { netErr("host create failed"); InterlockedExchange(&running_, 0); return; }
+        enetHost_->maximumPacketSize = 64 * 1024;
         netLog("hosting");
     } else {
         enetHost_ = enet_host_create(0, 1, CH_COUNT, 0, 0);
         if (!enetHost_) { netErr("client create failed"); InterlockedExchange(&running_, 0); return; }
+        enetHost_->maximumPacketSize = 64 * 1024; // see the host note above
         ENetAddress addr;
         if (steam) enet_address_set_host_ip(&addr, "1.0.0.1");
         else       enet_address_set_host(&addr, ip_.c_str());
@@ -399,6 +411,15 @@ void NetLink::threadLoop() {
 
     u32   nextId = 1;
     DWORD lastConnectAttempt = GetTickCount();
+    // Bandwidth sampling. Nothing in the plugin measured its own traffic, so every
+    // judgement about what to send was made blind - including "the mid band is
+    // cheap", which was true but unverified. ENet already counts the bytes; this
+    // just reports them, once every few seconds, in the units a decision needs.
+    DWORD lastBwMs   = GetTickCount();
+    enet_uint32 bwOut0 = 0, bwIn0 = 0;
+    // Entity-batch de-duplication state (see the send block below).
+    u32   lastSentStamp    = 0;
+    DWORD lastKeepaliveMs  = GetTickCount();
 
     // Wall-clock time-sync state (client only). The join pings every ~2 s; each
     // pong yields an (rtt, offset) sample; the minimum-RTT sample wins (NTP
@@ -425,7 +446,12 @@ void NetLink::threadLoop() {
                 (serverPeer_->state == ENET_PEER_STATE_DISCONNECTED) ||
                 (serverPeer_->state == ENET_PEER_STATE_ZOMBIE);
             DWORD now = GetTickCount();
-            if (disconnected && (now - lastConnectAttempt) >= 2000) {
+            // Re-dialling a host that rejected us on version can never succeed, and
+            // at 2 s it fills BOTH logs with the same rejection until someone gives
+            // up. Keep a slow retry so a genuine reinstall still reconnects on its
+            // own, but stop pretending progress is being made.
+            const DWORD retryMs = (faultKind_ == (LONG)FAULT_VERSION) ? 30000u : 2000u;
+            if (disconnected && (now - lastConnectAttempt) >= retryMs) {
                 lastConnectAttempt = now;
                 if (serverPeer_) { enet_peer_reset(serverPeer_); serverPeer_ = 0; }
                 ENetAddress addr;
@@ -463,6 +489,22 @@ void NetLink::threadLoop() {
                 }
                 case ENET_EVENT_TYPE_RECEIVE: {
                     const u8 type = packetType(ev.packet->data, (unsigned)ev.packet->dataLength);
+                    // Nothing but the handshake is honoured before the handshake
+                    // completes. Only HELLO and WELCOME used to consult connection
+                    // state; every other branch parsed and queued regardless of
+                    // whether this peer had ever been assigned an id - so the
+                    // version gate and the two-player gate could both be bypassed by
+                    // simply not sending HELLO and proceeding to talk. The peer is
+                    // established on the host when ev.peer->data holds its id, and
+                    // on the join when myId_ has been set from WELCOME.
+                    const bool established = isHost_
+                        ? (ev.peer != 0 && ev.peer->data != 0)
+                        : (InterlockedCompareExchange(&myId_, 0, 0) != 0);
+                    const bool handshake = (type == PKT_HELLO) || (type == PKT_WELCOME);
+                    if (!established && !handshake) {
+                        enet_packet_destroy(ev.packet);
+                        break;
+                    }
                     if (isHost_ && type == PKT_HELLO) {
                         HelloPacket h;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &h)) {
@@ -473,6 +515,8 @@ void NetLink::threadLoop() {
                                           (unsigned)h.version, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netErr(b);
+                                InterlockedExchange(&faultPeerVer_, (LONG)h.version);
+                                InterlockedExchange(&faultKind_, (LONG)FAULT_VERSION);
                                 enet_peer_disconnect(ev.peer, 0);
                             } else {
                                 u32 id = nextId++;
@@ -483,8 +527,17 @@ void NetLink::threadLoop() {
                                 // a single peer. A third player connects at the wire
                                 // level but will silently desync - fail loudly instead.
                                 if (id >= 2) {
+                                    // Refuse, rather than logging "expect desync" and
+                                    // admitting them anyway. A third player who is let
+                                    // in gets a session that looks like it works and
+                                    // then quietly corrupts both other players' worlds;
+                                    // a clean rejection is something they can act on.
                                     netErr("3+ players unsupported: join-authored state is "
-                                           "not relayed peer-to-peer; expect desync");
+                                           "not relayed peer-to-peer; rejecting");
+                                    InterlockedExchange(&faultKind_, (LONG)FAULT_THIRD_PLAYER);
+                                    enet_peer_disconnect(ev.peer, 0);
+                                    enet_packet_destroy(ev.packet);
+                                    break;
                                 }
                                 ev.peer->data = (void*)(size_t)id;
                                 WelcomePacket w;
@@ -507,10 +560,18 @@ void NetLink::threadLoop() {
                             if (w.version != PROTOCOL_VERSION) {
                                 char b[128];
                                 _snprintf(b, sizeof(b) - 1,
-                                          "protocol mismatch: host v%u, ours v%u",
+                                          "protocol mismatch: host v%u, ours v%u; disconnecting",
                                           (unsigned)w.version, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netErr(b);
+                                InterlockedExchange(&faultPeerVer_, (LONG)w.version);
+                                InterlockedExchange(&faultKind_, (LONG)FAULT_VERSION);
+                                // Tear down here too. The host's own gate normally
+                                // disconnects first, but relying on that leaves this
+                                // side half-open whenever it does not: connected at the
+                                // ENet level, myId_ never assigned, pushConnect never
+                                // fired, and no way for the player to tell why.
+                                if (ev.peer) enet_peer_disconnect(ev.peer, 0);
                             } else {
                                 InterlockedExchange(&myId_, (LONG)w.playerId);
                                 char b[96];
@@ -531,7 +592,13 @@ void NetLink::threadLoop() {
                                 sizeof(EntityBatchHeader) + (unsigned)hdr.count * sizeof(EntityState);
                             // Drop batches from a superseded session (protocol 44)
                             // before they reach the WAN-sim queue / interp buffers.
-                            if (len >= need && acceptEpoch(hdr.ownerId, hdr.epoch)) {
+                            // count cap mirrors the census arm: no sender emits more
+                            // than ENTITY_BATCH_MAX (the Steam cap is smaller), so an
+                            // over-cap count is a malformed or hostile stream - drop
+                            // the batch whole, same as a short one. hdr.count is a u8;
+                            // without this the loop accepted up to 255 per packet.
+                            if (len >= need && hdr.count <= ENTITY_BATCH_MAX &&
+                                acceptEpoch(hdr.ownerId, hdr.epoch)) {
                                 const enet_uint8* p = ev.packet->data + sizeof(EntityBatchHeader);
                                 for (unsigned i = 0; i < hdr.count; ++i) {
                                     EntityState e;
@@ -738,6 +805,20 @@ void NetLink::threadLoop() {
                             && inbound_) {
                             inbound_->pushFaction(fa.ownerId, fa);
                         }
+                    } else if (type == PKT_DIALOGUE) {
+                        // A spoken line (protocol 56). Fire-and-forget event.
+                        DialoguePacket dp;
+                        if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &dp)
+                            && inbound_) {
+                            inbound_->pushDialogue(dp.ownerId, dp);
+                        }
+                    } else if (type == PKT_WEATHER) {
+                        // Host-authoritative weather (protocol 55).
+                        WeatherPacket wx;
+                        if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &wx)
+                            && inbound_) {
+                            inbound_->pushWeather(wx.ownerId, wx);
+                        }
                     } else if (type == PKT_TIME) {
                         // Reliable host-authoritative game-clock sample
                         // (protocol 25). Delivered immediately like the others.
@@ -833,21 +914,30 @@ void NetLink::threadLoop() {
                             && inbound_) {
                             inbound_->pushSpawnInfo(sip.ownerId, sip);
                         }
-                    } else if (type == PKT_SAVE_REQ) {
+                    // The save/load queues below are each drained by exactly ONE
+                    // role: the join consumes BEGIN/FILE/DONE/LOAD_GO, the host
+                    // consumes REQ/ACK/LOAD_REQ/LOAD_NACK. Nothing drains the other
+                    // direction, and these queues are deliberately excluded from the
+                    // world-state flush - so a packet accepted for the wrong role is
+                    // queued forever and the memory grows with peer traffic for the
+                    // life of the session. Validating direction here, where the role
+                    // is already known, fixes the leak and rules out a whole class of
+                    // wrong-direction confusion downstream.
+                    } else if (type == PKT_SAVE_REQ && isHost_) {
                         // Reliable join save request (protocol 31, join -> host).
                         SaveReqPacket sq;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sq)
                             && inbound_) {
                             inbound_->pushSaveReq(sq.ownerId, sq);
                         }
-                    } else if (type == PKT_SAVE_BEGIN) {
+                    } else if (type == PKT_SAVE_BEGIN && !isHost_) {
                         // Reliable save-transfer announce (protocol 31, host -> join).
                         SaveBeginPacket sb;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sb)
                             && inbound_) {
                             inbound_->pushSaveBegin(sb.ownerId, sb);
                         }
-                    } else if (type == PKT_SAVE_FILE) {
+                    } else if (type == PKT_SAVE_FILE && !isHost_) {
                         // Reliable save-file chunk (protocol 31, host -> join):
                         // [SaveFileHeader][path[pathLen]][payload[dataLen]].
                         const unsigned len = (unsigned)ev.packet->dataLength;
@@ -865,7 +955,7 @@ void NetLink::threadLoop() {
                                                        (const u8*)p + hdr.pathLen);
                             }
                         }
-                    } else if (type == PKT_SAVE_DONE) {
+                    } else if (type == PKT_SAVE_DONE && !isHost_) {
                         // Reliable save-transfer CRC table (protocol 31, host -> join):
                         // [SaveDoneHeader][u32 crc * fileCount].
                         const unsigned len = (unsigned)ev.packet->dataLength;
@@ -881,28 +971,28 @@ void NetLink::threadLoop() {
                                                            ? (const u32*)p : 0);
                             }
                         }
-                    } else if (type == PKT_SAVE_ACK) {
+                    } else if (type == PKT_SAVE_ACK && isHost_) {
                         // Reliable commit acknowledgement (protocol 31, join -> host).
                         SaveAckPacket sa;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &sa)
                             && inbound_) {
                             inbound_->pushSaveAck(sa.ownerId, sa);
                         }
-                    } else if (type == PKT_LOAD_GO) {
+                    } else if (type == PKT_LOAD_GO && !isHost_) {
                         // Reliable coordinated-load order (protocol 32, host -> join).
                         LoadGoPacket lg;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &lg)
                             && inbound_) {
                             inbound_->pushLoadGo(lg.ownerId, lg);
                         }
-                    } else if (type == PKT_LOAD_REQ) {
+                    } else if (type == PKT_LOAD_REQ && isHost_) {
                         // Reliable join load request (protocol 32, join -> host).
                         LoadReqPacket lr;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &lr)
                             && inbound_) {
                             inbound_->pushLoadReq(lr.ownerId, lr);
                         }
-                    } else if (type == PKT_LOAD_NACK) {
+                    } else if (type == PKT_LOAD_NACK && isHost_) {
                         // Reliable copy-missing/diverged answer (protocol 32, join -> host).
                         LoadNackPacket ln;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &ln)
@@ -958,6 +1048,32 @@ void NetLink::threadLoop() {
                                 ++syncSamples;
                                 if (rtt <= bestRttMs) { bestRttMs = rtt; bestOffsetMs = offset; }
                             }
+                        }
+                    } else {
+                        // A type this build has no arm for. Dropping it is right;
+                        // dropping it SILENTLY was not - it is the only signal that
+                        // separates version skew from a corrupted stream, and both
+                        // otherwise present as "a feature quietly does not work".
+                        //
+                        // Reported at most once per distinct type, plus a running
+                        // total every 10 s, so a stream producing garbage on every
+                        // packet cannot make the log the bigger problem.
+                        ++unknownPkts_;
+                        const unsigned int w = (unsigned int)type >> 5;
+                        const unsigned int bit = 1u << ((unsigned int)type & 31u);
+                        bool firstOfType = (unknownTypeBits_[w] & bit) == 0;
+                        unknownTypeBits_[w] |= bit;
+                        unsigned long nowU = (unsigned long)monoMs();
+                        if (firstOfType || (nowU - unknownLogMs_) > 10000) {
+                            unknownLogMs_ = nowU;
+                            char b[144];
+                            _snprintf(b, sizeof(b) - 1,
+                                "unknown packet type=%u len=%u total=%lu "
+                                "(peer build mismatch or corrupt stream)",
+                                (unsigned)type, (unsigned)ev.packet->dataLength,
+                                unknownPkts_);
+                            b[sizeof(b) - 1] = '\0';
+                            netLog(b);
                         }
                     }
                     enet_packet_destroy(ev.packet);
@@ -1024,13 +1140,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < events.size(); ++i) {
             ENetPacket* out = enet_packet_create(&events[i], sizeof(EventPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued conservation DROP intents on CH_RELIABLE (Phase W2). A
@@ -1049,13 +1159,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < drops.size(); ++i) {
             ENetPacket* out = enet_packet_create(&drops[i], sizeof(WorldDropPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued conservation PICKUP intents on CH_RELIABLE (Phase W3).
@@ -1066,18 +1170,17 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < pickups.size(); ++i) {
             ENetPacket* out = enet_packet_create(&pickups[i], sizeof(WorldPickupPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued container-contents snapshots on CH_RELIABLE. Each
-        // is [InvSnapshotHeader][InvItemEntry*count]; only enqueued on content-change,
-        // so this channel stays quiet. Reliable so the change survives WAN loss.
+        // is [InvSnapshotHeader][InvItemEntry*count]; enqueued on content-change plus
+        // a periodic re-assert (invResendMs / invResendBigMs - 5/30 s defaults, pinned
+        // by prototest), so the channel is quiet but never silent. Do NOT trust
+        // "quiet" from reading this code alone: when that cadence collapsed to 0 it
+        // flooded every tick with nothing logged (2026-08-09) - the [inv] resent
+        // rollup in ReplicatorItems.cpp is the observability for this path.
+        // Reliable so the change survives WAN loss.
         std::vector<OutInv> invs;
         EnterCriticalSection(&outCs_);
         invs.swap(outInv_);
@@ -1103,13 +1206,7 @@ void NetLink::threadLoop() {
             if (count > 0)
                 std::memcpy(out->data + sizeof(hdr), &invs[i].items[0],
                             count * sizeof(InvItemEntry));
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued world-item snapshots on CH_RELIABLE (Phase W1). Each
@@ -1136,13 +1233,7 @@ void NetLink::threadLoop() {
             if (count > 0)
                 std::memcpy(out->data + sizeof(hdr), &wis[i].items[0],
                             count * sizeof(WorldItemEntry));
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         // Drain + send any queued world-item culls on CH_RELIABLE (Phase W1).
         for (size_t i = 0; i < wrs.size(); ++i) {
@@ -1157,13 +1248,7 @@ void NetLink::threadLoop() {
             std::memcpy(out->data, &hdr, sizeof(hdr));
             if (count > 0)
                 std::memcpy(out->data + sizeof(hdr), &wrs[i].netIds[0], count * sizeof(u32));
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         // Drain + send any queued world-item CLAIMS on CH_RELIABLE (protocol 47). A claim
         // travels the opposite way to a cull: the peer that consumed a proxy tells the
@@ -1181,13 +1266,7 @@ void NetLink::threadLoop() {
             std::memcpy(out->data, &hdr, sizeof(hdr));
             if (count > 0)
                 std::memcpy(out->data + sizeof(hdr), &wcs[i].netIds[0], count * sizeof(u32));
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued NPC existence censuses on CH_RELIABLE
@@ -1218,13 +1297,7 @@ void NetLink::threadLoop() {
                 if (censuses[i].pos.size() >= count * 3)
                     std::memcpy(pp, &censuses[i].pos[0], count * 3 * sizeof(float));
             }
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued cross-owner TRANSFER intents on CH_RELIABLE
@@ -1236,13 +1309,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < xfers.size(); ++i) {
             ENetPacket* out = enet_packet_create(&xfers[i], sizeof(InvXferPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Transfer VERDICTS (protocol 50), same channel as the intents.
@@ -1253,13 +1320,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < xferAcks.size(); ++i) {
             ENetPacket* out = enet_packet_create(&xferAcks[i], sizeof(InvXferAckPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued medical snapshots + treatment deltas on
@@ -1276,35 +1337,17 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < meds.size(); ++i) {
             ENetPacket* out = enet_packet_create(&meds[i], sizeof(MedicalPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         for (size_t i = 0; i < treats.size(); ++i) {
             ENetPacket* out = enet_packet_create(&treats[i], sizeof(TreatmentPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         for (size_t i = 0; i < combatHits.size(); ++i) {
             ENetPacket* out = enet_packet_create(&combatHits[i], sizeof(CombatHitPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued game-speed packets on CH_RELIABLE (consensus
@@ -1317,13 +1360,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < speeds.size(); ++i) {
             ENetPacket* out = enet_packet_create(&speeds[i], sizeof(SpeedPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued character-stats snapshots on CH_RELIABLE
@@ -1336,13 +1373,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < statPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&statPkts[i], sizeof(StatsPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued money-pool totals on CH_RELIABLE (protocol
@@ -1356,13 +1387,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < moneyPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&moneyPkts[i], sizeof(MoneyPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued money-pool deltas on CH_RELIABLE (protocol
@@ -1376,13 +1401,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < moneyDeltaPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&moneyDeltaPkts[i], sizeof(MoneyDeltaPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued faction-relation rows on CH_RELIABLE
@@ -1396,13 +1415,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < facPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&facPkts[i], sizeof(FactionPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued game-clock samples on CH_RELIABLE (protocol
@@ -1415,13 +1428,33 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < timePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&timePkts[i], sizeof(TimePacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
+        }
+
+        // Drain + send any spoken lines on CH_RELIABLE (protocol 56). An event,
+        // not state: sent once, never re-asserted.
+        std::vector<DialoguePacket> dlgPkts;
+        EnterCriticalSection(&outCs_);
+        dlgPkts.swap(outDialogue_);
+        LeaveCriticalSection(&outCs_);
+        for (size_t i = 0; i < dlgPkts.size(); ++i) {
+            ENetPacket* out = enet_packet_create(&dlgPkts[i], sizeof(DialoguePacket),
+                                                 ENET_PACKET_FLAG_RELIABLE);
+            sendToPeer(out, CH_RELIABLE);
+        }
+
+        // Drain + send any queued weather states on CH_RELIABLE (protocol 55).
+        // ~1 Hz host broadcast, change-gated by the Replicator, so a settled
+        // sky is silent. Reliable because a lost change would leave the join in
+        // the wrong weather until the next real transition.
+        std::vector<WeatherPacket> wxPkts;
+        EnterCriticalSection(&outCs_);
+        wxPkts.swap(outWeather_);
+        LeaveCriticalSection(&outCs_);
+        for (size_t i = 0; i < wxPkts.size(); ++i) {
+            ENetPacket* out = enet_packet_create(&wxPkts[i], sizeof(WeatherPacket),
+                                                 ENET_PACKET_FLAG_RELIABLE);
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued baked-door state rows on CH_RELIABLE
@@ -1435,13 +1468,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < doorPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&doorPkts[i], sizeof(DoorPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued machine state rows on CH_RELIABLE
@@ -1455,13 +1482,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < prodPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&prodPkts[i], sizeof(ProdPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued known-research rows on CH_RELIABLE
@@ -1475,13 +1496,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < researchPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&researchPkts[i], sizeof(ResearchPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued property-deed rows on CH_RELIABLE (protocol
@@ -1495,13 +1510,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < deedPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&deedPkts[i], sizeof(DeedPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued placed-building announcements + progress
@@ -1520,24 +1529,12 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < buildPlacePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&buildPlacePkts[i], sizeof(BuildPlacePacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         for (size_t i = 0; i < buildStatePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&buildStatePkts[i], sizeof(BuildStatePacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued placed-building door rows + removals on
@@ -1554,24 +1551,12 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < buildDoorPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&buildDoorPkts[i], sizeof(BuildDoorPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         for (size_t i = 0; i < buildRemovePkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&buildRemovePkts[i], sizeof(BuildRemovePacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued stealth detection-map snapshots on
@@ -1584,13 +1569,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < stealthPkts.size(); ++i) {
             ENetPacket* out = enet_packet_create(&stealthPkts[i], sizeof(StealthPacket),
                                                  0 /*unreliable*/);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_UNRELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_UNRELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_UNRELIABLE);
         }
 
         // Drain + send any queued camera hints on CH_UNRELIABLE (protocol
@@ -1603,13 +1582,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < camHints.size(); ++i) {
             ENetPacket* out = enet_packet_create(&camHints[i], sizeof(CamHintPacket),
                                                  0 /*unreliable*/);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_UNRELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_UNRELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_UNRELIABLE);
         }
 
         // Cell claims ride CH_RELIABLE (protocol 49, ~1 Hz): losing one leaves
@@ -1623,13 +1596,7 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < cellClaims.size(); ++i) {
             ENetPacket* out = enet_packet_create(&cellClaims[i], sizeof(CellClaimPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued runtime-spawn packets on CH_RELIABLE
@@ -1646,24 +1613,12 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < spawnReqs.size(); ++i) {
             ENetPacket* out = enet_packet_create(&spawnReqs[i], sizeof(SpawnReqPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
         for (size_t i = 0; i < spawnInfos.size(); ++i) {
             ENetPacket* out = enet_packet_create(&spawnInfos[i], sizeof(SpawnInfoPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_RELIABLE, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_RELIABLE, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued coordinated-save packets on CH_BULK (protocol
@@ -1688,24 +1643,12 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < saveReqs.size(); ++i) {
             ENetPacket* out = enet_packet_create(&saveReqs[i], sizeof(SaveReqPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < saveBegins.size(); ++i) {
             ENetPacket* out = enet_packet_create(&saveBegins[i], sizeof(SaveBeginPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < saveFiles.size(); ++i) {
             unsigned bytes = sizeof(SaveFileHeader) + (unsigned)saveFiles[i].tail.size();
@@ -1714,13 +1657,7 @@ void NetLink::threadLoop() {
             if (!saveFiles[i].tail.empty())
                 std::memcpy(out->data + sizeof(SaveFileHeader), &saveFiles[i].tail[0],
                             saveFiles[i].tail.size());
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < saveDones.size(); ++i) {
             unsigned bytes = sizeof(SaveDoneHeader)
@@ -1730,24 +1667,12 @@ void NetLink::threadLoop() {
             if (!saveDones[i].crcs.empty())
                 std::memcpy(out->data + sizeof(SaveDoneHeader), &saveDones[i].crcs[0],
                             saveDones[i].crcs.size() * sizeof(u32));
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < saveAcks.size(); ++i) {
             ENetPacket* out = enet_packet_create(&saveAcks[i], sizeof(SaveAckPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
 
         // Drain + send queued coordinated-load packets (protocol 32) on CH_BULK
@@ -1766,34 +1691,36 @@ void NetLink::threadLoop() {
         for (size_t i = 0; i < loadGos.size(); ++i) {
             ENetPacket* out = enet_packet_create(&loadGos[i], sizeof(LoadGoPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < loadReqs.size(); ++i) {
             ENetPacket* out = enet_packet_create(&loadReqs[i], sizeof(LoadReqPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
-            }
+            sendToPeer(out, CH_BULK);
         }
         for (size_t i = 0; i < loadNacks.size(); ++i) {
             ENetPacket* out = enet_packet_create(&loadNacks[i], sizeof(LoadNackPacket),
                                                  ENET_PACKET_FLAG_RELIABLE);
-            if (isHost_) {
-                enet_host_broadcast(enetHost_, CH_BULK, out);
-            } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                enet_peer_send(serverPeer_, CH_BULK, out);
-            } else {
-                enet_packet_destroy(out);
+            sendToPeer(out, CH_BULK);
+        }
+
+        // Bandwidth line: rates over the sampling window, plus the running totals.
+        // ENet's counters are cumulative and wrap, so the deltas are what matter.
+        {
+            const DWORD nowBw = GetTickCount();
+            if (enetHost_ && (nowBw - lastBwMs) >= 5000) {
+                const enet_uint32 outNow = enetHost_->totalSentData;
+                const enet_uint32 inNow  = enetHost_->totalReceivedData;
+                const double secs = (double)(nowBw - lastBwMs) / 1000.0;
+                const double outKb = (double)(enet_uint32)(outNow - bwOut0) / 1024.0 / secs;
+                const double inKb  = (double)(enet_uint32)(inNow  - bwIn0)  / 1024.0 / secs;
+                char b[160];
+                _snprintf(b, sizeof(b) - 1,
+                          "[net] bandwidth out=%.1f KB/s in=%.1f KB/s (window %.0fs)",
+                          outKb, inKb, secs);
+                b[sizeof(b) - 1] = '\0';
+                netLog(b);
+                bwOut0 = outNow; bwIn0 = inNow; lastBwMs = nowBw;
             }
         }
 
@@ -1815,7 +1742,19 @@ void NetLink::threadLoop() {
         have  = haveOut_;
         LeaveCriticalSection(&outCs_);
 
-        if (have && !ents.empty()) {
+        // Skip a snapshot we have already sent. haveOut_ is never cleared, so when
+        // the main thread stops publishing - a coordinated load, a save commit, any
+        // world swap - this loop otherwise re-broadcasts the LAST live snapshot at
+        // 20 Hz for as long as the stall lasts, telling the peer that bodies which
+        // are mid-teardown are still exactly where they were. A slow keepalive
+        // stays, so a genuinely idle-but-live world does not fall out of the
+        // receiver's staleness window.
+        bool freshStamp = (stamp != lastSentStamp);
+        DWORD nowSend = GetTickCount();
+        bool keepalive = (nowSend - lastKeepaliveMs) >= 500;
+        if (have && !ents.empty() && (freshStamp || keepalive)) {
+            lastSentStamp   = stamp;
+            if (keepalive) lastKeepaliveMs = nowSend;
             for (size_t off = 0; off < ents.size(); off += batchCap) {
                 unsigned count = (unsigned)(ents.size() - off);
                 if (count > batchCap) count = batchCap;
@@ -1828,13 +1767,7 @@ void NetLink::threadLoop() {
                 hdr.epoch  = (u32)sendEpoch_; // v44: current session epoch
                 std::memcpy(out->data, &hdr, sizeof(hdr));
                 std::memcpy(out->data + sizeof(hdr), &ents[off], count * sizeof(EntityState));
-                if (isHost_) {
-                    enet_host_broadcast(enetHost_, CH_UNRELIABLE, out);
-                } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-                    enet_peer_send(serverPeer_, CH_UNRELIABLE, out);
-                } else {
-                    enet_packet_destroy(out); // no one to send to yet
-                }
+                sendToPeer(out, CH_UNRELIABLE);
             }
         }
     }

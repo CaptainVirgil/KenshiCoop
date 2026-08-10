@@ -127,6 +127,8 @@ public:
     void queueMoneyDelta(const MoneyDeltaPacket& pkt);
     void queueFaction(const FactionPacket& pkt);
     void queueTime(const TimePacket& pkt);
+    void queueWeather(const WeatherPacket& pkt);
+    void queueDialogue(const DialoguePacket& pkt);
     void queueDoor(const DoorPacket& pkt);
     // MAIN thread: queue a reliable host-authoritative machine state row
     // (protocol 33). Change-gated + safety-resent by the caller.
@@ -210,6 +212,20 @@ public:
     void bumpSessionEpoch();
 
     bool isRunning() const { return running_ != 0; }
+
+    // Why the connection is not happening, for the panel to say out loud. The net
+    // thread knows exactly why a peer was rejected and used to keep it to itself:
+    // it logged the reason and disconnected, while the panel went on rendering
+    // "Connecting..." forever and the join re-dialled every 2 s. A player then has
+    // a mod that does not work and no sentence anywhere telling them what to fix.
+    enum Fault {
+        FAULT_NONE = 0,
+        FAULT_VERSION,      // peer speaks a different PROTOCOL_VERSION
+        FAULT_THIRD_PLAYER  // a third peer tried to join a two-player session
+    };
+    int  lastFault()   const { return (int)faultKind_; }
+    u32  peerVersion() const { return (u32)faultPeerVer_; }
+    void clearFault()  { InterlockedExchange(&faultKind_, (LONG)FAULT_NONE); }
     // host = 0; client = id from WELCOME. myId_ is written by the NET thread when
     // the WELCOME arrives and read here on the MAIN thread, so it is a volatile
     // LONG written via InterlockedExchange; an aligned 32-bit volatile read is
@@ -240,6 +256,22 @@ private:
 
     ENetHost*   enetHost_;   // net thread only
     ENetPeer*   serverPeer_; // client only; net thread only
+
+    // Send one packet to whoever the peer is, and destroy it if there is nobody to
+    // send to. NET THREAD ONLY. This exact if/else-if/else appeared 41 times in
+    // threadLoop, once per packet type - the same three lines, the same ownership
+    // rule, and the same easy mistake available in each copy (an early return that
+    // leaks the packet, or a missing destroy on the no-peer path).
+    void sendToPeer(ENetPacket* pkt, int channel) {
+        if (!pkt) return;
+        if (isHost_) {
+            enet_host_broadcast(enetHost_, channel, pkt);
+        } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
+            enet_peer_send(serverPeer_, channel, pkt);
+        } else {
+            enet_packet_destroy(pkt); // no one to send to yet
+        }
+    }
     Inbound*    inbound_;
 
     CRITICAL_SECTION         outCs_;
@@ -293,6 +325,8 @@ private:
     std::vector<MoneyDeltaPacket> outMoneyDelta_;
     std::vector<FactionPacket>   outFaction_;
     std::vector<TimePacket>      outTime_;
+    std::vector<WeatherPacket>   outWeather_;
+    std::vector<DialoguePacket>  outDialogue_;
     std::vector<DoorPacket>      outDoor_;
     // Reliable machine state rows (protocol 33). Guarded by outCs_.
     std::vector<ProdPacket>      outProd_;
@@ -331,6 +365,10 @@ private:
     HANDLE        thread_;
     volatile LONG running_;
     volatile LONG stopFlag_;
+    // Written by the NET thread at the rejection sites, read on the MAIN thread by
+    // the panel. Volatile LONG + Interlocked for the same reason as myId_.
+    volatile LONG faultKind_;
+    volatile LONG faultPeerVer_;
     // Written by the NET thread on WELCOME (InterlockedExchange) and read on the
     // MAIN thread via localId(); volatile LONG so the read is atomic + uncached.
     volatile LONG myId_;
@@ -346,6 +384,19 @@ private:
     // Steam P2P transport (set before launch; read-only on the net thread
     // thereafter). 0 = stock UDP transport.
     unsigned long long steamPeer_;
+
+    // Packet types this build does not know. Net-thread only.
+    //
+    // The dispatch used to drop them with no log and no counter, which threw away
+    // the single diagnostic that distinguishes the two things that produce one:
+    // a peer running a different build (version skew that the PROTOCOL_VERSION
+    // gate somehow let past) and a stream that is being corrupted. Neither has any
+    // other symptom at this layer - both just look like a feature quietly not
+    // working. Rate-limited so a corrupt stream cannot turn the log into the
+    // failure.
+    unsigned long unknownPkts_;    // total this session
+    unsigned long unknownLogMs_;   // when the last line was emitted
+    unsigned int  unknownTypeBits_[8]; // 256-bit set: types already reported once
 
     // WAN sim config (set before launch; read-only on the net thread thereafter).
     unsigned int  simDelayMs_;

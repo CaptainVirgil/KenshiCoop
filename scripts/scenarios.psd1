@@ -1831,7 +1831,14 @@
         # WORLD-RELOAD edge. clock_sync is NOT gated (the reload restarts the
         # in-game clock series, same as load_sync).
         rejoin_items = @{
-            DiagEnv = @{ KENSHICOOP_INV_DUMP = '1' }
+            # KENSHICOOP_WORLD_SYNC is not optional here, it is the whole subject.
+            # Without it Config.cpp leaves c.worldSync off for the entire run and
+            # every mechanism this scenario claims to test is behind that gate:
+            # proxy minting, the worldSeeded_ first-scan baseline, and the drop
+            # hook. The scenario landed with no DiagEnv block at all, so it has
+            # been passing since 6e27640 without exercising the Phase-3 item-dup
+            # fix it exists to guard - a green result certifying nothing.
+            DiagEnv = @{ KENSHICOOP_INV_DUMP = '1'; KENSHICOOP_WORLD_SYNC = '1' }
             Save = 'sync'; Setup = ''; Tolerance = 6.0
             PrimaryGate = 'rejoin_items'
             Gating   = @('rejoin_items')

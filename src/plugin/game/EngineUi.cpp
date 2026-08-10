@@ -61,6 +61,23 @@ ScreenLabel* markerCreateSeh(ForgottenGUI* g, Character* c,
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+// Same widget, but RISING - the engine's own damage numbers are ScreenLabels
+// too (OptionsHolder::damageFloaters toggles them), so this is the game's own
+// presentation rather than an overlay of ours.
+ScreenLabel* floaterCreateSeh(ForgottenGUI* g, Character* c,
+                              const std::string* text, const MyGUI::Colour* col,
+                              const Ogre::Vector3* off) {
+    __try {
+        ScreenLabel* l = g->createScreenLabel(*text, *col, ScreenLabel::LS_SMALL,
+                                              ScreenLabel::RS_NORMAL);
+        if (l) {
+            l->_NV_setRisingSpeed(ScreenLabel::RS_NORMAL);
+            l->_NV_setTracking(c->handle, *off);
+        }
+        return l;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 bool markerUpdateSeh(ScreenLabel* l, const std::string* text,
                      const MyGUI::Colour* col) {
     __try {
@@ -106,6 +123,34 @@ bool markerDestroySeh(ForgottenGUI* g, ScreenLabel* l) {
 }
 
 } // namespace
+
+void floaterSpawn(Character* c, const char* text, int colorId) {
+    if (!c || !text) return;
+    ForgottenGUI* g = ::gui; // KenshiLib data export (spike 46)
+    if (!g) return;
+    // OWN the lifetime. ScreenLabel carries no timer - only ScreenLabelDebug
+    // has timeLeft - and whether a rising label self-reaps when it finishes
+    // rising is not provable from the dump. So keep a bounded ring of our own
+    // and destroy the oldest as new ones arrive: at worst RING_N labels are
+    // alive at once, which is the same bound the debug markers already live
+    // under, and markerDestroy is a no-op on a handle the GUI already reaped.
+    const unsigned int RING_N = 24;
+    static void* ring[RING_N];      // main-thread only
+    static unsigned int head = 0;
+    static int inited = 0;
+    if (!inited) { for (unsigned int i = 0; i < RING_N; ++i) ring[i] = 0; inited = 1; }
+
+    std::string t(text);
+    MyGUI::Colour col;
+    markerColour(colorId, &col);
+    // Slightly above head height so a number does not sit inside the name tag.
+    Ogre::Vector3 off(0.0f, 2.6f, 0.0f);
+    ScreenLabel* l = floaterCreateSeh(g, c, &t, &col, &off);
+    if (!l) return;
+    if (ring[head]) markerDestroy(ring[head]);
+    ring[head] = (void*)l;
+    head = (head + 1) % RING_N;
+}
 
 void* markerCreate(Character* c, const char* text, int colorId) {
     if (!c || !text) return 0;
@@ -265,6 +310,14 @@ std::string             g_selfIdStr;   // self SteamID as digits (set each tick;
 // where it overrides the (usually empty) config steamPeer.
 unsigned long long      g_pastedPeer   = 0;
 bool                    g_pasteFailed  = false; // last paste wasn't a valid Steam ID
+// Copy-button result, shown on the "Your Steam ID" row. Pressing Copy used to
+// produce NOTHING on screen - the only evidence it had worked was a line in a log
+// file the player has no reason to be reading - so the natural response to an
+// unresponsive-looking button was to press it again, and to wonder whether the id
+// on the clipboard was even theirs. 0 = never pressed, 1 = copied, 2 = clipboard
+// refused, 3 = no Steam id to copy.
+int                     g_copyState    = 0;
+unsigned long           g_copyStateMs  = 0; // GetTickCount at the press (result fades)
 
 // Button callbacks (free functions - MyGUI::newDelegate wraps them without any
 // raw-MyGUI link). A press flips the armed flag and requests a rebuild so the
@@ -290,11 +343,14 @@ void onConnBtn(DataPanelLine*) {
 // Copy the player's own SteamID to the clipboard so they can paste it to a friend
 // (who pastes it into their panel via "Paste friend's Steam ID").
 void onCopyIdBtn(DataPanelLine*) {
+    g_copyStateMs = GetTickCount();
     if (g_selfIdStr.empty()) {
+        g_copyState = 3;
         coop::logLine("[coop-ui] copy Steam ID: none (Steam not running)");
         return;
     }
     bool ok = clipboardSetText(g_selfIdStr.c_str());
+    g_copyState = ok ? 1 : 2;
     char b[64];
     _snprintf(b, sizeof(b) - 1, "[coop-ui] copied Steam ID to clipboard: %s",
               ok ? "ok" : "FAILED");
@@ -414,7 +470,27 @@ void coopPanelTick(const CoopPanelState* st, CoopConnectFn onConnect,
     }
 
     // F2 rising edge toggles the panel open/closed.
-    bool f2 = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    //
+    // GetAsyncKeyState reads the GLOBAL key state, not this window's input - it
+    // does not care which application is focused. Alt-tabbed out to a browser or
+    // Discord and pressing F2 (a refresh key, and a push-to-talk bind for plenty
+    // of people) toggled the co-op panel behind the game's back, so players came
+    // back to a panel they never opened - or, worse, one they had open and now
+    // did not. Gate on the game actually being the foreground window.
+    //
+    // GetForegroundWindow rather than GetActiveWindow: the latter is per-thread
+    // and returns non-null for our own thread even when another app has focus,
+    // which would not have fixed anything.
+    bool f2 = false;
+    {
+        HWND fg = GetForegroundWindow();
+        DWORD fgPid = 0;
+        if (fg) GetWindowThreadProcessId(fg, &fgPid);
+        if (fgPid == GetCurrentProcessId())
+            f2 = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        else
+            g_panel.f2Down = false;   // never leave a stale edge armed
+    }
     if (f2 && !g_panel.f2Down) {
         if (!g_panel.open) {
             g_panel.hostFlag      = st->isHost;
@@ -527,7 +603,15 @@ void coopPanelTick(const CoopPanelState* st, CoopConnectFn onConnect,
         std::string selfKey  = "Your Steam ID";
         std::string selfVal  = st->selfSteamId
                                    ? coop::maskSteamId64((unsigned long long)st->selfSteamId)
-                                   : std::string("(Steam not running)");
+                                   : std::string("(no Steam - start Steam, then RESTART Kenshi)");
+        // Say what Copy did, for a few seconds. Fades back to the plain id so the
+        // row does not carry a stale "copied!" for the rest of the session - the
+        // message is about the press, not a permanent state.
+        if (g_copyState != 0 && (GetTickCount() - g_copyStateMs) < 6000) {
+            if      (g_copyState == 1) selfVal += "  - copied to clipboard, send it to your friend";
+            else if (g_copyState == 2) selfVal += "  - CLIPBOARD REFUSED (another app is holding it)";
+            else                       selfVal  = "(no Steam - start Steam, then RESTART Kenshi)";
+        }
         std::string copyKey  = "copyid";
         std::string copyCap  = "Copy my Steam ID";
         std::string empty    = "";

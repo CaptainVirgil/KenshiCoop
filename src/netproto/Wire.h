@@ -1,9 +1,15 @@
 // KenshiCoop unified wire protocol (clean rebuild, v1).
 //
-// Compiled by the VS2010 (v100) plugin only. Keep it plain C++03: no <cstdint>
-// reliance, no constexpr, no scoped enums, no STL on the wire. Wire format is
-// packed, little-endian; x86-64 is little-endian on both ends so we send the
-// struct bytes directly.
+// Compiled by the VS2010 (v100) plugin only, and by prototest. The constraints
+// that are actually enforced here: NO STL on the wire, self-defined fixed-width
+// typedefs (so a struct's layout never depends on a header's choices), packed and
+// little-endian - x86-64 is little-endian on both ends, so the struct bytes go out
+// directly. No constexpr and no scoped enums, because _MSC_VER is 1600.
+//
+// The old note also banned <cstdint>. That was never a real constraint - the
+// toolchain ships it, and KenshiLib's own core/Functions.h includes <stdint.h>
+// unconditionally, so it is already in every translation unit here. The typedefs
+// below exist to keep the WIRE self-describing, not because <cstdint> is absent.
 
 #ifndef KENSHICOOP_WIRE_H
 #define KENSHICOOP_WIRE_H
@@ -21,11 +27,11 @@ typedef float          f32;
 typedef double         f64;
 
 // Protocol version. The full version-by-version history (what each bump added
-// and why) lives in resources/PROTOCOL_HISTORY.md - keep it there, not here, so
+// and why) lives in docs/PROTOCOL_HISTORY.md - keep it there, not here, so
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 54;
+const u16 PROTOCOL_VERSION = 56;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -75,7 +81,9 @@ enum PacketType {
     PKT_CELL_CLAIM       = 44,// RELIABLE zone-cell presence claim (protocol 49); CellClaimPacket
     PKT_INV_XFER_ACK     = 45,// RELIABLE transfer verdict (protocol 50); InvXferAckPacket
     PKT_MONEY_DELTA      = 46,// RELIABLE join money-pool delta (join -> host, protocol 52); MoneyDeltaPacket
-    PKT_DEED             = 47 // RELIABLE property-ownership row (protocol 54); DeedPacket
+    PKT_DEED             = 47,// RELIABLE property-ownership row (protocol 54); DeedPacket
+    PKT_WEATHER          = 48,// RELIABLE host-authoritative weather state (protocol 55); WeatherPacket
+    PKT_DIALOGUE         = 49 // RELIABLE spoken line + where it was said (protocol 56); DialoguePacket
 };
 
 // One-shot transition events carried on the RELIABLE channel. Continuous state
@@ -412,8 +420,13 @@ struct EntityBatchHeader {
 };
 
 // 17 * sizeof(EntityState) + header stays comfortably under a 1400 B datagram
-// (v35: one entity of headroom traded for the sendMs stamp; v44: +epoch). This
-// is the HARD receive-side bound and the raw-UDP sender chunk size.
+// (v35: one entity of headroom traded for the sendMs stamp; v44: +epoch).
+// Raw-UDP sender chunk size AND the receive-side cap: the batch arm drops a
+// packet whose hdr.count exceeds this, the same way the census arm drops an
+// over-NPC_CENSUS_MAX count. Receive-side only, so no protocol bump; both
+// sender caps (this and the Steam one below) sit at or under it, so mixed
+// caps interoperate. Pinned by netlinktest, which watched the unclamped
+// receiver accept 255 entities per packet before the clamp shipped.
 const unsigned int ENTITY_BATCH_MAX = 17;
 
 // Steam sender chunk size: the Steam P2P transport clamps ENet's MTU to
@@ -620,6 +633,16 @@ struct WorldItemClaimHeader {
 
 // 16 * sizeof(WorldItemEntry)=1168 + header(6) stays under a 1400 B datagram.
 const unsigned int WORLD_ITEMS_MAX = 16;
+
+// netIds per cull / claim datagram. The count field on both headers above is a
+// u8, so 255 is the wire's own limit, not a policy choice.
+//
+// It lives here because the producer and the transport used to disagree about it
+// by one: the cull producer collected up to 256 and NetLink then clamped the send
+// to 255, so the 256th id was dropped after its local track had already been
+// erased - the peer's proxy stranded with nothing left on this side that could
+// ever cull it again. Both ends read this constant now.
+const unsigned int WORLD_IDS_PER_PACKET = 255;
 
 // ---- Phase W2: conservation DROP intent ------------------------------------
 // A WEAPON cannot be rebuilt on a peer (RootObjectFactory::createItem returns null for all
@@ -1042,6 +1065,57 @@ struct TimePacket {
     u32 ownerId;   // network player id of the sender (the host)
     u32 seq;       // per-sender monotonic (stale-sample guard)
     f64 gameHours; // absolute in-game clock, total hours
+};
+
+// ---- Protocol 55: host-authoritative weather ---------------------------------
+// Kenshi rolls weather per BIOME REGION, from a probability-weighted table, with
+// no seed exposed anywhere in the engine - so two clients standing in the same
+// biome diverge by construction and nothing converges them. Observed live
+// 2026-08-09: one player in rain, the other clear, same biome, metres apart.
+// Not cosmetic - acid rain damages non-Skeletons and storms affect ranged
+// combat, so divergent weather is divergent gameplay.
+//
+// The state is pushed rather than a seed, because there is no seed. The weather
+// IDENTITY travels as the weather's GameData stringID: Weather* differs between
+// processes, and the stringID is what every other channel here already uses to
+// mean "the same data object on both machines". An unmatched id is dropped
+// rather than guessed - the wrong weather is worse than a stale one.
+//
+// Host-authoritative and low rate (~1 Hz): a few dozen bytes, and the receiver
+// only writes when something actually changed.
+// ---- Protocol 56: dialogue ---------------------------------------------------
+// A speech bubble is spawned only on the machine whose AI ran the conversation,
+// so the peer never sees a word. Nothing upstream or in this fork ever carried
+// dialogue - it was not a regression, it was never built.
+//
+// Position rather than a speaker hand: the capture point is
+// DialogueSpeechBubble::setPosition, which is where the bubble is placed, and a
+// world position needs no cross-machine identity resolution. The receiver
+// attaches the text to the character nearest that spot, so it tracks the
+// speaker, and drops the line when nothing plausible is near - our copy of that
+// NPC may not exist, and an orphan caption in mid-air reads as a bug.
+//
+// Fire-and-forget: no seq, no gate. A spoken line is an EVENT - re-showing a
+// stale one would be worse than missing it - so this rides the reliable channel
+// once and is never re-asserted.
+struct DialoguePacket {
+    u8  type;        // = PKT_DIALOGUE
+    u32 ownerId;     // network player id of the sender
+    f32 x, y, z;     // where the bubble was placed
+    char text[128];  // what was said (truncated on capture)
+};
+
+struct WeatherPacket {
+    u8  type;            // = PKT_WEATHER
+    u32 ownerId;         // network player id of the sender (the host)
+    u32 seq;             // per-sender monotonic (stale-sample guard)
+    char sid[48];        // GameData stringID of the region's current weather
+    f32 strength;        // WeatherInstance::strength
+    f32 effectStrength;  // WeatherInstance::effectStrength
+    i32 endTimeMinutes;  // WeatherInstance::endTimeMinutes (when it lapses)
+    f32 weatherTime;     // WeatherInstance::weatherTime (progress through it)
+    i32 seasonIndex;     // WeatherRegion::currentSeasonIndex
+    i32 seasonEndDay;    // WeatherRegion::currentSeasonEndDay
 };
 
 // ---- Protocol 26: baked-door open/lock state ----------------------------------
@@ -1519,11 +1593,70 @@ inline u8 packetType(const void* data, unsigned int len) {
     return *reinterpret_cast<const u8*>(data);
 }
 
+// Force NUL-termination of a fixed-size wire char array.
+//
+// Senders always terminate, and every receiver assumed it. That assumption is the
+// sender's to keep, not ours: a field arriving without a terminator turns the very
+// next std::string(...) or strcmp(...) into a read past the end of the packet
+// struct. Every one of these fields is a GameData stringID or a save name, so
+// truncating the last byte costs nothing real - a 48-byte template id that uses
+// all 48 bytes does not exist - and it makes the whole downstream safe at O(1)
+// instead of auditing a dozen call sites.
+template <unsigned N>
+inline void wireTerm(char (&field)[N]) { field[N - 1] = '\0'; }
+
+// Terminate every char[] a packet carries, as part of parsing it.
+//
+// This used to be the receive site's job - a wireTerm() per field, at each arm of
+// the dispatch. That is a rule you have to remember 22 times, and it was already
+// forgotten five times: the whole save/load name family arrived unterminated. So
+// the rule moved to the one place every receive path already funnels through.
+//
+// The generic overload is a deliberate no-op: most packets are all-numeric and
+// need nothing. A packet that DOES carry a char[] needs an overload below, and
+// forgetting one is what the Wire.h/wireSanitize consistency check in
+// scripts/tests/Contract.Tests.ps1 exists to catch - it reads the struct
+// definitions in this file and fails if a char[] field has no overload naming it.
+//
+// Entry types inside array payloads (InvItemEntry, WorldItemEntry) are NOT here:
+// they are never readPacket'd - they are read in place out of the ENet buffer and
+// terminated where Inbound copies them (core/Inbound.h, pushInv/pushWorldItems).
+template <typename T>
+inline void wireSanitize(T&) {}
+
+inline void wireSanitize(WorldDropPacket& p) {
+    wireTerm(p.stringID); wireTerm(p.manufacturer); wireTerm(p.material);
+}
+inline void wireSanitize(WorldPickupPacket& p) { wireTerm(p.stringID); }
+inline void wireSanitize(InvXferPacket& p) {
+    wireTerm(p.stringID); wireTerm(p.manufacturer); wireTerm(p.material);
+}
+inline void wireSanitize(MedicalPacket& p) {
+    for (int i = 0; i < 4; ++i) wireTerm(p.limbSid[i]);
+}
+inline void wireSanitize(FactionPacket& p)    { wireTerm(p.sid); }
+inline void wireSanitize(DeedPacket& p)       { wireTerm(p.ownerSid); }
+inline void wireSanitize(WeatherPacket& p)    { wireTerm(p.sid); }
+inline void wireSanitize(DialoguePacket& p)   { wireTerm(p.text); }
+inline void wireSanitize(BuildPlacePacket& p) { wireTerm(p.sid); }
+inline void wireSanitize(SpawnInfoPacket& p)  { wireTerm(p.charSid); wireTerm(p.facSid); }
+inline void wireSanitize(ProdPacket& p)       { wireTerm(p.outSid); }
+inline void wireSanitize(ResearchPacket& p)   { wireTerm(p.sid); }
+// The save/load name family. Every one of these names reaches a path that builds
+// a filesystem path out of it, so an unterminated read here is the worst of the
+// set - it walks off the packet into whatever follows on the stack.
+inline void wireSanitize(SaveReqPacket& p)    { wireTerm(p.name); }
+inline void wireSanitize(SaveBeginPacket& p)  { wireTerm(p.name); }
+inline void wireSanitize(LoadGoPacket& p)     { wireTerm(p.name); }
+inline void wireSanitize(LoadReqPacket& p)    { wireTerm(p.name); }
+inline void wireSanitize(LoadNackPacket& p)   { wireTerm(p.name); }
+
 // Safe typed read: returns true and fills out if the buffer is large enough.
 template <typename T>
 inline bool readPacket(const void* data, unsigned int len, T* out) {
     if (data == 0 || out == 0 || len < sizeof(T)) return false;
     memcpy(out, data, sizeof(T));
+    wireSanitize(*out);
     return true;
 }
 

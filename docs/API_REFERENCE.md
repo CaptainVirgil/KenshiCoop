@@ -1,5 +1,14 @@
 # RE_Kenshi / KenshiLib API Reference
 
+> **STALE — do not trust version numbers or class lists in this file.**
+> It documents `PROTOCOL_VERSION = 36` in one place and `5` in another; the wire is at
+> **54**. It also describes classes that have since been deleted and omits most of what
+> was added after protocol 36. `src/netproto/Wire.h` is the only authority on the wire,
+> and `docs/PROTOCOL_HISTORY.md` records how it got there. The engine-control prose here
+> is still broadly useful, which is why it has not been deleted — read it for shape, not
+> for facts.
+
+
 > **Purpose.** A dense, model-facing technical reference for everything this
 > project can use to *control Kenshi*. It documents (a) the RE_Kenshi / KenshiLib
 > plugin framework (loading, hooking, address resolution), (b) the reverse-engineered
@@ -17,9 +26,8 @@
 > Sections that describe that stack are kept for historical context only. The
 > live equivalents are: transport `net/NetLink`, the main-thread bridge
 > `core/Inbound`, the wire protocol `netproto/Wire.h` (history in
-> `resources/PROTOCOL_HISTORY.md`), and the scenario runner in
-> `src/plugin/test/` (Harness build only). Canonical copy:
-> [`resources/resources.md`](../resources/resources.md).
+> `docs/PROTOCOL_HISTORY.md`), and the scenario runner in
+> `src/plugin/test/` (Harness build only).
 
 ---
 
@@ -782,8 +790,9 @@ Read once in `startPlugin()`; no recompile needed to change role/behavior.
 - `KENSHICOOP_TEST_SECONDS` — if >0, self-exit (via `TerminateProcess`) this many seconds after gameplay starts (default `0` = never). Used by the test runner.
 - `KENSHICOOP_LOG` — path to the dedicated coop log (default `KenshiCoop_host.log` / `KenshiCoop_join.log`).
 - `KENSHICOOP_SCENARIO` — name of a compiled scenario to run after load (default empty = normal co-op tick).
-- `KENSHICOOP_AUTOSPAWN` — host-only manual-validation helper: spawn N distinct-hand units into the squad once after gameplay settles.
-- `KENSHICOOP_OWN_INDICES` — squad ownership partition for the inhabit model: `""` = own all (default); `"0"` = own only index 0; `"~0"` = own all except 0; `"1,3"` = own indices 1 and 3.
+- `KENSHICOOP_OWN_SQUAD` (alias `KENSHICOOP_OWN_RANK`) — squad ownership partition for the inhabit model. **CSV of unsigned squad-member ranks only**: `"0"`, `"1"`, `"1,3"`. `""` = the role default (host `{0}`, join `{1}`), *not* "own all". There is no negation syntax — `OwnRanks.h` is a digit scanner, so a `"~0"` written for "all except 0" parses to `{0}`, the exact opposite. Verify a run took it by reading `ownership ranks = {...}` in the client's log.
+
+*(Removed: `KENSHICOOP_AUTOSPAWN` — upstream `476c078` deleted the feature and the engine primitive behind it. `KENSHICOOP_OWN_INDICES` — never read by any code; the variable above is the one that works.)*
 
 ---
 

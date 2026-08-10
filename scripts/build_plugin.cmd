@@ -8,8 +8,8 @@ REM Prereqs (see resources/BUILD_SETUP.md):
 REM   - VC++ 2010 (v100) x64 compiler  (SDK 7.1 + KB2519277)
 REM   - VS2022 Build Tools (for MSBuild.exe)
 REM   - third_party/KenshiLib_deps (deps + Boost) and env vars set
-REM   - third_party/enet/enet patched for C89 (scripts/apply_enet_patch is implicit;
-REM     see third_party/enet/patches/0001-enet-c89-for-loops.patch)
+REM   - third_party/enet/enet at the pinned revision with both patches applied
+REM     (fetch + patch recipe: third_party/enet/README.md)
 setlocal
 
 REM Build configuration (Phase 1 build separation). Default = Harness, the
@@ -26,9 +26,21 @@ pushd "%REPO%" >nul
 set "REPO=%CD%"
 popd >nul
 
-set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+REM Toolchain location. Defaults to a real VS2010 + SDK 7.1 install; set
+REM KC_TOOLCHAIN to use an extracted copy instead (the layout produced by
+REM scripts\linux\setup_toolchain.sh, i.e. %KC_TOOLCHAIN%\VS10\VC and
+REM %KC_TOOLCHAIN%\SDK). That matters on a clean machine: the VC2010 SP1 compiler
+REM update (KB2519277) has been taken offline by Microsoft, so extracting the
+REM compiler from the SDK 7.1 ISO and patching its <deque> is now the only way to
+REM stand this toolchain up from scratch.
+if defined KC_TOOLCHAIN (
+    set "VS10=%KC_TOOLCHAIN%\VS10"
+    set "SDK=%KC_TOOLCHAIN%\SDK"
+) else (
+    set "VS10=C:\Program Files (x86)\Microsoft Visual Studio 10.0"
+    set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
+)
 set "VC=%VS10%\VC"
-set "SDK=C:\Program Files\Microsoft SDKs\Windows\v7.1"
 set "KL=%REPO%\third_party\KenshiLib_deps"
 set "ENET=%REPO%\third_party\enet\enet\include"
 
@@ -44,7 +56,7 @@ REM Headers: VC10 CRT + Win SDK 7.1 + vc10_compat ammintrin.h shim + our deps.
 REM ...\Include\ogre is needed because the vendored ogre math headers include
 REM each other by bare name ("OgreVector3.h"); vc10_compat also shims the
 REM missing OgreConfig.h/OgrePlatformInformation.h that chain pulls in.
-set "INCLUDE=%VC%\include;%SDK%\Include;%REPO%\third_party\vc10_compat;%KL%\KenshiLib\Include;%KL%\KenshiLib\Include\ogre;%KL%\boost_1_60_0;%ENET%"
+set "INCLUDE=%VC%\include;%SDK%\Include;%REPO%\third_party\vc10_compat;%KL%\KenshiLib\Include;%KL%\KenshiLib\Include\kenshi;%KL%\KenshiLib\Include\ogre;%KL%\boost_1_60_0;%ENET%"
 
 REM Libs: VC10 x64 CRT + Win SDK 7.1 x64 + KenshiLib (kenshilib.lib, OgreMain_x64.lib).
 set "LIB=%VC%\lib\amd64;%SDK%\Lib\x64;%KL%\KenshiLib\Libraries"

@@ -10,7 +10,21 @@
 //      order-independent across entries - cross-client equality of these sums
 //      IS the inv oracle's proof.
 //   3. The INTERPOLATION BUFFER (src/plugin/sync/Interp.cpp): bracketing,
-//      clamping, dead-reckoning cap, staleness, teleport snap.
+//      clamping, dead-reckoning cap, staleness, teleport snap - and, since the
+//      2026-08-07 session audit, what the buffer is NOT current for. sample()
+//      copies the last RECEIVED snapshot wholesale and overwrites only the
+//      transform, so its bodyState/task lag real time by a send interval; four
+//      self-heals read that as current and undid reliable events that had
+//      already applied. testInterpStaleness pins that staleness (real, bounded,
+//      and NOT fixed by switching to latest()), testInterpDelayBand pins the
+//      cadence-scaled render-delay ceiling that keeps a mid-band body
+//      interpolating instead of dead-reckoning, and testSyncTuning pins the
+//      arithmetic tying the mid band's width to both.
+//   4. The pure DECISION ARITHMETIC the sync layer runs on: the change gate every
+//      sampled channel routes its send through (ChangeGate.h - genuinely CRT-only,
+//      so those checks run the real code), and the drive's convergence ladder,
+//      which is not (ReplicatorUtil.h pulls in ENet and the engine facade, so
+//      testDriveBands/testDriveConvergence MIRROR it - read their preambles).
 //
 // Zero game dependencies. Exit code = number of failed checks (0 = PASS).
 //
@@ -34,6 +48,7 @@
 #include "../plugin/game/EngineFaults.h" // Phase 5c: fault throttle (pure inline)
 #include "../plugin/game/EngineCaps.h"   // Phase 5d: capability registry (pure inline)
 #include "../plugin/sync/ChangeGate.h"   // Phase 6: change-gated send/accept policy
+#include "../plugin/sync/SyncTuning.h"   // mid-band sizing + the self-heal debounce windows
 #include "../plugin/sync/SaveXfer.h"     // Part A: real save-transfer receiver end-to-end
 
 #include <set>
@@ -117,6 +132,10 @@ static void testSizes() {
     CHECK_EQ("sizeof(NpcCensusHeader)",         sizeof(NpcCensusHeader),         7); // v35: census
     CHECK_EQ("sizeof(ResearchPacket)",          sizeof(ResearchPacket),          57); // v37: research
     CHECK_EQ("sizeof(DeedPacket)",              sizeof(DeedPacket),              78); // v54: deeds
+    // v55: host-authoritative weather. 1+4+4+48+4+4+4+4+4+4 packed.
+    CHECK_EQ("sizeof(WeatherPacket)",           sizeof(WeatherPacket),           81);
+    // v56: dialogue relay. 1+4+4+4+4+128 packed.
+    CHECK_EQ("sizeof(DialoguePacket)",          sizeof(DialoguePacket),          145);
     CHECK_EQ("sizeof(CamHintPacket)",           sizeof(CamHintPacket),           17); // v43: camera hint
     CHECK_EQ("sizeof(CellClaimPacket)",         sizeof(CellClaimPacket),         21); // v49: cell claim
     CHECK_EQ("sizeof(InvXferAckPacket)",        sizeof(InvXferAckPacket),        18); // v50: transfer verdict
@@ -309,8 +328,8 @@ static void testSizes() {
     CHECK_EQ("EVT_SQUAD_MOVE id", (int)EVT_SQUAD_MOVE, 11);
     CHECK("EVT_SQUAD_MOVE distinct", EVT_SQUAD_MOVE != EVT_RECRUIT &&
           EVT_SQUAD_MOVE != EVT_NONE && EVT_SQUAD_MOVE != EVT_EXIT_FURNITURE);
-    CHECK_EQ("PROTOCOL_VERSION (v54: property-deed ownership)",
-             (int)PROTOCOL_VERSION, 54);
+    CHECK_EQ("PROTOCOL_VERSION (v56: dialogue relay)",
+             (int)PROTOCOL_VERSION, 56);
 
     // Protocol 52: the shared money pool. The two players spend from ONE wallet,
     // so the join reports CHANGES and the host the authoritative TOTAL - swap
@@ -447,8 +466,18 @@ static void roundTrip(const char* name, u8 typeTag) {
     T out;
     std::memset(&out, 0, sizeof(T));
     bool okRead = readPacket(buf, (unsigned)sizeof(T), &out);
+    // readPacket NUL-terminates every char[] the packet carries (Wire.h,
+    // wireSanitize) - a sender that omits the terminator must not be able to
+    // walk a receiver off the end of the struct. So the expectation is the sent
+    // bytes WITH that applied, not the raw bytes: `buf` above deliberately still
+    // holds the unterminated pattern, which is what a hostile sender puts on the
+    // wire. That the termination actually happened is proven separately, by
+    // testWireTermination - this comparison alone would also pass if the field
+    // were zeroed wholesale.
+    T expect = in;
+    wireSanitize(expect);
     std::sprintf(label, "%s round-trip read", name);
-    CHECK(label, okRead && std::memcmp(&in, &out, sizeof(T)) == 0);
+    CHECK(label, okRead && std::memcmp(&expect, &out, sizeof(T)) == 0);
 
     std::sprintf(label, "%s packetType tag", name);
     CHECK(label, packetType(buf, (unsigned)sizeof(T)) == typeTag);
@@ -501,6 +530,82 @@ static void testRoundTrips() {
     CHECK("packetType(len 0) == 0", packetType(b0, 0) == 0);
     CHECK("readPacket(null) rejected", !readPacket<HelloPacket>(0, 4, (HelloPacket*)b0) || true);
 }
+
+// ---- 2b. every char[] on the wire is terminated on receipt ---------------------
+//
+// The threat is a peer that fills a fixed-size field to its last byte with no
+// terminator. Every one of these fields then reaches a std::string(...) or a
+// strcmp(...), and one family of them (the save/load names) is used to build a
+// filesystem path - so the read runs off the end of the packet struct into
+// whatever the caller had on its stack.
+//
+// This used to be the receive site's job, one wireTerm() per field at each arm
+// of NetLink's dispatch, and it was forgotten for five packets. It now happens
+// inside readPacket(), which every receive path already funnels through.
+//
+// The buffer here is filled with 0xFF, NOT with a pattern: it is the exact
+// hostile input - no byte anywhere is a terminator - so a field that comes out
+// terminated can only have been terminated by us.
+//
+// Contract.Tests.ps1 checks the other half, the half a C++ test cannot see: that
+// no char[] in Wire.h is MISSING from the wireSanitize overload set. Both are
+// needed - this file proves the mechanism works, that one proves it is complete.
+#define TERM_CHECK(TYPE, TAG, FIELD)                                          \
+    do {                                                                      \
+        unsigned char b[512];                                                 \
+        std::memset(b, 0xFF, sizeof(b));                                      \
+        b[0] = (unsigned char)(TAG);                                          \
+        TYPE p;                                                               \
+        std::memset(&p, 0, sizeof(p));                                        \
+        bool r = readPacket(b, (unsigned)sizeof(TYPE), &p);                   \
+        char lbl[160];                                                        \
+        std::sprintf(lbl, "%s.%s terminated on receipt", #TYPE, #FIELD);      \
+        CHECK(lbl, r && p.FIELD[sizeof(p.FIELD) - 1] == '\0');                \
+    } while (0)
+
+static void testWireTermination() {
+    std::printf("== wire char[] termination on receipt ==\n");
+
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   stringID);
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   manufacturer);
+    TERM_CHECK(WorldDropPacket,   PKT_WORLD_DROP,   material);
+    TERM_CHECK(WorldPickupPacket, PKT_WORLD_PICKUP, stringID);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     stringID);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     manufacturer);
+    TERM_CHECK(InvXferPacket,     PKT_INV_XFER,     material);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[0]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[1]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[2]);
+    TERM_CHECK(MedicalPacket,     PKT_MEDICAL,      limbSid[3]);
+    TERM_CHECK(FactionPacket,     PKT_FACTION,      sid);
+    TERM_CHECK(DeedPacket,        PKT_DEED,         ownerSid);
+    TERM_CHECK(BuildPlacePacket,  PKT_BUILD_PLACE,  sid);
+    TERM_CHECK(SpawnInfoPacket,   PKT_SPAWN_INFO,   charSid);
+    TERM_CHECK(SpawnInfoPacket,   PKT_SPAWN_INFO,   facSid);
+    TERM_CHECK(ProdPacket,        PKT_PROD,         outSid);
+    TERM_CHECK(ResearchPacket,    PKT_RESEARCH,     sid);
+
+    // The save/load name family - the five that were missed when this was done
+    // per-receive-site, and the ones whose field becomes a path.
+    TERM_CHECK(SaveReqPacket,     PKT_SAVE_REQ,     name);
+    TERM_CHECK(SaveBeginPacket,   PKT_SAVE_BEGIN,   name);
+    TERM_CHECK(LoadGoPacket,      PKT_LOAD_GO,      name);
+    TERM_CHECK(LoadReqPacket,     PKT_LOAD_REQ,     name);
+    TERM_CHECK(LoadNackPacket,    PKT_LOAD_NACK,    name);
+
+    // Negative control: the mechanism must not be zeroing the whole field. Byte 0
+    // of a 0xFF buffer stays 0xFF, so a wholesale memset would fail this - which
+    // is the difference between "terminated" and "destroyed".
+    unsigned char b[512];
+    std::memset(b, 0xFF, sizeof(b));
+    b[0] = (u8)PKT_SAVE_BEGIN;
+    SaveBeginPacket sb;
+    std::memset(&sb, 0, sizeof(sb));
+    bool okSb = readPacket(b, (unsigned)sizeof(SaveBeginPacket), &sb);
+    CHECK("termination truncates, it does not clear the field",
+          okSb && sb.name[0] == (char)0xFF && sb.name[46] == (char)0xFF);
+}
+#undef TERM_CHECK
 
 // ---- 3. Field-offset lock (HELLO version + batch framing) -----------------------
 
@@ -1046,6 +1151,1227 @@ static void testInterp() {
         EntityState out;
         bool ok = it.sample(1030, cfg, &out);
         CHECK("identity+state passthrough", ok && out.bodyState == BODY_DOWN && out.cMoving == 1 && out.task == 42 && out.hIndex == 1);
+    }
+}
+
+// ---- 5b. Interp staleness: what sample() is and is NOT current for --------------
+// The bug class every one of these locks (ce43a4a, then three more in 6e668de):
+// a self-heal read the INTERPOLATED sample to decide whether a transition had
+// happened, and undid a reliable event that had already applied. sample() copies
+// the last RECEIVED snapshot wholesale and then overwrites only x/y/z/heading, so
+// the pose it returns is from the past while `bodyState`/`task` are simply the
+// newest thing the wire delivered - which on the mid band is up to a send interval
+// (and, if the stream hiccups, up to the whole stale window) behind real time.
+// Four separate places read that and reproduced it locally: re-lifting a body the
+// peer had just put down, re-caging a freed prisoner, re-locking a released
+// shackle, dumping a KO'd body out of a bed.
+//
+// So: prove the staleness is REAL (the two fields disagree about which snapshot
+// they came from), prove it is BOUNDED (it survives exactly the stale window and
+// no longer), and prove that latest() - the fix for the POSITION half - does not
+// fix the STATE half at all, because it copies the very same last_.
+static EntityState entAtState(float x, u16 bodyState, u16 task) {
+    EntityState e = entAt(x);
+    e.bodyState = bodyState;
+    e.task      = task;
+    return e;
+}
+
+static void testInterpStaleness() {
+    std::printf("== interp staleness: sample() vs latest() (the self-heal bug class) ==\n");
+    InterpConfig cfg;
+
+    // A clean 20 Hz feed: 16 snapshots, +1 u per 50 ms, every one of them
+    // reporting the body as CARRIED. A constant interval means the EMA holds
+    // avg=50/jitter=0 exactly, so renderDelay is exactly minDelayMs and every
+    // number below is exact rather than approximate.
+    EntityInterp it;
+    for (int i = 0; i <= 15; ++i)
+        it.push(entAtState((float)i, (u16)BODY_CARRIED, TASK_CARRY_BODY),
+                1000 + (unsigned long)i * 50);
+    const unsigned long newestT = 1750;
+
+    EntityState s, l;
+    float vx = 0.0f, vy = 0.0f, vz = 0.0f;
+    bool okS = it.sample(newestT, cfg, &s);
+    bool okL = it.latest(&l, &vx, &vy, &vz);
+    CHECK("sample() and latest() both answer", okS && okL);
+    CHECK_EQ("clean 20 Hz feed renders exactly minDelayMs in the past",
+             it.lastDelayMs(), 50);
+    CHECK_EQ("newestMs() reports the newest ring time", it.newestMs(), newestT);
+
+    // POSITION: sample() is one render delay behind; latest() is the newest pose
+    // the wire actually delivered. This is the half the furniture fixture search
+    // got wrong - it hunted for a cage around where the body USED to be.
+    CHECK("sample() position comes from the past",     okS && s.x == 14.0f);
+    CHECK("latest() position is the newest received",  okL && l.x == 15.0f);
+    CHECK("the gap between them is the render delay's worth of travel",
+          okS && okL && (l.x - s.x) == 1.0f);
+    CHECK("latest() reports the source's own velocity (20 u/s)",
+          okL && vx == 20.0f && vy == 0.0f && vz == 0.0f);
+
+    // STATE: both are the same wholesale copy of the last received snapshot.
+    // Switching a STATE read from sample() to latest() therefore fixes nothing -
+    // only the transform differs. The fix for a state read is the debounce below.
+    CHECK("sample() carries the newest RECEIVED bodyState",
+          okS && s.bodyState == (u16)BODY_CARRIED && s.task == TASK_CARRY_BODY);
+    CHECK("latest() carries the SAME bodyState as sample()",
+          okL && l.bodyState == s.bodyState);
+    CHECK("latest() carries the SAME task as sample()", okL && l.task == s.task);
+    CHECK("the source reads as moving", it.sourceMoving());
+
+    // THE SHIPPED BUG, in the buffer. A reliable EVT_DROP_BODY lands and applies
+    // here at once, but the newest snapshot was captured BEFORE the drop. Until
+    // the next one arrives - one whole send interval - every sample() still
+    // reports the carry, and nothing in the buffer ages it out. Meanwhile the
+    // POSITION keeps moving (dead reckoning), so a reader watching the transform
+    // has every reason to believe it is looking at fresh data.
+    const unsigned long frozenNewest = it.newestMs();
+    bool heldCarry = true, posMoved = false;
+    for (unsigned long t = newestT; t <= newestT + 500; t += 50) {
+        EntityState o;
+        if (!it.sample(t, cfg, &o)) { heldCarry = false; break; }
+        if (o.bodyState != (u16)BODY_CARRIED || o.task != TASK_CARRY_BODY) heldCarry = false;
+        if (o.x > 15.0f) posMoved = true;
+    }
+    CHECK("a stale carry survives a whole send interval of samples", heldCarry);
+    CHECK("...while the sampled position keeps advancing", posMoved);
+    // And this is the one number that does NOT move while the peer is quiet, which
+    // is why healDue() keys the debounce on it rather than on wall clock: sampling
+    // a hundred times tells you nothing about whether the stream said anything.
+    CHECK("newestMs() does not advance while the stream is quiet",
+          it.newestMs() == frozenNewest);
+
+    // A RECEIVED snapshot is the only thing that clears it.
+    it.push(entAtState(15.0f, 0, TASK_NONE), newestT + 500);
+    {
+        EntityState o;
+        bool okA = it.sample(newestT + 500, cfg, &o);
+        CHECK("only a received snapshot clears the stale state",
+              okA && o.bodyState == 0 && o.task == TASK_NONE);
+        CHECK_EQ("newestMs() advances only on a received snapshot",
+                 it.newestMs(), newestT + 500);
+    }
+
+    // latest() has NO staleness guard: it answers after sample() has given the
+    // body up. That is deliberate (the starve-hold path in applyTargets reads it),
+    // but it means a read moved from sample() to latest() also loses the
+    // stream-dropped release - worth knowing before making that move again.
+    {
+        EntityInterp st;
+        st.push(entAtState(3.0f, (u16)BODY_IN_CAGE, TASK_NONE), 1000);
+        EntityState o, n;
+        CHECK("sample() gives up once the stream goes stale",
+              !st.sample(1000 + cfg.staleMs + 1, cfg, &o));
+        CHECK("latest() still answers past the stale window (no release guard)",
+              st.latest(&n, 0, 0, 0) && n.bodyState == (u16)BODY_IN_CAGE);
+        CHECK_EQ("newestMs() answers past the stale window too", st.newestMs(), 1000);
+    }
+
+    // A source at rest hides the whole problem: sample() and latest() agree
+    // exactly while nothing moves, which is why every one of these bugs only ever
+    // showed on a body that had walked away from where it used to be.
+    {
+        EntityInterp rest;
+        for (int i = 0; i <= 15; ++i) rest.push(entAt(42.0f), 1000 + (unsigned long)i * 50);
+        EntityState rs, rl;
+        bool okR = rest.sample(1750, cfg, &rs) && rest.latest(&rl, 0, 0, 0);
+        CHECK("at rest sample() and latest() agree exactly",
+              okR && rs.x == rl.x && rs.x == 42.0f);
+        CHECK("at rest the source reads as not moving", !rest.sourceMoving());
+    }
+
+    // Nothing to read yet: both refuse, rather than handing back a zeroed pose.
+    {
+        EntityInterp e0;
+        EntityState o;
+        CHECK("empty buffer: sample() refuses", !e0.sample(1000, cfg, &o));
+        CHECK("empty buffer: latest() refuses", !e0.latest(&o, 0, 0, 0));
+        CHECK("empty buffer reports empty",     e0.empty() && e0.samples() == 0);
+        CHECK_EQ("empty buffer: newestMs() is 0", e0.newestMs(), 0);
+    }
+}
+
+// ---- 5c. Render delay band + the cadence-scaled ceiling -------------------------
+// renderDelay's ceiling has to scale with the cadence THIS entity is sent at. A
+// flat 200 ms is sized for the 20 Hz near band; a mid-band body sent every 500 ms
+// rendered against that ceiling has renderTime past its newest snapshot for
+// 300 ms of every 500 ms segment, so the dead-reckoning branch runs 60% of the
+// time by arithmetic - no packet loss required. Then maxExtrapMs freezes the body
+// partway and the next real sample lands half a segment on, which is the drive's
+// hard snap. The remote session on 2026-08-04 recorded exactly that duty cycle
+// (extrap 1018228 vs lerp 844769 = 55%). The sweep below measures it on both
+// ceilings, so the fix cannot be quietly reverted.
+static void testInterpDelayBand() {
+    std::printf("== interp render delay band + cadence-scaled ceiling ==\n");
+    InterpConfig cfg;
+
+    // The band itself, at every cadence a real session produces: the 20 Hz near
+    // tier and the round-robin mid tier at 100/250/500 ms.
+    {
+        const unsigned long cad[4] = { 50, 100, 250, 500 };
+        bool inBand = true, withinRing = true, nearUnderFlat = true, sparseAboveFlat = false;
+        for (int c = 0; c < 4; ++c) {
+            EntityInterp it;
+            for (int i = 0; i <= 15; ++i)
+                it.push(entAt((float)i), 1000 + (unsigned long)i * cad[c]);
+            const unsigned long newest = 1000 + 15 * cad[c];
+            EntityState o;
+            if (!it.sample(newest + cad[c] / 2, cfg, &o)) inBand = false;
+            const unsigned long d = it.lastDelayMs();
+            if (d < cfg.minDelayMs || d > cfg.maxCadenceDelayMs) inBand = false;
+            // Never ask for more history than the ring actually holds.
+            if (d > ((15 * cad[c]) * 9) / 10 + 1) withinRing = false;
+            if (cad[c] <= 100 && d > cfg.maxDelayMs) nearUnderFlat = false;
+            if (cad[c] >= 250 && d > cfg.maxDelayMs) sparseAboveFlat = true;
+        }
+        CHECK("render delay stays inside [minDelayMs, maxCadenceDelayMs] at every cadence",
+              inBand);
+        CHECK("render delay never exceeds the ring span it has to index", withinRing);
+        CHECK("a near-band cadence stays under the flat maxDelayMs", nearUnderFlat);
+        CHECK("the ceiling RISES above the flat maxDelayMs for a sparse stream",
+              sparseAboveFlat);
+    }
+
+    // The duty cycle, measured. One 500 ms mid-band segment swept at 10 ms, under
+    // the pre-fix flat ceiling (cadenceDelayK = 0 leaves cap = maxDelayMs = 200,
+    // so renderTime runs past the newest snapshot for the last 300 ms of the
+    // segment) and under the shipped cadence-scaled one.
+    {
+        EntityInterp it;
+        for (int i = 0; i <= 15; ++i) it.push(entAt((float)i), 1000 + (unsigned long)i * 500);
+        const unsigned long newest = 8500;
+
+        InterpConfig flat = cfg;
+        flat.cadenceDelayK = 0.0f; // the ceiling this stream used to get
+
+        int n = 0, flatExtrap = 0, flatLerp = 0, scaledExtrap = 0, scaledLerp = 0;
+        for (unsigned long t = newest; t < newest + 500; t += 10) {
+            EntityState o;
+            ++n;
+            if (it.sample(t, flat, &o)) {
+                if (it.lastMode() == EntityInterp::SM_EXTRAP)     ++flatExtrap;
+                else if (it.lastMode() == EntityInterp::SM_LERP)  ++flatLerp;
+            }
+            if (it.sample(t, cfg, &o)) {
+                if (it.lastMode() == EntityInterp::SM_EXTRAP)     ++scaledExtrap;
+                else if (it.lastMode() == EntityInterp::SM_LERP)  ++scaledLerp;
+            }
+        }
+        CHECK_EQ("segment sweep sample count", n, 50);
+        CHECK_EQ("flat ceiling dead-reckons 60% of a 500 ms segment", flatExtrap, 30);
+        CHECK_EQ("flat ceiling interpolates only the remaining 40%",  flatLerp,   20);
+        CHECK_EQ("cadence-scaled ceiling never dead-reckons on that stream",
+                 scaledExtrap, 0);
+        CHECK_EQ("cadence-scaled ceiling interpolates the whole segment",
+                 scaledLerp, 50);
+        CHECK("the scaled delay covers at least one send interval",
+              it.lastDelayMs() >= 500);
+
+        // maxCadenceDelayMs is the hard bound on that scaling: a pathological
+        // stream can never end up rendering minutes in the past.
+        InterpConfig tight = cfg;
+        tight.maxCadenceDelayMs = 300;
+        EntityState o;
+        it.sample(newest + 250, tight, &o);
+        CHECK_EQ("maxCadenceDelayMs hard-bounds the cadence-scaled ceiling",
+                 it.lastDelayMs(), 300);
+    }
+
+    // The ring-span clamp: with only three snapshots the ceiling is cut to 90% of
+    // the span whatever the config says, or renderTime predates the oldest entry
+    // and every sample clamp-holds instead of interpolating. Here a late arrival
+    // (800 ms of queueing lag) would otherwise ask for ~1150 ms of history from a
+    // ring that holds 1000.
+    {
+        EntityInterp it;
+        it.push(entAt(0.0f), 1000, 1000);
+        it.push(entAt(1.0f), 1500, 1500);
+        it.push(entAt(2.0f), 2000, 2800); // arrived 800 ms after its send stamp
+        InterpConfig wide = cfg;
+        wide.maxDelayMs = 5000;           // a ceiling far above what the ring backs
+        EntityState o;
+        const unsigned long span = 2000 - 1000;
+        bool ok = it.sample(2100, wide, &o);
+        CHECK("span-clamped sample answers", ok);
+        CHECK("render delay clamped to 90% of the ring span",
+              it.lastDelayMs() <= (span * 9) / 10);
+        CHECK("...and not clamped away to nothing",
+              it.lastDelayMs() >= (span * 8) / 10);
+    }
+}
+
+// ---- 5d. Buffer boundaries: clamp-old, extrapolation cap, stale window ----------
+// The exact edges of every branch sample() can take. minDelayMs is applied LAST,
+// after the ceiling, so setting it pins the render delay exactly - which is what
+// makes these boundary cases deterministic rather than approximate.
+static void testInterpBoundaries() {
+    std::printf("== interp boundaries: clamp-old, extrap cap, stale window ==\n");
+    InterpConfig cfg;
+
+    EntityInterp it;
+    for (int i = 0; i <= 15; ++i) it.push(entAt((float)i), 1000 + (unsigned long)i * 50);
+    const unsigned long newestT = 1750, oldestT = 1000; // x = 15 and x = 0
+    EntityState o;
+
+    // LERP / EXTRAP edge: renderTime exactly AT the newest snapshot.
+    bool ok1 = it.sample(newestT + 49, cfg, &o); // renderTime 1749: inside the ring
+    CHECK("one ms before the newest snapshot: interpolates",
+          ok1 && it.lastMode() == EntityInterp::SM_LERP);
+    CHECK("...and has not yet reached the newest pose",
+          ok1 && o.x > 14.9f && o.x < 15.0f);
+    bool ok2 = it.sample(newestT + 50, cfg, &o); // renderTime 1750: at the newest
+    CHECK("exactly at the newest snapshot: dead-reckons with zero lead",
+          ok2 && it.lastMode() == EntityInterp::SM_EXTRAP);
+    CHECK("...which is the newest pose itself", ok2 && o.x == 15.0f);
+
+    // The dead-reckoning cap. Past maxExtrapMs the lead stops growing, so a
+    // starved buffer freezes a bounded distance out instead of running away.
+    bool ok3 = it.sample(newestT + 50 + 200, cfg, &o);              // 200 ms ahead
+    CHECK("under the cap the lead grows with the gap", ok3 && o.x == 19.0f);
+    bool ok4 = it.sample(newestT + 50 + cfg.maxExtrapMs, cfg, &o);  // exactly at it
+    float atCap = ok4 ? o.x : -1.0f;
+    CHECK("at the cap the lead is maxExtrapMs of source travel", ok4 && atCap == 20.0f);
+    bool ok5 = it.sample(newestT + 50 + 1500, cfg, &o);             // far past it
+    CHECK("past the cap the lead stops growing", ok5 && o.x == atCap);
+    CHECK("a starved buffer reports EXTRAP", it.lastMode() == EntityInterp::SM_EXTRAP);
+
+    // CLAMP_OLD: a render time predating the whole ring holds the oldest pose
+    // rather than extrapolating backwards off the front of the buffer.
+    InterpConfig deep = cfg;
+    deep.minDelayMs = newestT - oldestT;      // 750 ms: exactly the ring span
+    bool ok6 = it.sample(newestT, deep, &o);
+    CHECK("renderTime at the oldest entry clamps",
+          ok6 && it.lastMode() == EntityInterp::SM_CLAMP_OLD);
+    CHECK("...to the oldest pose", ok6 && o.x == 0.0f);
+    deep.minDelayMs = newestT - oldestT - 1;  // 749 ms: one ms inside the ring
+    bool ok7 = it.sample(newestT, deep, &o);
+    CHECK("one ms inside the ring interpolates instead",
+          ok7 && it.lastMode() == EntityInterp::SM_LERP);
+    CHECK("...just past the oldest pose", ok7 && o.x > 0.0f && o.x < 0.1f);
+
+    // The stale window bounds how long a sample can keep answering - and
+    // therefore how long the bodyState it carries can be wrong. One snapshot
+    // gets the flat staleMs.
+    {
+        EntityInterp one;
+        one.push(entAt(0.0f), 1000);
+        EntityState s;
+        CHECK("single snapshot answers at exactly staleMs",
+              one.sample(1000 + cfg.staleMs, cfg, &s));
+        CHECK("single snapshot gives up one ms later",
+              !one.sample(1000 + cfg.staleMs + 1, cfg, &s));
+    }
+    // A sparse stream scales it to four of its OWN segments, so a mid-band body
+    // is not released on every rotation hiccup.
+    {
+        EntityInterp mid;
+        mid.push(entAt(0.0f), 1000);
+        mid.push(entAt(1.0f), 2500);          // one 1500 ms mid-band segment
+        EntityState s;
+        CHECK_EQ("newest segment reports the stream's own cadence",
+                 mid.lastSegMs(), 1500);
+        CHECK("a sparse stream answers out to four of its own segments",
+              mid.sample(2500 + 6000, cfg, &s));
+        CHECK("...and gives up past them", !mid.sample(2500 + 6001, cfg, &s));
+    }
+    // ...but the scaled window is hard-capped at 6 s, so a genuinely abandoned
+    // body still releases promptly.
+    {
+        EntityInterp slow;
+        slow.push(entAt(0.0f), 1000);
+        slow.push(entAt(1.0f), 4000);         // a 3 s segment: 4x would be 12 s
+        EntityState s;
+        CHECK("the cadence-scaled stale window is hard-capped at 6 s",
+              !slow.sample(4000 + 6001, cfg, &s));
+        CHECK("...and honours that cap's full extent",
+              slow.sample(4000 + 6000, cfg, &s));
+    }
+}
+
+// ---- 5e. Self-heal debounce contract (a MIRROR, not coverage) -------------------
+// READ THIS BEFORE TRUSTING IT: HealDebounce below is a hand-written MIRROR of the
+// state machine in ReplicatorDrive.cpp (carrySeeTick / furnSeeTick / chainSeeTick).
+// It is NOT the production code and it exercises none of it - the real copy lives
+// in a translation unit that needs the whole engine facade, which this CRT-only
+// binary deliberately cannot link. What this test locks is the CONTRACT those
+// three call sites are supposed to implement, written down so a future edit that
+// reintroduces a fire-on-sight heal has a standing statement of why that is wrong.
+// If you change the real state machine, change this one in the same commit.
+//
+// The contract, in two parts. A self-heal exists only to repair a LOST reliable
+// event, so waiting is free - and firing early is not, because the stream it reads
+// is delayed (see testInterpStaleness). So (1) it must not fire until the stream
+// has kept asserting the condition for a whole debounce window, and (2) the window
+// must be measured against the STREAM, not the wall clock: sample() re-serves the
+// same snapshot for seconds after a peer goes quiet, so a purely time-based window
+// expires against the very sample it was meant to wait out. That is what
+// EntityInterp::newestMs() is for, and what healDue() in ReplicatorDrive.cpp
+// checks. Any tick where the stream stops asserting, or the local copy already
+// agrees, re-arms both halves.
+struct HealDebounce {
+    unsigned long seeTick;    // first tick the stream asserted a state we lack
+    unsigned long seeSample;  // interp.newestMs() when that streak armed
+    unsigned long healTick;   // last tick this heal actually fired
+    HealDebounce() : seeTick(0), seeSample(0), healTick(0) {}
+
+    // One drive tick. streamAsserts: the (delayed) sample still reports the state.
+    // localRead: our own read of the local body succeeded - absence is not
+    // evidence. localAgrees: the local body already matches, nothing to heal.
+    // newestSampleMs: EntityInterp::newestMs(). requireNewerSample selects part (2)
+    // of the contract; passing false models the older time-only window, kept only
+    // so the tests below can show what it let through.
+    bool tick(bool streamAsserts, bool localRead, bool localAgrees,
+              unsigned long now, unsigned long newestSampleMs,
+              unsigned long debounceMs, bool requireNewerSample,
+              unsigned long healGapMs) {
+        if (!streamAsserts) { seeTick = 0; seeSample = 0; return false; }
+        if (localAgrees)    { seeTick = 0; seeSample = 0; return false; }
+        if (!localRead)     return false;
+        if (seeTick == 0) { seeTick = now; seeSample = newestSampleMs; }
+        if ((now - seeTick) < debounceMs) return false;
+        if (requireNewerSample && newestSampleMs <= seeSample) return false;
+        if ((now - healTick) < healGapMs) return false;
+        healTick = now;
+        return true;
+    }
+};
+
+static void testHealDebounce() {
+    std::printf("== self-heal debounce contract (MIRRORS ReplicatorDrive, does not run it) ==\n");
+    SyncTuning tun;
+    const unsigned long DEB = tun.carryHealDebounceMs; // 1500 (furn's is the same)
+    const unsigned long GAP = 1500;                    // mirror of CARRY_HEAL_MS
+    const bool NEWER = true, TIME_ONLY = false;
+
+    // A genuinely LOST reliable event, with the peer still talking: snapshots keep
+    // arriving every 500 ms and every one of them still reports the carry. The
+    // heal must still happen - just not until the window has elapsed AND a
+    // snapshot newer than the one that armed it has said so.
+    {
+        HealDebounce h;
+        int fires = 0; unsigned long firstFire = 0;
+        for (unsigned long t = 10000; t <= 10000 + DEB; t += 100) {
+            const unsigned long newest = 10000 + ((t - 10000) / 500) * 500;
+            if (h.tick(true, true, false, t, newest, DEB, NEWER, GAP)) {
+                ++fires; if (!firstFire) firstFire = t;
+            }
+        }
+        CHECK_EQ("a lost event still heals", fires, 1);
+        CHECK_EQ("...but only once the debounce window has elapsed",
+                 firstFire, 10000 + DEB);
+    }
+
+    // THE SHIPPED BUG. A reliable EVT_DROP_BODY arrives and applies here at
+    // t=10000. The unreliable stream is one send interval behind, so its newest
+    // snapshot still reports the carry - ~500 ms of ticks on the mid band - and
+    // then a fresh one contradicts it. Debounced: nothing happens and the peer's
+    // drop stands. Fire-on-sight: the very first tick re-lifts the body, which is
+    // what the other player sees as US picking it back up.
+    {
+        HealDebounce armed, naive;
+        int armedFires = 0, naiveFires = 0;
+        bool naiveFiredFirstTick = false;
+        for (unsigned long t = 10000; t < 10500; t += 50) {
+            if (armed.tick(true, true, false, t, 10000, DEB, NEWER, GAP)) ++armedFires;
+            if (naive.tick(true, true, false, t, 10000, 0, TIME_ONLY, GAP)) {
+                ++naiveFires;
+                if (t == 10000) naiveFiredFirstTick = true;
+            }
+        }
+        // The next snapshot lands; the stream stops asserting the carry.
+        armed.tick(false, true, false, 10500, 10500, DEB, NEWER, GAP);
+        naive.tick(false, true, false, 10500, 10500, 0, TIME_ONLY, GAP);
+        CHECK_EQ("a debounced heal does not undo a fresh reliable event", armedFires, 0);
+        CHECK("a fire-on-sight heal WOULD have undone it (the regression)",
+              naiveFires > 0);
+        // CARRY_HEAL_MS / FURN_HEAL_MS are a gap between ATTEMPTS, measured from
+        // the last fire - they cannot help when the first attempt is already
+        // wrong, which is why the debounce had to be added alongside them.
+        CHECK("the heal gap alone is not a debounce (it lets the first shot through)",
+              naiveFiredFirstTick);
+    }
+
+    // Part (2), and the hole a time-only window still leaves. If the peer goes
+    // quiet - a mid-band rotation stall, an interest hiccup - sample() keeps
+    // re-serving the same pre-drop snapshot for seconds. Wall clock then expires
+    // the window against the very sample it was meant to wait out, and the heal
+    // fires anyway. Requiring the ring to have ADVANCED ties the wait to the peer
+    // still talking, which is the thing the debounce was always trying to say.
+    {
+        HealDebounce timeOnly, shipped;
+        int timeOnlyFires = 0, shippedFires = 0;
+        for (unsigned long t = 10000; t <= 20000; t += 100) {
+            if (timeOnly.tick(true, true, false, t, 10000, DEB, TIME_ONLY, GAP)) ++timeOnlyFires;
+            if (shipped.tick(true, true, false, t, 10000, DEB, NEWER, GAP)) ++shippedFires;
+        }
+        CHECK("a time-only window expires against a FROZEN stream", timeOnlyFires > 0);
+        CHECK_EQ("requiring a newer snapshot closes that hole", shippedFires, 0);
+        CHECK("...and a newer snapshot that still asserts releases the heal",
+              shipped.tick(true, true, false, 20100, 20100, DEB, NEWER, GAP));
+    }
+
+    // The window RE-ARMS. A stream that stops asserting clears the streak, so the
+    // next divergence waits the full window again - a counter that only ever
+    // counted up would fire instantly after any blip.
+    {
+        HealDebounce h;
+        for (unsigned long t = 10000; t < 10000 + DEB; t += 100)
+            h.tick(true, true, false, t, t, DEB, NEWER, GAP);
+        h.tick(false, true, false, 10000 + DEB, 10000 + DEB, DEB, NEWER, GAP);
+        CHECK("a stream that stops asserting clears the streak",
+              h.seeTick == 0 && h.seeSample == 0);
+        CHECK("...so the next divergence starts a fresh window",
+              !h.tick(true, true, false, 10000 + DEB + 100, 10000 + DEB + 100,
+                      DEB, NEWER, GAP));
+        CHECK("...and fires only after the FULL window from that restart",
+              h.tick(true, true, false, 10000 + DEB + 100 + DEB,
+                     10000 + DEB + 100 + DEB, DEB, NEWER, GAP));
+    }
+
+    // The local copy agreeing clears it too (the carryingRight / localKind ==
+    // streamKind reset in the real code).
+    {
+        HealDebounce h;
+        h.tick(true, true, false, 10000, 10000, DEB, NEWER, GAP);
+        CHECK("a divergent tick arms the streak",
+              h.seeTick == 10000 && h.seeSample == 10000);
+        h.tick(true, true, true, 10100, 10100, DEB, NEWER, GAP);
+        CHECK("a tick where the local copy already agrees clears it",
+              h.seeTick == 0 && h.seeSample == 0);
+    }
+
+    // Absence is not evidence: a FAILED local read must neither arm the streak nor
+    // fire the heal, however long the stream keeps asserting.
+    {
+        HealDebounce h;
+        int fires = 0;
+        for (unsigned long t = 10000; t <= 20000; t += 100)
+            if (h.tick(true, false, false, t, t, DEB, NEWER, GAP)) ++fires;
+        CHECK_EQ("an unreadable local body never heals", fires, 0);
+        CHECK("...and never arms the streak", h.seeTick == 0);
+    }
+}
+
+// ---- 5f. Sync tuning: the mid band, and everything sized against it -------------
+// SyncTuning.h is pure POD with no engine dependency, so the unit layer can pin
+// the band the 2026-08-07 session had to widen and the relationships that widening
+// has to keep. midBandMax/midSliceMax were 48/16, sized when the mid band was a
+// bandwidth experiment: a shared-cell fight enumerated 220 NPCs with 116 authored
+// locally, so 68 authored bodies got no motion at all and the join drove them from
+// its own AI until a census beat snapped them (median 128 u, p90 1322 u).
+//
+// The band's width sets a body's SEND INTERVAL, and the send interval is what both
+// of the other fixes are sized against: every self-heal debounce has to outlast it
+// (or the heal reads a snapshot the peer already superseded), and the interp's
+// delay ceiling has to cover it (or dead reckoning becomes structural). Widening
+// the band without touching either re-opens both bugs, so the arithmetic lives here.
+static void testSyncTuning() {
+    std::printf("== sync tuning: mid band sizing + the windows sized against it ==\n");
+    SyncTuning tun;
+    InterpConfig cfg;
+
+    CHECK("mid band covers a shared-cell fight (measured 220 NPCs enumerated)",
+          tun.midBandMax >= 220);
+    CHECK("the per-tick slice cap is not the binding constraint",
+          tun.midBandMax <= 10 * tun.midSliceMax);
+
+    // publishOwned: quota = ceil(|band|/10) capped at midSliceMax, one slice
+    // advanced per 50 ms net tick, so the whole band cycles in ceil(|band|/quota)
+    // slices. That cycle time IS a mid-band body's send interval.
+    unsigned int quota = (tun.midBandMax + 9) / 10;
+    if (quota > tun.midSliceMax) quota = tun.midSliceMax;
+    CHECK("a slice is actually published", quota > 0);
+    const unsigned long midIntervalMs =
+        (unsigned long)((tun.midBandMax + quota - 1) / quota) * 50;
+    CHECK_EQ("mid-band per-body send interval (ms)", midIntervalMs, 500);
+
+    // Send interval -> the self-heal debounces. A heal that fires inside one send
+    // interval is acting on a snapshot the peer has already superseded.
+    CHECK("the carry heal debounce outlasts a mid-band send interval",
+          tun.carryHealDebounceMs >= midIntervalMs);
+    CHECK("the furniture/chain heal debounce outlasts it too",
+          tun.furnHealDebounceMs >= midIntervalMs);
+    CHECK("...both with margin for a slice the wire dropped",
+          tun.carryHealDebounceMs >= 2 * midIntervalMs &&
+          tun.furnHealDebounceMs  >= 2 * midIntervalMs);
+
+    // The inventory resend cadence must never be zero. abe12a2 moved the
+    // 5000/30000/24 literals out of ReplicatorItems.cpp into these fields
+    // without ctor initializers; zero-initialized, resendMs collapsed to 0 and
+    // every sent container re-queued its full snapshot EVERY TICK on the
+    // reliable channel - silently, because the periodic leg logs nothing per
+    // send. One live session (2026-08-09) starved the motion stream this way
+    // and presented as pose/position desync. An uninitialized cadence field
+    // must never pass this gate again.
+    CHECK_EQ("inv resend cadence, small snapshots (ms)", tun.invResendMs, 5000);
+    CHECK_EQ("inv resend cadence, big snapshots (ms)", tun.invResendBigMs, 30000);
+    CHECK_EQ("inv big-snapshot threshold (entries)", tun.invResendBigN, 24);
+    CHECK("a periodic inv resend is never sub-second",
+          tun.invResendMs >= 1000 && tun.invResendBigMs >= 1000);
+
+    // Send interval -> the interp render delay. The flat ceiling alone does NOT
+    // cover the mid band; that is precisely why the cadence-scaled one exists, and
+    // the hard bound on it must still clear one send interval.
+    CHECK("the flat delay ceiling alone would not cover the mid band",
+          (unsigned long)cfg.maxDelayMs < midIntervalMs);
+    CHECK("the cadence-scaled ceiling covers at least one send interval",
+          cfg.cadenceDelayK >= 1.0f);
+    CHECK("the hard bound on that ceiling still clears one send interval",
+          (unsigned long)cfg.maxCadenceDelayMs >= midIntervalMs);
+
+    // Send interval -> the stale window. A mid-band body must never be released
+    // between its own slices, or it flaps out of the driven set every rotation.
+    CHECK("a mid-band body is not released between its own slices",
+          midIntervalMs < (unsigned long)cfg.staleMs);
+
+    // Bandwidth was never the constraint, but a future widening should have to
+    // re-justify the budget rather than inherit it silently.
+    CHECK_EQ("a full mid band at 2 Hz costs one EntityState per body, twice a second",
+             (unsigned long)tun.midBandMax * 2 * (unsigned long)sizeof(EntityState), 40448);
+    CHECK("...which is inside a sane per-second budget",
+          (unsigned long)tun.midBandMax * 2 * (unsigned long)sizeof(EntityState) <= 64000);
+}
+
+// ---- 5g. Suppressed-body collision capability (the invisible wall) --------------
+// Bug class (2): engine::suppressNpc was removeUpdate + clearGoals +
+// setVisible(false). setVisible is the Ogre RENDER virtual and nothing more, so
+// the Havok capsule stayed exactly where it was - and because the body was off the
+// update list it no longer ran its own collision response either, meaning it could
+// not be shoved aside the way a live NPC can. An immovable invisible pillar,
+// re-asserted every 2 s, and stairwells and doorways are the narrowest corridors in
+// the game. Only the client that suppressed the body was blocked, which is the
+// "I can't get up the stairs but the host can" report.
+//
+// Parking the hull needs the engine, but the registry that gates it does not. What
+// IS testable here: suppression's collision half is a NAMED, separately resolvable
+// capability rather than an assumed side effect of hiding the mesh - and appending
+// it did not break the name table. That last one is the exact failure mode of
+// adding a capability: kNames ends up one entry short, capName returns a null
+// pointer, and the "[engine] CAP-MISS op=... cap=%s" formatter takes it.
+//
+// Every token comparison below goes through this guard rather than handing a
+// possible null straight to strcmp - the miss we are testing for would otherwise
+// take the whole test binary down instead of naming itself.
+static bool capTokIs(int c, const char* want) {
+    const char* n = coop::engine::capName((coop::engine::Capability)c);
+    return n != 0 && std::strcmp(n, want) == 0;
+}
+
+static void testSuppressionCaps() {
+    std::printf("== suppressed-body collision capability (EngineCaps) ==\n");
+    using namespace coop::engine;
+
+    // Whole-table integrity first, so the NEXT appended capability is caught here
+    // rather than inside the diagnostic that was supposed to explain it.
+    bool allNamed = true, allUnique = true;
+    for (int i = 0; i < (int)CAP_COUNT; ++i) {
+        const char* ni = capName((Capability)i);
+        if (ni == 0 || ni[0] == '\0' || std::strcmp(ni, "unknown") == 0) allNamed = false;
+        for (int j = i + 1; j < (int)CAP_COUNT; ++j) {
+            const char* nj = capName((Capability)j);
+            if (ni != 0 && nj != 0 && std::strcmp(ni, nj) == 0) allUnique = false;
+        }
+    }
+    CHECK("every capability has a token", allNamed);
+    CHECK("every capability token is unique", allUnique);
+
+    CHECK("CAP_HULL names the collision-hull park", capTokIs(CAP_HULL, "hull"));
+    CHECK("CAP_HULL was appended, not inserted", (int)CAP_HULL > (int)CAP_DEED);
+    CHECK("appending it did not shift the existing tokens",
+          (int)CAP_SAVELOAD == 0 && (int)CAP_HAND_RESOLVE == 2 &&
+          capTokIs(CAP_SAVELOAD, "saveload"));
+
+    // Fail-closed, per capability: an image without the hull entry point reports
+    // CAP_HULL off while everything suppression already had stays on. That is the
+    // difference between "I hid the body" and "I hid the body AND moved what it
+    // collides with" - the plugin can now tell those apart instead of assuming.
+    void* pHand   = (void*)1;
+    void* pStream = (void*)1;
+    void* pHull   = (void*)1;
+    const CapRow rows[] = {
+        { &pHand,   "hand::getCharacter",                  CAP_HAND_RESOLVE, true },
+        { &pStream, "getCharactersWithinSphere",           CAP_NPC_STREAM,   true },
+        { &pHull,   "CharMovement::teleportCollisionHull", CAP_HULL,         true }
+    };
+    const int n = (int)(sizeof(rows) / sizeof(rows[0]));
+    bool avail[CAP_COUNT];
+
+    capEvaluate(rows, n, avail);
+    CHECK("hull capability up when its entry point resolved", avail[CAP_HULL]);
+    pHull = 0;
+    capEvaluate(rows, n, avail);
+    CHECK("hull capability off when it did not", !avail[CAP_HULL]);
+    CHECK("...without disabling the rest of suppression",
+          avail[CAP_HAND_RESOLVE] && avail[CAP_NPC_STREAM]);
+    CHECK("...and the runtime image is still usable", capCoreOk(avail));
+}
+
+// ---- 5h. Drive decision arithmetic: the combat drift bands (a MIRROR) -----------
+// READ THIS BEFORE TRUSTING IT, same caveat as testHealDebounce and for the same
+// reason. The constants live in src/plugin/sync/ReplicatorUtil.h, which includes
+// Replicator.h -> NetLink.h (ENet) and EngineSync.h (the engine facade), so this
+// CRT-only binary cannot see them at all. DriveTuning and driveDecide below are a
+// hand-written MIRROR of those constants and of the band block in
+// ReplicatorDrive.cpp (applyTargets, the combat `if (haveActual)` arm). They
+// exercise NONE of the production code. If you retune the real constants, retune
+// these in the same commit.
+//
+// What this locks is the RELATIONSHIPS, because those are what a tuning pass
+// silently breaks and the constants themselves are meant to move. The ladder has
+// been reverted once already: the pre-2026-07-16 gate teleported the instant a copy
+// passed COMBAT_SNAP_DIST, which was the visible warp during dense fights, and the
+// convergence-first correction replaced it with a fast slide plus a much narrower
+// definition of a genuine "leave". This decides whether a driven body warps in
+// front of the other player, and nothing else in the tree tests it.
+struct DriveTuning {
+    float         catchupK;      // CATCHUP_K
+    float         snapDist;      // SNAP_DIST          (locomotion distance floor)
+    float         snapSeconds;   // SNAP_SECONDS       (locomotion time allowance)
+    float         combatWait;    // COMBAT_WAIT_DIST
+    float         combatSoft;    // COMBAT_SOFT_DIST
+    float         combatSnap;    // COMBAT_SNAP_DIST   (the churn ceiling)
+    float         combatBigSnap; // COMBAT_BIG_SNAP_DIST (the true-leave distance)
+    float         combatSlideMax;// COMBAT_SLIDE_MAX
+    float         combatSnapVel; // COMBAT_SNAP_VEL
+    unsigned long combatConvergeMs; // COMBAT_CONVERGE_MS
+    DriveTuning()
+        : catchupK(2.0f), snapDist(8.0f), snapSeconds(0.75f),
+          combatWait(3.0f), combatSoft(6.0f), combatSnap(20.0f),
+          combatBigSnap(60.0f), combatSlideMax(60.0f), combatSnapVel(8.0f),
+          combatConvergeMs(400) {}
+};
+
+// Ordered on purpose: the response may only get MORE aggressive as the drift
+// grows, and the monotonicity check below compares these as integers.
+enum DriveAction { DA_HOLD = 0, DA_SLIDE = 1, DA_WARP = 2 };
+
+// MIRROR of the combat band decision. overBandMs is how long the drift has SAT
+// above the churn ceiling (the real code's `now - d.combatOverTick`, armed the
+// first frame drift exceeds combatSnapDist_ and cleared whenever it does not);
+// snapCooled is COMBAT_SNAP_COOL_MS having elapsed since this body's last warp.
+static DriveAction driveDecide(const DriveTuning& t, float drift, float srcVel,
+                               bool localFighting, bool wrongLocalTgt,
+                               bool hostWaiting, bool srcTeleport,
+                               unsigned long overBandMs, bool snapCooled) {
+    const bool correctFight = localFighting && !wrongLocalTgt;
+    const float softBand  = hostWaiting ? t.combatWait : t.combatSoft;
+    // hostWaiting first: the owner calling the body slot-QUEUED outranks this
+    // client's copy having independently engaged. See the note in ReplicatorDrive.
+    const float leaveBand = hostWaiting  ? t.combatWait
+                          : correctFight ? t.combatSnap
+                                         : softBand;
+    const bool sustained  = (drift > t.combatSnap) &&
+                            overBandMs >= t.combatConvergeMs;
+    const bool trueLeave  = !hostWaiting &&
+                            (drift > t.combatBigSnap || srcTeleport ||
+                             (sustained && srcVel >= t.combatSnapVel));
+    if (trueLeave && snapCooled) return DA_WARP;
+    if (drift > leaveBand)       return DA_SLIDE;
+    return DA_HOLD;
+}
+
+// MIRROR of the fast catch-up slide speed the converge branch commands.
+static float driveSlideSpeed(const DriveTuning& t, float srcSpeed, float drift) {
+    const float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+    float spd = base + drift;
+    float cap = base * 2.5f;
+    if (cap < t.combatSlideMax) cap = t.combatSlideMax;
+    if (spd > cap) spd = cap;
+    return spd;
+}
+
+static void testDriveBands() {
+    std::printf("== drive combat bands (MIRRORS ReplicatorUtil/ReplicatorDrive) ==\n");
+    DriveTuning t;
+    const bool FIGHTING = true,  IDLE      = false;
+    const bool WRONGTGT = true,  RIGHTTGT  = false;
+    const bool WAITING  = true,  ENGAGED   = false;
+    const bool WARPED   = true,  NOWARP    = false;
+    const bool COOLED   = true,  COOLING   = false;
+
+    // (1) The ordering the whole ladder rests on. Each band must be strictly wider
+    // than the last or a drift falls into two of them at once and which branch runs
+    // depends on the order they happen to be tested in.
+    CHECK("drift bands strictly ordered: wait < soft < churn ceiling < true leave",
+          t.combatWait < t.combatSoft &&
+          t.combatSoft < t.combatSnap &&
+          t.combatSnap < t.combatBigSnap);
+
+    // (2) Inside the soft band nothing happens at all - not a walk, not a warp. A
+    // fight legitimately moves the body; correcting inside this band is what made
+    // the waiting crowd twitch.
+    {
+        bool quiet = true;
+        for (float d = 0.0f; d <= t.combatSoft; d += 0.25f)
+            if (driveDecide(t, d, 50.0f, IDLE, RIGHTTGT, ENGAGED, NOWARP,
+                            10000, COOLED) != DA_HOLD) quiet = false;
+        CHECK("a body inside the soft band is left alone", quiet);
+    }
+    // ...with exactly one exception, pinned so it is a decision and not a surprise:
+    // a source that TELEPORTED is a leave at any drift, because the copy is being
+    // placed rather than corrected.
+    CHECK("a source teleport is a leave even inside the soft band",
+          driveDecide(t, 0.5f, 0.0f, IDLE, RIGHTTGT, ENGAGED, WARPED, 0, COOLED)
+              == DA_WARP);
+
+    // (3) Past the true-leave distance a warp is unconditional, whatever the copy
+    // is doing and however slowly the source is moving.
+    {
+        bool warps = true;
+        for (float d = t.combatBigSnap + 0.5f; d <= 200.0f; d += 0.5f) {
+            if (driveDecide(t, d, 0.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                            0, COOLED) != DA_WARP) warps = false;
+            if (driveDecide(t, d, 0.0f, IDLE, WRONGTGT, ENGAGED, NOWARP,
+                            0, COOLED) != DA_WARP) warps = false;
+        }
+        CHECK("a body past the true-leave distance always warps", warps);
+    }
+
+    // (4) The middle band is the whole point of the 2026-07-16 pass: a correctly
+    // engaged fight owns its own footwork up to the churn ceiling (measured: a
+    // driven brawl legitimately churns 12-18 u), and every other copy - arming,
+    // idle, queued, or swinging at the wrong body - converges above the soft band.
+    CHECK("a correct fight owns its footwork up to the churn ceiling",
+          driveDecide(t, 18.0f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_HOLD);
+    CHECK("an arming/idle copy at the same drift converges instead",
+          driveDecide(t, 18.0f, 0.0f, IDLE, RIGHTTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_SLIDE);
+    CHECK("a copy fighting the WRONG body converges too",
+          driveDecide(t, 18.0f, 0.0f, FIGHTING, WRONGTGT, ENGAGED, NOWARP,
+                      0, COOLED) == DA_SLIDE);
+
+    // (5) Over the ceiling the copy SLIDES; an instant warp needs the drift to have
+    // sat there for the converge window AND the source to be genuinely moving. A
+    // big drift on a near-stationary source is melee churn or a wrong-place body -
+    // converge, never warp.
+    CHECK("over the churn ceiling a fight slides rather than warping",
+          driveDecide(t, 30.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      t.combatConvergeMs - 1, COOLED) == DA_SLIDE);
+    CHECK("...and warps only once the drift has SAT there for the converge window",
+          driveDecide(t, 30.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      t.combatConvergeMs, COOLED) == DA_WARP);
+    CHECK("a sustained drift on a near-stationary source is churn, not a chase",
+          driveDecide(t, 30.0f, t.combatSnapVel - 0.1f, FIGHTING, RIGHTTGT,
+                      ENGAGED, NOWARP, 10000, COOLED) == DA_SLIDE);
+    CHECK("...and on a source genuinely moving it is a leave",
+          driveDecide(t, 30.0f, t.combatSnapVel, FIGHTING, RIGHTTGT,
+                      ENGAGED, NOWARP, 10000, COOLED) == DA_WARP);
+
+    // (6) A WAITING (slot-queued) stance has no chase to justify a warp, at any
+    // drift, however fast the source or however long the drift has persisted.
+    {
+        bool everWarps = false;
+        for (float d = 0.0f; d <= 200.0f; d += 1.0f)
+            if (driveDecide(t, d, 50.0f, IDLE, RIGHTTGT, WAITING, WARPED,
+                            10000, COOLED) == DA_WARP) everWarps = true;
+        CHECK("a WAITING stance never warps, at any drift", !everWarps);
+    }
+    CHECK("a waiting copy converges at the tighter wait band",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, IDLE, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_SLIDE &&
+          driveDecide(t, t.combatWait - 0.5f, 0.0f, IDLE, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_HOLD);
+    // ...INCLUDING when this copy has independently engaged. That is the case the
+    // band exists for: the owner says the body is queued and standing still, our
+    // copy picked its own fight, and the divergence is ours - so the owner's word
+    // wins and the copy converges rather than claiming a fighting copy's 20 u of
+    // footwork. This check was originally written the other way round, pinning the
+    // code as it read; the order in leaveBand was the bug, and both moved together.
+    CHECK("the wait band applies even to a copy that is itself fighting",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, FIGHTING, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_SLIDE);
+    CHECK("a fighting copy under a waiting owner still holds inside the wait band",
+          driveDecide(t, t.combatWait - 0.5f, 0.0f, FIGHTING, RIGHTTGT, WAITING,
+                      NOWARP, 0, COOLED) == DA_HOLD);
+    // The tight band must not leak into the ordinary engaged case - a real fight
+    // owns its footwork to the churn ceiling, which is the whole reason
+    // combatSnapDist_ is 20 u and not 3.
+    CHECK("an engaged owner still lets a correct fight own its footwork",
+          driveDecide(t, t.combatWait + 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_HOLD &&
+          driveDecide(t, t.combatSnap - 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_HOLD &&
+          driveDecide(t, t.combatSnap + 0.5f, 0.0f, FIGHTING, RIGHTTGT, ENGAGED,
+                      NOWARP, 0, COOLED) == DA_SLIDE);
+
+    // (7) The per-body snap cooldown. A warp that cannot stick - stale interp, a
+    // staggered body - must not re-fire every frame; while it is cooling the copy
+    // converges instead, which is the strictly gentler answer.
+    CHECK("a body still inside the snap cooldown converges instead of re-warping",
+          driveDecide(t, 100.0f, 50.0f, FIGHTING, RIGHTTGT, ENGAGED, NOWARP,
+                      10000, COOLING) == DA_SLIDE);
+
+    // (8) Monotonicity across every stance. The response may only escalate as the
+    // drift grows: hold -> converge -> warp, never back. A band ordering slip shows
+    // up here as a body that converges at 10 u and is left alone at 25.
+    {
+        bool monotone = true;
+        for (int f = 0; f < 2; ++f)
+            for (int w = 0; w < 2; ++w) {
+                int prev = -1;
+                for (float d = 0.0f; d <= 120.0f; d += 0.5f) {
+                    int a = (int)driveDecide(t, d, 50.0f, f != 0, RIGHTTGT,
+                                             w != 0, NOWARP, 10000, COOLED);
+                    if (a < prev) monotone = false;
+                    prev = a;
+                }
+            }
+        CHECK("the response never softens as the drift grows", monotone);
+    }
+
+    // (9) The converge SPEED. A correction that does not exceed the source's own
+    // pace never closes: the copy trails at a fixed gap, stays over the band and
+    // eventually teleports anyway, which is the driver this cap was added for.
+    {
+        bool closes = true, capped = true;
+        for (float src = 0.0f; src <= 60.0f; src += 0.5f)
+            for (float d = t.combatSoft; d <= t.combatBigSnap; d += 0.5f) {
+                const float spd = driveSlideSpeed(t, src, d);
+                if (spd <= src) closes = false;
+                const float base = (src > 1.0f) ? src : 12.0f;
+                float cap = base * 2.5f;
+                if (cap < t.combatSlideMax) cap = t.combatSlideMax;
+                if (spd > cap + 0.001f) capped = false;
+            }
+        CHECK("a converge always commands more than the source's own pace", closes);
+        CHECK("...and never more than the slide cap", capped);
+    }
+    // And the cap has to be able to CLOSE the widest drift that is not allowed to
+    // teleport, or a legitimately drifted body crawls back in plain sight for
+    // seconds. At the cap that is roughly a second of travel.
+    CHECK("the slide cap closes the widest non-teleporting drift in about a second",
+          t.combatSlideMax >= t.combatBigSnap);
+}
+
+// ---- 5g-bis. The peer speed multiplier, sanitized -------------------------------
+//
+// MIRROR of sanePeerSpeed (ReplicatorChannels.cpp) and of slewedEffective's
+// clamps (Replicator.h) - both take a GameWorld-bearing Replicator, so they are
+// restated. Retune together.
+//
+// SpeedPacket.speed is untrusted f32 off the wire and the only wire field that
+// reaches the engine's own clock rate. Worth pinning because the two values that
+// got through are the two nobody writes a test for: a NaN (every comparison
+// against it is false, so BOTH of slewedEffective's clamps decline to fire and it
+// is returned unchanged) and a negative (it takes the `eff <= 0.01f` paused
+// early-out and is returned unclamped).
+static float mirrorSanePeerSpeed(float v) {
+    if (!(v >= 0.0f)) return 0.0f;
+    if (v > 5.0f) return 5.0f;
+    return v;
+}
+
+// MIRROR of Replicator::slewedEffective, as it reads TODAY - including the two
+// holes above, so this file records that the sanitizer is what closes them and
+// not a second clamp downstream.
+static float mirrorSlewedEffective(float eff, float slew) {
+    if (eff <= 0.01f) return eff;
+    float s = eff * slew;
+    if (s > 5.0f)  s = 5.0f;
+    if (s < 0.05f) s = 0.05f;
+    return s;
+}
+
+static void testPeerSpeedSanity() {
+    std::printf("== peer speed multiplier sanity ==\n");
+
+    // Ordinary values pass through untouched - a sanitizer that changes the
+    // normal case is a bug of its own.
+    CHECK("pause (0) survives",          mirrorSanePeerSpeed(0.0f) == 0.0f);
+    CHECK("1x survives",                 mirrorSanePeerSpeed(1.0f) == 1.0f);
+    CHECK("5x survives (the ceiling)",   mirrorSanePeerSpeed(5.0f) == 5.0f);
+
+    CHECK("above the ceiling clamps",    mirrorSanePeerSpeed(1000.0f) == 5.0f);
+    CHECK("negative becomes pause",      mirrorSanePeerSpeed(-1.0f) == 0.0f);
+    CHECK("a large negative becomes pause",
+          mirrorSanePeerSpeed(-1.0e30f) == 0.0f);
+
+    // NaN. Built by division rather than a literal: C++03 has no std::nanf, and
+    // 0.0f/0.0f is the portable way to get one out of a v100 compiler.
+    // volatile so the compiler cannot constant-fold the division (v100 warns
+    // C4723 on a literal 0/0, and folding it would produce the NaN at compile
+    // time rather than exercising the runtime path the receive site takes).
+    volatile float zero = 0.0f;
+    float nan = zero / zero;
+    CHECK("the NaN is actually a NaN (self-comparison fails)", !(nan == nan));
+    CHECK("NaN becomes pause", mirrorSanePeerSpeed(nan) == 0.0f);
+
+    // The two holes this closes, stated as the tests that FAIL without it. If
+    // slewedEffective is ever given its own guards, these become redundant rather
+    // than wrong - but they must not be deleted before that happens.
+    float leakedNan = mirrorSlewedEffective(nan, 1.0f);
+    CHECK("without sanitizing, a NaN passes slewedEffective unchanged",
+          !(leakedNan == leakedNan));
+    CHECK("without sanitizing, a negative passes slewedEffective unclamped",
+          mirrorSlewedEffective(-1000.0f, 1.0f) == -1000.0f);
+
+    // ...and the same two values, sanitized first, are safe by the time they
+    // reach it. This is the actual contract of the receive path.
+    CHECK("sanitized NaN reaches the engine as pause",
+          mirrorSlewedEffective(mirrorSanePeerSpeed(nan), 1.0f) == 0.0f);
+    CHECK("sanitized negative reaches the engine as pause",
+          mirrorSlewedEffective(mirrorSanePeerSpeed(-1000.0f), 1.0f) == 0.0f);
+
+    // Nothing that survives sanitizing can drive the clock outside the band
+    // slewedEffective promises. Swept, including the unpaused floor.
+    bool inBand = true;
+    for (int i = -50; i <= 200; ++i) {
+        float v   = (float)i * 0.1f;
+        float out = mirrorSlewedEffective(mirrorSanePeerSpeed(v), 1.0f);
+        if (out == 0.0f) continue;                 // pause is legitimate
+        if (!(out >= 0.05f && out <= 5.0f)) inBand = false;
+    }
+    CHECK("every sanitized input lands in [0.05, 5] or is a pause", inBand);
+}
+
+// ---- 5h-bis. targets_ age-out: the three-way stale/latched/gone predicate -------
+//
+// MIRROR of Replicator::ageOutStaleTargets (ReplicatorDrive.cpp) - it takes a
+// GameWorld-bearing Replicator, so the predicate is restated here rather than
+// linked. Retune both in the same commit.
+//
+// Worth pinning because it is three interacting booleans guarding a map erase,
+// and the two failure directions are opposite and both bad: too eager drops a
+// death latch and a corpse stands back up; too lazy is the leak it was written to
+// fix - a targets_ entry, and a per-tick iteration of it, for every NPC ever
+// knocked out near a player.
+static const unsigned long AGE_TARGET_STALE_MS = 30000;
+static const unsigned long AGE_LATCH_STALE_MS  = 600000;
+
+static bool ageOutErases(unsigned long now, unsigned long lastSeenMs, bool latched) {
+    bool stale = (lastSeenMs == 0) || (now - lastSeenMs > AGE_TARGET_STALE_MS);
+    bool gone  = (lastSeenMs != 0) && (now - lastSeenMs > AGE_LATCH_STALE_MS);
+    return stale && (!latched || gone);
+}
+
+static void testTargetAgeOut() {
+    std::printf("== targets_ age-out predicate ==\n");
+
+    const unsigned long NOW = 5000000;   // well past both horizons
+
+    CHECK("the latched horizon is longer than the ordinary one",
+          AGE_LATCH_STALE_MS > AGE_TARGET_STALE_MS);
+
+    // Unlatched: the ordinary 30 s rule, unchanged by any of this.
+    CHECK("unlatched + fresh is kept",
+          !ageOutErases(NOW, NOW - 1000, false));
+    CHECK("unlatched + exactly at the stale horizon is kept",
+          !ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS, false));
+    CHECK("unlatched + one ms past the stale horizon is erased",
+          ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS - 1, false));
+
+    // Latched: survives the ordinary horizon. This is the part that must not
+    // regress - a corpse stays a corpse while its owner keeps streaming it.
+    CHECK("latched + fresh is kept",
+          !ageOutErases(NOW, NOW - 1000, true));
+    CHECK("latched + past the ordinary horizon is still kept",
+          !ageOutErases(NOW, NOW - AGE_TARGET_STALE_MS - 1, true));
+    CHECK("latched + one ms short of the latch horizon is kept",
+          !ageOutErases(NOW, NOW - AGE_LATCH_STALE_MS, true));
+    CHECK("latched + one ms past the latch horizon is erased",
+          ageOutErases(NOW, NOW - AGE_LATCH_STALE_MS - 1, true));
+
+    // lastSeenMs == 0 means "no ingest has ever been dated for this hand". It
+    // cannot be aged as latched, because there is no timestamp to measure from -
+    // which is exactly why applyEvents and the dead-on-arrival mint both stamp it.
+    // Without those stamps this row is the leak, and it is invisible: the entry
+    // reads as maximally stale and is still never dropped.
+    CHECK("never-dated + unlatched is erased",
+          ageOutErases(NOW, 0, false));
+    CHECK("never-dated + latched is kept (nothing to date it by)",
+          !ageOutErases(NOW, 0, true));
+
+    // Monotonicity in age: once a row erases, no OLDER row of the same kind is
+    // kept. A predicate this shape can be written so a middle band survives, and
+    // that would strand rows forever at one particular age.
+    bool erasedLatched = false, erasedPlain = false;
+    bool monoLatched = true, monoPlain = true;
+    for (unsigned long age = 0; age <= 700000; age += 5000) {
+        bool eL = ageOutErases(NOW, NOW - age, true);
+        bool eP = ageOutErases(NOW, NOW - age, false);
+        if (erasedLatched && !eL) monoLatched = false;
+        if (erasedPlain   && !eP) monoPlain   = false;
+        if (eL) erasedLatched = true;
+        if (eP) erasedPlain   = true;
+    }
+    CHECK("latched rows only ever escalate toward erasure with age", monoLatched);
+    CHECK("unlatched rows only ever escalate toward erasure with age", monoPlain);
+    CHECK("both kinds do erase somewhere in the swept range",
+          erasedLatched && erasedPlain);
+
+    // A latched row is never erased before an unlatched row of the same age: the
+    // latch may only ever DELAY the drop, never cause one.
+    bool latchNeverEarlier = true;
+    for (unsigned long age = 0; age <= 700000; age += 5000) {
+        if (ageOutErases(NOW, NOW - age, true) && !ageOutErases(NOW, NOW - age, false))
+            latchNeverEarlier = false;
+    }
+    CHECK("a latch only ever delays the drop, never causes one", latchNeverEarlier);
+}
+
+// ---- 5i. Drive convergence: snap distance vs cadence, and the catch-up gain -----
+// The other half of the drive's pure arithmetic, and the half that is coupled to
+// something this binary CAN see: the mid band's send interval, derived from
+// SyncTuning exactly as testSyncTuning derives it, so a retune of the band moves
+// this test with it. Still a MIRROR of ReplicatorUtil.h / ReplicatorDrive.cpp for
+// the drive side - see testDriveBands.
+static float driveSnapGate(const DriveTuning& t, float velPeak,
+                           unsigned long segMs, float speedMult) {
+    const float mult = (speedMult > 1.0f) ? speedMult : 1.0f;
+    float gate = t.snapDist * mult;
+    float gateSec = t.snapSeconds + (float)segMs / 1000.0f;
+    if (gateSec > 2.5f) gateSec = 2.5f;
+    if (velPeak * gateSec > gate) gate = velPeak * gateSec;
+    return gate;
+}
+
+// MIRROR of the walk-drive catch-up speed: source pace plus a gap-proportional
+// boost, capped at 2.5x the source's own pace (12 u/s standing in for a body whose
+// streamed speed is unusable).
+static float driveCatchupSpeed(float srcSpeed, float gap, float k) {
+    float spd = srcSpeed + gap * k;
+    const float base = (srcSpeed > 1.0f) ? srcSpeed : 12.0f;
+    const float cap  = base * 2.5f;
+    if (spd > cap) spd = cap;
+    return spd;
+}
+
+// One correction interval: the copy runs at the commanded speed while the source
+// runs at its own, so the gap closes at (commanded - source) for dt seconds.
+static float driveCatchupStep(float srcSpeed, float gap, float k, float dt) {
+    return gap - (driveCatchupSpeed(srcSpeed, gap, k) - srcSpeed) * dt;
+}
+
+static void testDriveConvergence() {
+    std::printf("== drive convergence: snap distance vs cadence, catch-up gain ==\n");
+    DriveTuning t;
+    SyncTuning tun;
+
+    unsigned int quota = (tun.midBandMax + 9) / 10;
+    if (quota > tun.midSliceMax) quota = tun.midSliceMax;
+    const unsigned long midIntervalMs =
+        (unsigned long)((tun.midBandMax + quota - 1) / quota) * 50;
+    const float midIntervalSec = (float)midIntervalMs / 1000.0f;
+    CHECK_EQ("mid-band send interval this test is sized against (ms)",
+             midIntervalMs, 500);
+
+    // ASSUMPTION, stated rather than measured: an ordinary NPC on foot covers no
+    // more than ~12 u/s. That number is not invented here - it is the drive's OWN
+    // stand-in for a body whose streamed speed is unusable (`base = (out.cSpeed >
+    // 1.0f) ? out.cSpeed : 12.0f`, in both the locomotion and the combat slide), so
+    // it is the codebase's own idea of a walking pace. A sprinter is ~50 u/s and is
+    // covered by the velocity-aware half of the gate below, not by this floor.
+    // If that assumption is ever measured and comes back higher than
+    // SNAP_DIST / 0.5 s = 16 u/s, this check is the thing that should fail.
+    const float WALK_U_PER_S = 12.0f;
+    CHECK("the snap floor covers an ordinary walk between two mid-band sends",
+          t.snapDist >= WALK_U_PER_S * midIntervalSec);
+
+    // The velocity-aware half. gateSec is the base allowance PLUS one stream
+    // segment, and the gate is the larger of the distance floor and velPeak*gateSec.
+    // A driven body legitimately trails its source by a whole segment of travel -
+    // the lead point it is walking toward was computed a segment ago - so a gate
+    // that did not cover one hard-snapped mid-band walkers chronically (4,259
+    // teleports in 30 s, bodies at gap 20-40 u against a gate of 18-25).
+    {
+        const unsigned long cad[4] = { 50, 100, 250, 500 };
+        bool coversSegment = true, neverBelowFloor = true;
+        for (int c = 0; c < 4; ++c) {
+            const float segSec = (float)cad[c] / 1000.0f;
+            for (float vel = 0.0f; vel <= 60.0f; vel += 1.0f) {
+                const float g = driveSnapGate(t, vel, cad[c], 1.0f);
+                if (g < t.snapDist)      neverBelowFloor = false;
+                if (g < vel * segSec)    coversSegment = false;
+            }
+        }
+        CHECK("the snap gate never drops below its distance floor", neverBelowFloor);
+        CHECK("...and always covers a full send segment of source travel",
+              coversSegment);
+    }
+    // That guarantee survives only while the 2.5 s clamp does not bite: past it the
+    // allowance stops growing with the cadence, so a band widened until its interval
+    // exceeded (2.5 s - SNAP_SECONDS) would start teleporting bodies for merely
+    // being one send behind. The mid band has to stay inside that.
+    CHECK("the mid-band interval leaves the base allowance intact under the clamp",
+          midIntervalSec + t.snapSeconds <= 2.5f);
+    CHECK("...and the clamp really is the edge: a 3 s cadence loses the guarantee",
+          driveSnapGate(t, 40.0f, 3000, 1.0f) < 40.0f * 3.0f);
+    // The distance floor scales with the consensus game speed, because at 5x every
+    // trailing distance is 5x in world units for the same time lag.
+    CHECK("the distance floor scales with the consensus game speed",
+          driveSnapGate(t, 0.0f, 50, 5.0f) == t.snapDist * 5.0f);
+
+    // ---- the catch-up gain -----------------------------------------------------
+    // (a) The 2.5x cap must never command LESS than the source's own pace. A chase
+    // that merely matches the source never closes; the copy sits at a fixed trail,
+    // stays over the snap gate, and gets teleported instead of converging.
+    {
+        bool alwaysGains = true;
+        for (float src = 0.0f; src <= 80.0f; src += 0.5f)
+            for (float gap = 0.0f; gap <= 100.0f; gap += 1.0f)
+                if (driveCatchupSpeed(src, gap, t.catchupK) < src)
+                    alwaysGains = false;
+        CHECK("the 2.5x cap never commands less than the source's own pace",
+              alwaysGains);
+    }
+
+    // (b) Convergence proper. Applying the gain repeatedly must shrink the gap on
+    // every step, never cross to the far side of the target, and actually finish.
+    // Modelled at the near band's cadence: a fresh sample, and so a fresh commanded
+    // speed, every 50 ms.
+    {
+        float gap = t.snapDist;
+        bool mono = true, signKept = true;
+        int steps = 0;
+        while (gap > 1.0f && steps < 200) {
+            const float next = driveCatchupStep(12.0f, gap, t.catchupK, 0.05f);
+            if (next >= gap) mono = false;
+            if (next < 0.0f) signKept = false;
+            gap = next; ++steps;
+        }
+        CHECK("the gap shrinks on every catch-up tick", mono);
+        CHECK("...without ever crossing to the far side of the target", signKept);
+        CHECK("...and closes a full snap distance inside 1.5 s of near-band ticks",
+              gap <= 1.0f && steps <= 30);
+    }
+
+    // (c) The stability bound, which is the part a retune has to notice. The step is
+    // gap * K * dt, so the correction is stable only while K * dt <= 1: at exactly 1
+    // the body lands on the target, past it the correction is larger than the error
+    // and the copy walks through the source and back. dt is the SLOWEST cadence at
+    // which the speed is recomputed - the mid band's send interval, since the walk
+    // is re-issued only when the lead point moves and the lead point moves only when
+    // a sample lands. CATCHUP_K = 2 against a 500 ms mid band sits exactly on that
+    // boundary: widening the band slows dt, and slowing dt is what turns the gain
+    // unstable. There is no headroom left in this one.
+    CHECK("the catch-up gain is stable at the slowest re-issue cadence",
+          t.catchupK * midIntervalSec <= 1.0f);
+    {
+        bool noOvershoot = true;
+        for (float gap = 0.5f; gap <= 60.0f; gap += 0.5f)
+            if (driveCatchupStep(12.0f, gap, t.catchupK, midIntervalSec) < -0.001f)
+                noOvershoot = false;
+        CHECK("...so a mid-band correction never overshoots the target", noOvershoot);
+    }
+    // The counterexample, kept for the same reason testHealDebounce keeps its
+    // fire-on-sight heal: at twice this gain the same arithmetic inverts the error
+    // every tick and the body oscillates across the source instead of converging.
+    // The speed cap bounds the amplitude but does not damp it.
+    {
+        const float bigK = t.catchupK * 2.0f;
+        float g = 8.0f, amp = 0.0f;
+        int flips = 0;
+        for (int i = 0; i < 20; ++i) {
+            const float next = driveCatchupStep(12.0f, g, bigK, midIntervalSec);
+            if ((next < 0.0f) != (g < 0.0f)) ++flips;
+            g = next;
+            if (i >= 10) { const float a = (g < 0.0f) ? -g : g; if (a > amp) amp = a; }
+        }
+        CHECK("double the gain flips the error across the target every tick",
+              flips == 20);
+        CHECK("...and the oscillation never decays away", amp >= 0.9f);
     }
 }
 
@@ -1761,6 +3087,163 @@ static void testChangeGate() {
           gateShouldSend(true, 80001, 80000, 0, 10000, false));
 }
 
+// The same header, walked as a PREDICATE rather than as two shipped flavours.
+// testChangeGate above pins money and doors at the values they run with, which
+// catches a drift in those two channels; this walks the decision itself - each
+// factor isolated, both sides of every boundary, and the unsigned tick wrap.
+//
+// Worth the checks because of the blast radius: money, factions, baked doors,
+// placed buildings, placed-building doors, production, research and deeds all
+// route their send decision through this ONE function, and unlike a wire-format
+// slip a fault here is silent. Nothing fails; a channel simply stops transmitting,
+// or transmits at a cadence nobody chose, and the first symptom is a peer whose
+// doors are wrong an hour into a session.
+//
+// Unlike ReplicatorUtil.h this header is genuinely CRT-only (that is a stated goal
+// in its own preamble), so every check below runs the PRODUCTION code.
+static void testChangeGateTable() {
+    std::printf("\n== change-gate truth table + tick wraparound (ChangeGate.h) ==\n");
+    using namespace coop::sync;
+
+    const unsigned long NOW_MS = 100000;          // "now"
+    const unsigned long MIN_MS = 1000, RES_MS = 5000;
+    // Last representable tick. nowMs() is QueryPerformanceCounter floored to ms in
+    // an unsigned long, which on this toolset is 32 bits - so the clock wraps after
+    // ~49.7 days of uptime, and every window here is an unsigned SUBTRACTION
+    // precisely so that it keeps meaning the same thing across that wrap.
+    const unsigned long WRAP_MS = (unsigned long)~0UL;
+
+    // --- resendUnsent: what it decides, and what it must not touch --------------
+    // The whole reason the parameter exists. Money has no silent seed step, so a
+    // never-sent row must stream once; doors and factions seed their baseline
+    // silently first, so a never-sent row must hold. That is the ONLY case it may
+    // speak to.
+    CHECK("a never-sent unchanged row is exactly what resendUnsent decides",
+          gateShouldSend(false, NOW_MS, 0, MIN_MS, RES_MS, true) &&
+          !gateShouldSend(false, NOW_MS, 0, MIN_MS, RES_MS, false));
+    CHECK("a never-sent CHANGED row sends either way",
+          gateShouldSend(true, NOW_MS, 0, MIN_MS, RES_MS, true) &&
+          gateShouldSend(true, NOW_MS, 0, MIN_MS, RES_MS, false));
+    {
+        bool sentRowUnaffected = true;
+        for (unsigned long age = 1; age <= 20000; age += 250)
+            if (gateShouldSend(false, NOW_MS, NOW_MS - age, MIN_MS, RES_MS, true) !=
+                gateShouldSend(false, NOW_MS, NOW_MS - age, MIN_MS, RES_MS, false))
+                sentRowUnaffected = false;
+        CHECK("...and it changes nothing at all for a row that HAS been sent",
+              sentRowUnaffected);
+    }
+
+    // A never-sent row is never THROTTLED either: lastSendMs == 0 is the
+    // never-sent sentinel, not a timestamp, so minSendMs has nothing to measure
+    // against. That is what lets a channel seed its first row in the first tick of
+    // a session instead of waiting out a window that never started.
+    {
+        bool neverThrottled = true;
+        for (unsigned long m = 0; m <= 10000; m += 500)
+            if (!gateShouldSend(true, 1, 0, m, RES_MS, false)) neverThrottled = false;
+        CHECK("a never-sent row is never throttled, whatever minSendMs says",
+              neverThrottled);
+    }
+
+    // --- both boundaries, both sides -------------------------------------------
+    // The throttle is strict-less-than and the resend is greater-or-equal, so the
+    // boundary tick itself lands on the SEND side of both. An off-by-one either way
+    // costs a whole window on a channel nobody would think to look at.
+    CHECK("throttle: one ms under minSendMs holds a change",
+          !gateShouldSend(true, NOW_MS, NOW_MS - (MIN_MS - 1), MIN_MS, RES_MS, true));
+    CHECK("throttle: exactly minSendMs releases it",
+          gateShouldSend(true, NOW_MS, NOW_MS - MIN_MS, MIN_MS, RES_MS, true));
+    CHECK("throttle: one ms over releases it",
+          gateShouldSend(true, NOW_MS, NOW_MS - (MIN_MS + 1), MIN_MS, RES_MS, true));
+    CHECK("throttle: a row sent this very millisecond is held",
+          !gateShouldSend(true, NOW_MS, NOW_MS, MIN_MS, RES_MS, true));
+    CHECK("throttle: minSendMs == 0 never throttles anything",
+          gateShouldSend(true, NOW_MS, NOW_MS - 1, 0, RES_MS, false));
+    CHECK("resend: one ms under resendMs holds an unchanged row",
+          !gateShouldSend(false, NOW_MS, NOW_MS - (RES_MS - 1), MIN_MS, RES_MS, true));
+    CHECK("resend: exactly resendMs fires",
+          gateShouldSend(false, NOW_MS, NOW_MS - RES_MS, MIN_MS, RES_MS, true));
+    CHECK("resend: one ms over fires",
+          gateShouldSend(false, NOW_MS, NOW_MS - (RES_MS + 1), MIN_MS, RES_MS, true));
+
+    // A change caught by the throttle is HELD, not dropped: the caller advances its
+    // baseline only when the gate says send, so the same change is re-offered every
+    // pass and crosses the moment the window expires. Dropping it would be a
+    // permanent divergence on a channel whose only other corrective is the resend.
+    {
+        unsigned long crossed = 0;
+        for (unsigned long age = 0; age <= 3000; age += 10)
+            if (gateShouldSend(true, NOW_MS + age, NOW_MS, MIN_MS, RES_MS, true)) { crossed = age; break; }
+        CHECK_EQ("a change held by the throttle crosses the moment it expires",
+                 crossed, MIN_MS);
+    }
+
+    // The ordering relationship between the two windows, which is the one a retune
+    // can silently break. The throttle is evaluated BEFORE the resend, so a
+    // minSendMs longer than resendMs does not disable the safety resend - it slows
+    // it to the throttle's cadence. The interval a peer actually waits for a lost
+    // row is max(minSendMs, resendMs), never resendMs on its own.
+    {
+        unsigned long firstSend = 0;
+        for (unsigned long age = 1; age <= 40000; ++age)
+            if (gateShouldSend(false, NOW_MS + age, NOW_MS, 12000, 5000, true)) { firstSend = age; break; }
+        CHECK_EQ("a throttle longer than the resend slows the resend to the throttle",
+                 firstSend, 12000);
+    }
+    {
+        SyncTuning tun;
+        CHECK("the shipped money tuning keeps the throttle under the resend",
+              tun.moneyMinSendMs < tun.moneyResendMs);
+    }
+
+    // --- unsigned tick wraparound ----------------------------------------------
+    // A row sent 100 ms before the wrap, judged after it. The unsigned subtraction
+    // has to report the TRUE age (151 ms below), not a 49-day one - a gate that got
+    // this wrong would flush every channel's whole row set in one pass, or hold
+    // every row for another 49 days, depending on which way it broke.
+    CHECK("throttle holds correctly across the tick wrap",
+          !gateShouldSend(true, 50, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("throttle: one ms under the window, measured across the wrap",
+          !gateShouldSend(true, 898, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("throttle: releases exactly at the window across the wrap",
+          gateShouldSend(true, 899, WRAP_MS - 100, MIN_MS, RES_MS, true));
+    CHECK("resend: one ms under its window across the wrap",
+          !gateShouldSend(false, 4898, WRAP_MS - 100, 0, RES_MS, true));
+    CHECK("resend: fires exactly at its own window past the wrap",
+          gateShouldSend(false, 4899, WRAP_MS - 100, 0, RES_MS, true));
+    // The one place the wrap is NOT transparent: 0 is the never-sent sentinel, so a
+    // row whose send lands on the single millisecond the clock reads 0 reads as
+    // never-sent on the next pass. That is one tick per ~50 days of uptime, per row,
+    // and it fails toward an extra send - the harmless direction. It is pinned
+    // because it is the reason lastSendMs can never be repurposed into a field where
+    // 0 is a legal timestamp.
+    CHECK("a send stamped at tick 0 reads as never-sent (the sentinel's cost)",
+          gateShouldSend(false, 5000, 0, 0, RES_MS, true) &&
+          !gateShouldSend(false, 5000, 0, 0, RES_MS, false));
+
+    // --- gateSampleDue: the same two properties at the pass level ---------------
+    CHECK("sample: one ms under the interval holds", !gateSampleDue(NOW_MS + 999, NOW_MS, 1000));
+    CHECK("sample: exactly at the interval is due",   gateSampleDue(NOW_MS + 1000, NOW_MS, 1000));
+    CHECK("sample: a zero interval samples every pass", gateSampleDue(NOW_MS, NOW_MS, 0));
+    CHECK("sample: the interval is measured correctly across the wrap",
+          !gateSampleDue(898, WRAP_MS - 100, 1000) && gateSampleDue(899, WRAP_MS - 100, 1000));
+    CHECK("sample: lastSampleMs 0 is the never-sampled sentinel, not a timestamp",
+          gateSampleDue(0, 0, 1000) && gateSampleDue(5000, 0, 60000));
+
+    // --- gateSeqAccept: the direction that actually bites -----------------------
+    // seq is u32 on the wire and monotonic per sender, so an arithmetic wrap needs
+    // billions of rows from one sender and is not the exposure. A sender whose
+    // counter RESTARTS is: the receiver's seqSeen lives in the per-channel row map
+    // (facRows_, doorRows_, ...), the outbound counters deliberately do not reset,
+    // and the two only stay compatible because resetSession clears those maps. If a
+    // future member escapes that sweep, the channel goes silent with no error.
+    CHECK("a restarted or wrapped counter reads as stale, not as new",
+          !gateSeqAccept(4000000000u, 1u));
+    CHECK("...and a receiver that cleared its seen state accepts it again",
+          gateSeqAccept(0u, 1u));
+}
+
 int main() {
     std::printf("prototest: KenshiCoop wire/hash/interp unit layer (protocol v%u)\n",
                 (unsigned)PROTOCOL_VERSION);
@@ -1769,13 +3252,25 @@ int main() {
     testEngineFaults();
     testEngineCaps();
     testChangeGate();
+    testChangeGateTable();
     testRoundTrips();
+    testWireTermination();
     testFraming();
     testSaveCrc();
     testFolderFingerprint();
     testSaveXferRoundTrip();
     testContentHash();
     testInterp();
+    testInterpStaleness();
+    testInterpDelayBand();
+    testInterpBoundaries();
+    testHealDebounce();
+    testSyncTuning();
+    testSuppressionCaps();
+    testDriveBands();
+    testPeerSpeedSanity();
+    testTargetAgeOut();
+    testDriveConvergence();
     testOwnRanks();
     testSteamIdParse();
     testWorkPoseMatch();

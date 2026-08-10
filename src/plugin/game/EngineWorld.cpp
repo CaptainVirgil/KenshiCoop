@@ -14,6 +14,28 @@
 
 #include "EngineInternal.h"
 
+// Minimal GLOBAL re-declaration of the engine's weather singleton, so the
+// linker resolves KenshiLib's exported symbol. It must be at global scope and
+// spelled exactly as the dump has it - static, returning WeatherSystem* -
+// because GetRealAddress resolves through the MANGLED NAME. The body stays
+// empty on purpose: every field the facade below touches is reached by offset,
+// which is also why kenshi/Weather.h (unincludable here - see EngineInternal.h)
+// is not needed.
+class WeatherSystem { public: static WeatherSystem* getInstance(); };
+
+// Minimal GLOBAL re-declaration of the engine's speech bubble, for the same
+// reason as WeatherSystem above: GetRealAddress resolves through the MANGLED
+// NAME, so the signatures must be spelled exactly as KenshiLib exports them.
+// kenshi/Dialogue.h is not included - nothing here needs its layout, only these
+// two entry points.
+namespace Ogre { class Vector3; }
+class DialogueSpeechBubble {
+public:
+    void setText(const std::string& text);
+    void setPosition(const Ogre::Vector3& position);
+};
+
+
 namespace coop {
 namespace engine {
 
@@ -1703,6 +1725,279 @@ int probeVendorBuy(GameWorld* gw, const unsigned int vHand[5],
     }
 }
 
+
+// ---- Protocol 55: weather ----------------------------------------------------
+// Read and write through LOCAL OFFSET MIRRORS rather than kenshi/Weather.h.
+// That header cannot be included here: the dump defines class WeatherRegion in
+// both Weather.h and PhysicsCollection.h, and Weather.h uses WeatherRegion,
+// Weather and Season before declaring any of them. The three offsets below are
+// all this needs, and they are quoted from that same dump.
+//
+// Identity travels as the weather's GameData stringID, not its name or its
+// pointer: pointers differ between processes and the stringID is what every
+// other channel in this plugin already uses to mean "the same data object on
+// both machines".
+namespace {
+
+// kenshi/Weather.h layout, quoted:
+//   WeatherSystem::ActiveRegionWeather  0x00  (WeatherRegion*)
+//   WeatherRegion::weatherInstance      0x30  (WeatherInstance*)
+//   WeatherRegion::currentSeason        0x38  (Season*)
+//   WeatherRegion::currentSeasonIndex   0x40  (int)
+//   WeatherRegion::currentSeasonEndDay  0x44  (int)
+//   WeatherRegion::requestUpdateEffects 0x69  (bool)
+//   WeatherInstance::weather            0x08  (Weather*)
+//   WeatherInstance::effectStrength     0x10  (float)
+//   WeatherInstance::strength           0x14  (float)
+//   WeatherInstance::endTimeMinutes     0x48  (int)
+//   WeatherInstance::weatherTime        0x50  (float)
+//   Weather::weatherData                0x08  (GameData*)
+//   Season::weathers                    0x08  (lektor<Weather*>)
+const unsigned WX_SYS_ACTIVE_REGION = 0x00;
+const unsigned WX_REG_INSTANCE      = 0x30;
+const unsigned WX_REG_SEASON        = 0x38;
+const unsigned WX_REG_SEASON_IDX    = 0x40;
+const unsigned WX_REG_SEASON_END    = 0x44;
+const unsigned WX_REG_REQ_EFFECTS   = 0x69;
+const unsigned WX_INST_WEATHER      = 0x08;
+const unsigned WX_INST_EFFECT       = 0x10;
+const unsigned WX_INST_STRENGTH     = 0x14;
+const unsigned WX_INST_END_MIN      = 0x48;
+const unsigned WX_INST_TIME         = 0x50;
+const unsigned WX_WEATHER_DATA      = 0x08;
+const unsigned WX_SEASON_WEATHERS   = 0x08;
+
+template <typename T> T  fieldGet(void* base, unsigned off) {
+    return *(T*)((char*)base + off);
+}
+template <typename T> void fieldSet(void* base, unsigned off, T v) {
+    *(T*)((char*)base + off) = v;
+}
+
+typedef void* (*WeatherGetInstFn)();
+WeatherGetInstFn g_weatherInstFn = 0;
+int              g_weatherResolved = 0; // 0 untried, 1 ok, -1 failed
+
+// The stringID of a Weather*, via its GameData. Empty on any fault.
+void weatherSidOf(void* w, char* out, unsigned cap) {
+    out[0] = '\0';
+    if (!w || cap == 0) return;
+    GameData* gd = fieldGet<GameData*>(w, WX_WEATHER_DATA);
+    if (!gd) return;
+    const std::string& sid = gd->stringID;
+    unsigned n = (unsigned)sid.size();
+    if (n >= cap) n = cap - 1;
+    if (n) memcpy(out, sid.c_str(), n);
+    out[n] = '\0';
+}
+
+void* activeRegionSeh() {
+    __try {
+        if (!g_weatherInstFn) return 0;
+        void* ws = g_weatherInstFn();
+        if (!ws) return 0;
+        return fieldGet<void*>(ws, WX_SYS_ACTIVE_REGION);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return 0; }
+}
+
+bool readWeatherSeh(void* r, WeatherRead* out) {
+    __try {
+        void* wi = fieldGet<void*>(r, WX_REG_INSTANCE);
+        if (!wi) return false;
+        out->effectStrength = fieldGet<float>(wi, WX_INST_EFFECT);
+        out->strength       = fieldGet<float>(wi, WX_INST_STRENGTH);
+        out->endTimeMinutes = fieldGet<int>  (wi, WX_INST_END_MIN);
+        out->weatherTime    = fieldGet<float>(wi, WX_INST_TIME);
+        out->seasonIndex    = fieldGet<int>  (r,  WX_REG_SEASON_IDX);
+        out->seasonEndDay   = fieldGet<int>  (r,  WX_REG_SEASON_END);
+        weatherSidOf(fieldGet<void*>(wi, WX_INST_WEATHER), out->sid, sizeof(out->sid));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return false; }
+}
+
+// Find OUR Weather* with this stringID in the current season's table.
+void* findWeatherBySidSeh(void* r, const char* want) {
+    __try {
+        void* season = fieldGet<void*>(r, WX_REG_SEASON);
+        if (!season || !want || !want[0]) return 0;
+        // lektor<Weather*> is the engine's vector: {T* begin; T* end; ...}.
+        void** first = fieldGet<void**>(season, WX_SEASON_WEATHERS);
+        void** last  = fieldGet<void**>(season, WX_SEASON_WEATHERS + sizeof(void*));
+        if (!first || !last || last < first) return 0;
+        const unsigned n = (unsigned)(last - first);
+        if (n > 4096) return 0; // obviously-bad read; bail rather than walk it
+        char sid[64];
+        for (unsigned i = 0; i < n; ++i) {
+            if (!first[i]) continue;
+            weatherSidOf(first[i], sid, sizeof(sid));
+            if (sid[0] && strcmp(sid, want) == 0) return first[i];
+        }
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return 0; }
+}
+
+bool applyWeatherSeh(void* r, void* w, const WeatherRead* in, bool* outChanged) {
+    __try {
+        void* wi = fieldGet<void*>(r, WX_REG_INSTANCE);
+        if (!wi) return false;
+        bool ch = false;
+        if (w && fieldGet<void*>(wi, WX_INST_WEATHER) != w) {
+            fieldSet<void*>(wi, WX_INST_WEATHER, w); ch = true;
+        }
+        if (fieldGet<float>(wi, WX_INST_EFFECT)   != in->effectStrength) { fieldSet<float>(wi, WX_INST_EFFECT,   in->effectStrength); ch = true; }
+        if (fieldGet<float>(wi, WX_INST_STRENGTH) != in->strength)       { fieldSet<float>(wi, WX_INST_STRENGTH, in->strength);       ch = true; }
+        if (fieldGet<int>  (wi, WX_INST_END_MIN)  != in->endTimeMinutes) { fieldSet<int>  (wi, WX_INST_END_MIN,  in->endTimeMinutes); ch = true; }
+        if (fieldGet<float>(wi, WX_INST_TIME)     != in->weatherTime)    { fieldSet<float>(wi, WX_INST_TIME,     in->weatherTime);    ch = true; }
+        if (fieldGet<int>  (r, WX_REG_SEASON_IDX) != in->seasonIndex)    { fieldSet<int>  (r, WX_REG_SEASON_IDX, in->seasonIndex);    ch = true; }
+        if (fieldGet<int>  (r, WX_REG_SEASON_END) != in->seasonEndDay)   { fieldSet<int>  (r, WX_REG_SEASON_END, in->seasonEndDay);   ch = true; }
+        // The engine's own "state moved, re-derive the visuals" flag - the
+        // supported way in, rather than calling the private updateWeatherEffects.
+        if (ch) fieldSet<bool>(r, WX_REG_REQ_EFFECTS, true);
+        if (outChanged) *outChanged = ch;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return false; }
+}
+
+} // namespace
+
+// getInstance is a STATIC member (RVA 0xF89A0), so a plain function pointer.
+// GetRealAddress takes any NON-VIRTUAL function pointer - the _NV_ wrappers in
+// this dump exist only to bypass a vtable, which is why their absence from
+// Weather.h blocks nothing.
+void resolveWeather() {
+    if (g_weatherResolved != 0) return;
+    g_weatherInstFn = (WeatherGetInstFn)KenshiLib::GetRealAddress(
+        &WeatherSystem::getInstance);
+    g_weatherResolved = g_weatherInstFn ? 1 : -1;
+}
+
+bool readWeather(WeatherRead* out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    resolveWeather();
+    if (g_weatherResolved != 1) return false;
+    void* r = activeRegionSeh();
+    if (!r) return false;
+    if (!readWeatherSeh(r, out)) return false;
+    out->valid = true;
+    return true;
+}
+
+bool applyWeather(const WeatherRead& in) {
+    resolveWeather();
+    if (g_weatherResolved != 1) return false;
+    void* r = activeRegionSeh();
+    if (!r) return false;
+    // An unresolvable stringID means the sender's season table is not ours.
+    // Leave the sky alone rather than writing a half-state: stale beats wrong.
+    void* w = findWeatherBySidSeh(r, in.sid);
+    if (in.sid[0] && !w) return false;
+    bool changed = false;
+    if (!applyWeatherSeh(r, w, &in, &changed)) return false;
+    return changed;
+}
+
+
+// ---- Protocol 56: dialogue capture + display ---------------------------------
+// Speech bubbles are local to whichever machine's AI ran the conversation, so
+// the peer never sees them. Capture is by hooking the two calls that populate a
+// bubble - setText and setPosition - and correlating on the bubble pointer,
+// because DialogueSpeechBubble::speechBubbleList (the static set of live
+// bubbles) is the one dialogue symbol KenshiLib does not export.
+namespace {
+
+typedef void (__fastcall* BubbleSetTextFn)(void* self, const std::string* text);
+typedef void (__fastcall* BubbleSetPosFn)(void* self, const Ogre::Vector3* pos);
+BubbleSetTextFn g_bubbleTextOrig = 0;
+BubbleSetPosFn  g_bubblePosOrig  = 0;
+
+struct PendingBubble { std::string text; float x, y, z; bool haveText, havePos, sent; };
+std::map<void*, PendingBubble> g_bubbles;   // main-thread only
+std::vector<DialogueLine>      g_dialogueOut;
+
+// A bubble is worth publishing once it has BOTH halves. The engine sets them in
+// either order, so the check runs from both hooks. Bounded: a runaway map here
+// would be a slow leak in a channel nobody is watching.
+void bubbleMaybeEmit(void* self) {
+    std::map<void*, PendingBubble>::iterator it = g_bubbles.find(self);
+    if (it == g_bubbles.end()) return;
+    PendingBubble& b = it->second;
+    if (!b.haveText || !b.havePos || b.sent) return;
+    b.sent = true;
+    if (g_dialogueOut.size() < 32) {
+        DialogueLine dl;
+        dl.x = b.x; dl.y = b.y; dl.z = b.z;
+        unsigned n = (unsigned)b.text.size();
+        if (n >= sizeof(dl.text)) n = sizeof(dl.text) - 1;
+        if (n) memcpy(dl.text, b.text.c_str(), n);
+        dl.text[n] = '\0';
+        g_dialogueOut.push_back(dl);
+    }
+    if (g_bubbles.size() > 64) g_bubbles.clear(); // bounded; a cleared map only
+                                                  // costs a repeat line at worst
+}
+
+void __fastcall bubbleSetText_hook(void* self, const std::string* text) {
+    if (self && text) {
+        PendingBubble& b = g_bubbles[self];
+        b.text = *text; b.haveText = true;
+        bubbleMaybeEmit(self);
+    }
+    g_bubbleTextOrig(self, text);
+}
+
+void __fastcall bubbleSetPos_hook(void* self, const Ogre::Vector3* pos) {
+    if (self && pos) {
+        PendingBubble& b = g_bubbles[self];
+        b.x = pos->x; b.y = pos->y; b.z = pos->z; b.havePos = true;
+        bubbleMaybeEmit(self);
+    }
+    g_bubblePosOrig(self, pos);
+}
+
+} // namespace
+
+bool installDialogueHooks() {
+    intptr_t tAddr = KenshiLib::GetRealAddress(&DialogueSpeechBubble::setText);
+    intptr_t pAddr = KenshiLib::GetRealAddress(
+        static_cast<void (DialogueSpeechBubble::*)(const Ogre::Vector3&)>(
+            &DialogueSpeechBubble::setPosition));
+    bool ok = true;
+    if (!tAddr || KenshiLib::AddHook(tAddr, (void*)&bubbleSetText_hook,
+                                     (void**)&g_bubbleTextOrig) != KenshiLib::SUCCESS)
+        ok = false;
+    if (!pAddr || KenshiLib::AddHook(pAddr, (void*)&bubbleSetPos_hook,
+                                     (void**)&g_bubblePosOrig) != KenshiLib::SUCCESS)
+        ok = false;
+    return ok;
+}
+
+unsigned int drainDialogue(DialogueLine* out, unsigned int maxOut) {
+    unsigned int n = 0;
+    for (size_t i = 0; i < g_dialogueOut.size() && n < maxOut; ++i, ++n)
+        out[n] = g_dialogueOut[i];
+    g_dialogueOut.clear();
+    return n;
+}
+
+void showDialogue(GameWorld* gw, float x, float y, float z, const char* text) {
+    if (!gw || !text || !text[0]) return;
+    // Attach to the character nearest the reported position so the text tracks
+    // the speaker as they walk, rather than hanging in the air. A line with no
+    // plausible speaker nearby is dropped: our copy of that NPC may simply not
+    // exist here, and a floating orphan caption reads as a bug.
+    Character* chars[64];
+    static EntityState st[64]; // main-thread only
+    unsigned int n = listNpcsWide(gw, 40.0f, chars, st, 64, 0, false);
+    Character* best = 0; float bestD2 = 1e18f;
+    for (unsigned int i = 0; i < n; ++i) {
+        float dx = st[i].x - x, dy = st[i].y - y, dz = st[i].z - z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; best = chars[i]; }
+    }
+    if (!best || bestD2 > 40.0f * 40.0f) return;
+    floaterSpawn(best, text, 3); // neutral colour - speech, not damage
+}
 
 } // namespace engine
 } // namespace coop

@@ -28,7 +28,8 @@ const char* const kFaultNames[FAULT_OP_COUNT] = {
     "inv_of",         // FAULT_INV_OF
     "capture",        // FAULT_CAPTURE
     "apply",          // FAULT_APPLY
-    "other"           // FAULT_OTHER
+    "other",          // FAULT_OTHER
+    "weather"         // FAULT_WEATHER
 };
 } // namespace
 
@@ -374,6 +375,7 @@ SeparateSquadFn g_separateSquadFn = 0;
 EndActionFn     g_endActionFn     = 0;
 RagdollModeFn   g_ragdollModeFn   = 0;
 MoveRestoreFn   g_moveRestoreFn   = 0;
+HullTeleportFn  g_hullTeleportFn  = 0;
 MedFloatFn      g_knockoutFn      = 0;
 MedFloatFn      g_knockoutForceFn = 0;
 MedAmputateFn     g_medAmputateFn     = 0;
@@ -1221,16 +1223,19 @@ bool __fastcall setCurrentAction_hook(CharBody* self, Tasker* t) {
     return g_setActionOrig(self, t);
 }
 
-// Join-side damage guard. Character::hitByMeleeAttack is where a landed melee
-// swing applies its Damages to the victim (wounds, blood loss, KO math). On the
-// join, fights involving host-authoritative bodies are COSMETIC - intent
-// replication makes the copies swing at each other so the fight renders, but the
-// outcome (KO/death) arrives from the host as reliable events. Without this
-// detour the cosmetic swings apply REAL local damage to the join's copies, and
-// Kenshi's medical model is local-only (spikes 21-27: blood/limbs/bleed never
-// cross the wire), so that damage silently diverges forever. For guarded victims
-// we skip the engine's hit path entirely and report HIT_MISSED - no damage, no
-// wound, no local KO; posture/outcome remain host-authoritative.
+// Damage guard (BOTH sides since 2026-07-06). Character::hitByMeleeAttack is
+// where a landed melee swing applies its Damages to the victim (wounds, blood
+// loss, KO math). Fights involving peer-authoritative bodies are COSMETIC -
+// intent replication makes the copies swing at each other so the fight renders,
+// but the outcome (KO/death) arrives as reliable events. The ENGINE never moves
+// a driven copy's vitals on its own (spikes 21-27); our PKT_MEDICAL stream
+// (default ON) is what reconciles them now, and this detour is what keeps that
+// stream authoritative: local hits land per-frame and the change-gated stream
+// cannot out-write them between snapshots, TreatmentPacket's race-free
+// first-aid detection depends on driven-copy state only deviating upward, and
+// this hook is the protocol-45 capture point for join-dealt damage. For guarded
+// victims we skip the engine's hit path entirely and report HIT_MISSED - no
+// damage, no wound, no local KO; posture/outcome remain owner-authoritative.
 // Same safety shape as periodicUpdate_hook: 'self' is only compared as a key.
 typedef HitMaterialType (__fastcall* HitByMeleeFn)(
     Character* self, CutDirection dir, Damages& damage, Character* who,
@@ -1248,6 +1253,11 @@ struct ReportedDmg { float flesh; float blood; ReportedDmg() : flesh(0.0f), bloo
 std::map<Character*, ReportedDmg> g_reportedDmg;
 std::set<Character*>              g_reportAttackers;
 bool                              g_combatReport = false;
+// Draw a floating number for a hit the guard suppressed. The guard is what
+// makes a cosmetic fight cosmetic, and it also swallows the engine's own damage
+// number - so the player swinging saw no feedback for a hit that really did
+// wound the owner's body.
+bool                              g_dmgFloaters = true;
 
 HitMaterialType __fastcall hitByMelee_hook(Character* self, CutDirection dir,
                                            Damages& damage, Character* who,
@@ -1264,6 +1274,31 @@ HitMaterialType __fastcall hitByMelee_hook(Character* self, CutDirection dir,
             ReportedDmg& rd = g_reportedDmg[self];
             rd.flesh += damage.cut + damage.blunt + damage.pierce + damage.extraStun;
             rd.blood += (damage.cut + damage.pierce) * 0.5f + damage.bleedMult;
+            // Draw the number the suppressed hit path would have drawn.
+            //
+            // Skipping the engine's hit path is what makes a cosmetic fight
+            // cosmetic - and that same path is where the floating damage
+            // number comes from, so a hit that really does wound the owner's
+            // body showed the attacking player no feedback whatsoever. The
+            // wound is real (it rides PKT_COMBAT_HIT and the host applies it);
+            // only the presentation was lost.
+            //
+            // Spawned HERE rather than from the received packet because this
+            // is the better data and needs no network: per SWING with the real
+            // pre-suppression amounts, on the machine of the player who threw
+            // it. The packet accumulates several swings per victim and carries
+            // no breakdown, so a floater from the receive side would be a
+            // merged sum arriving late.
+            if (g_dmgFloaters) {
+                const float shown = damage.cut + damage.blunt + damage.pierce +
+                                    damage.extraStun;
+                if (shown >= 1.0f) {
+                    char n[24];
+                    _snprintf(n, sizeof(n) - 1, "%d", (int)(shown + 0.5f));
+                    n[sizeof(n) - 1] = '\0';
+                    floaterSpawn(self, n, 1); // red, like a hurt reading
+                }
+            }
         }
         return HIT_MISSED; // cosmetic fight: the local swing never lands
     }
@@ -1575,6 +1610,8 @@ void resolve() {
     // CharMovement::pos, the mesh stays where the body collapsed while the nametag
     // walks away with the stream.
     g_moveRestoreFn = (MoveRestoreFn)KenshiLib::GetRealAddress(&CharMovement::restore);
+    g_hullTeleportFn = (HullTeleportFn)KenshiLib::GetRealAddress(
+        &CharMovement::teleportCollisionHull);
     g_knockoutFn      = (MedFloatFn)KenshiLib::GetRealAddress(&MedicalSystem::knockout);
     g_knockoutForceFn = (MedFloatFn)KenshiLib::GetRealAddress(&MedicalSystem::knockoutForceTimer);
 
@@ -1829,6 +1866,7 @@ void resolve() {
             { (void**)&g_relSetFn,          "FactionRelations::setRelation", CAP_FACTION,       true },
             { (void**)&g_attackTargetFn,    "Character::attackTarget",       CAP_COMBAT_ESCALATE,true },
             { (void**)&g_moveRestoreFn,     "CharMovement::restore",         CAP_MOVE_RESTORE,  true },
+            { (void**)&g_hullTeleportFn,    "CharMovement::teleportCollisionHull", CAP_HULL,   true },
             { (void**)&g_ownAddObjFn,       "Ownerships::addOwnedObject",    CAP_DEED,          true },
             { (void**)&g_ownRemObjFn,       "Ownerships::removeOwnedObject", CAP_DEED,          true },
             { (void**)&g_ownIsOwnedFn,      "Ownerships::isOwned",           CAP_DEED,          true },
@@ -2419,6 +2457,7 @@ void setCombatReport(bool on) {
     g_combatReport = on;
     if (!on) g_reportedDmg.clear();
 }
+void setDamageFloaters(bool on) { g_dmgFloaters = on; }
 void clearReportAttackers()          { g_reportAttackers.clear(); }
 void addReportAttacker(Character* c)  { if (c) g_reportAttackers.insert(c); }
 bool takeReportedDamage(Character* c, float* outFlesh, float* outBlood) {

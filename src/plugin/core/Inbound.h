@@ -184,6 +184,18 @@ struct InboundTime {
     TimePacket pkt;
 };
 
+// One received weather state (protocol 55): the host's active biome region.
+struct InboundWeather {
+    u32           ownerId;
+    WeatherPacket pkt;
+};
+
+// One received spoken line (protocol 56).
+struct InboundDialogue {
+    u32            ownerId;
+    DialoguePacket pkt;
+};
+
 // One received baked-door state row (protocol 26): a door the sender's table
 // saw move; the receiver applies it through the engine's own door actions
 // (baseline updated first - echo-free).
@@ -420,7 +432,8 @@ public:
         speed_(worldReset_),
         stats_(worldReset_),      money_(worldReset_),      moneyDelta_(worldReset_),
         faction_(worldReset_),
-        time_(worldReset_),       door_(worldReset_),       prod_(worldReset_),
+        time_(worldReset_),       weather_(worldReset_),   dialogue_(worldReset_),
+        door_(worldReset_),       prod_(worldReset_),
         research_(worldReset_),   deed_(worldReset_),
         buildPlace_(worldReset_), buildState_(worldReset_),
         buildDoor_(worldReset_),  buildRemove_(worldReset_), stealth_(worldReset_, 512),
@@ -474,14 +487,27 @@ public:
         ii.keyKind = keyKind;
         ii.flags   = flags;
         for (int k = 0; k < 5; ++k) ii.cKey[k] = cKey[k];
-        if (items && count > 0) ii.items.assign(items, items + count);
+        if (items && count > 0) {
+            ii.items.assign(items, items + count);
+            // The template ids in these entries are compared and std::string'd all
+            // over the reconcile path. Senders terminate them; that is the sender's
+            // promise, not our guarantee, so make it true on our own copy.
+            for (unsigned int i = 0; i < count; ++i) {
+                wireTerm(ii.items[i].stringID);
+                wireTerm(ii.items[i].manufacturer);
+                wireTerm(ii.items[i].material);
+            }
+        }
         EnterCriticalSection(&cs_); inv_.push_back(ii); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received world-item snapshot, owner-tagged.
     void pushWorldItems(u32 ownerId, const WorldItemEntry* items, unsigned int count) {
         InboundWorldItems wi;
         wi.ownerId = ownerId;
-        if (items && count > 0) wi.items.assign(items, items + count);
+        if (items && count > 0) {
+            wi.items.assign(items, items + count);
+            for (unsigned int i = 0; i < count; ++i) wireTerm(wi.items[i].stringID);
+        }
         EnterCriticalSection(&cs_); wi_.push_back(wi); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received world-item cull (list of netIds), owner-tagged.
@@ -571,6 +597,16 @@ public:
     void pushTime(u32 ownerId, const TimePacket& pkt) {
         InboundTime iti; iti.ownerId = ownerId; iti.pkt = pkt;
         EnterCriticalSection(&cs_); time_.push_back(iti); LeaveCriticalSection(&cs_);
+    }
+    // NET thread: one received weather state (protocol 55), owner-tagged.
+    void pushWeather(u32 ownerId, const WeatherPacket& pkt) {
+        InboundWeather iw; iw.ownerId = ownerId; iw.pkt = pkt;
+        EnterCriticalSection(&cs_); weather_.push_back(iw); LeaveCriticalSection(&cs_);
+    }
+    // NET thread: one received spoken line (protocol 56).
+    void pushDialogue(u32 ownerId, const DialoguePacket& pkt) {
+        InboundDialogue id; id.ownerId = ownerId; id.pkt = pkt;
+        EnterCriticalSection(&cs_); dialogue_.push_back(id); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received baked-door state row (protocol 26), owner-tagged.
     void pushDoor(u32 ownerId, const DoorPacket& pkt) {
@@ -741,6 +777,12 @@ public:
     void drainTime(std::deque<InboundTime>& out) {
         EnterCriticalSection(&cs_); out.swap(time_); LeaveCriticalSection(&cs_);
     }
+    void drainWeather(std::deque<InboundWeather>& out) {
+        EnterCriticalSection(&cs_); out.swap(weather_); LeaveCriticalSection(&cs_);
+    }
+    void drainDialogue(std::deque<InboundDialogue>& out) {
+        EnterCriticalSection(&cs_); out.swap(dialogue_); LeaveCriticalSection(&cs_);
+    }
     void drainDoor(std::deque<InboundDoor>& out) {
         EnterCriticalSection(&cs_); out.swap(door_); LeaveCriticalSection(&cs_);
     }
@@ -869,6 +911,8 @@ private:
     WorldQ<InboundMoneyDelta>      moneyDelta_;
     WorldQ<InboundFaction>         faction_;
     WorldQ<InboundTime>            time_;
+    WorldQ<InboundWeather>         weather_;
+    WorldQ<InboundDialogue>        dialogue_;
     WorldQ<InboundDoor>            door_;
     WorldQ<InboundProd>            prod_;
     WorldQ<InboundResearch>        research_;

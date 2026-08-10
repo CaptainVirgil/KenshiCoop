@@ -185,6 +185,10 @@ ENetSocketHooks g_hooks; // filled in installEnetHooks
 
 // ---- Session-state + spike logging (net thread, via tick()) -------------------
 
+// Cached for the panel; written only here, read on the main thread. A stale int
+// is harmless - it is a hint shown to a human, not a control signal.
+volatile long g_lastSessionErr = 0;
+
 void logSessionState(SteamId peer) {
     SessionState st;
     std::memset(&st, 0, sizeof(st));
@@ -198,6 +202,7 @@ void logSessionState(SteamId peer) {
     }
     g_lastState     = st;
     g_haveLastState = true;
+    g_lastSessionErr = (long)st.lastError;
     char b[160];
     _snprintf(b, sizeof(b) - 1,
               "session peer=%llu active=%u connecting=%u relay=%u err=%u",
@@ -390,6 +395,8 @@ void shutdown() {
     if (g_peer != 0)     g_close(g_iface, g_peer);
     if (g_pingPeer != 0 && g_pingPeer != g_peer) g_close(g_iface, g_pingPeer);
 }
+
+int lastSessionError() { return (int)g_lastSessionErr; }
 
 } // namespace steamp2p
 } // namespace coop

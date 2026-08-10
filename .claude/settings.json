@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/linux/build_plugin.sh:*)",
+      "Bash(scripts/linux/setup_toolchain.sh:*)",
+      "Bash(scripts/linux/fetch_lfs.sh:*)",
+      "Bash(scripts/linux/patch_vendored_headers.sh:*)",
+      "Bash(scripts/linux/verify.sh:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(wc:*)",
+      "Bash(sha256sum:*)",
+      "Bash(md5sum:*)"
+    ]
+  }
+}

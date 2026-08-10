@@ -86,6 +86,22 @@ const float CATCHUP_K   = 2.0f;   // gap-proportional speed boost (chase a movin
 const float REISSUE_DIST = 1.0f;  // re-issue the walk order only when tgt moved this far
 const float LEAD_SECONDS = 0.6f;  // project the walk target this far along source velocity
 const float NPC_MOVE_VEL = 0.75f; // NPC est. velocity (u/s) above which it is "walking"
+// Keepalive cadence for a STATIONARY mid-band body. Must stay under the interp
+// staleness window (InterpConfig::staleMs 2000, and max(2000, 4*seg) in
+// sample()), or the peer releases the body between keepalives and the whole
+// point is lost. 1500 leaves margin for one dropped slice.
+const unsigned long MID_STILL_KEEPALIVE_MS = 1500;
+// A body this close to one of our own characters is never AI-frozen: the freeze
+// targets divergent wanderers (measured 500-900 u), and suspending the AI of an
+// NPC you are standing next to breaks interaction with it - talking to a frozen
+// seated NPC crashed the client. Well under the 120 u park threshold and under
+// the ~50 u seat-schedule divergence class, so it swallows nothing the freeze
+// was built for.
+const float FREEZE_PC_EXEMPT_DIST = 25.0f;
+// How often the local player-squad positions behind that exemption are
+// refreshed. They are only used for a coarse radius test, so a few Hz is plenty
+// and the point is to NOT add a per-frame captureSquad to the authority pass.
+const unsigned long PC_SAMPLE_MS = 250;
                                   // (vs a fidget/turn in place -> treat as at rest)
 const unsigned long TASK_GRACE_MS = 4000;  // settle time before drift-checking a pose
 const float TASK_DRIFT_MAX = 4.0f;         // committed pose drift beyond which we park
@@ -160,6 +176,25 @@ const unsigned long ATTR_WINDOW_MS = 3000; // remember a combatant's victim this
 // re-issue base (each attempt runs the engine's real pickup, don't spam it);
 // the drop debounce must sit above the lossy batch's worst gap (the disarm
 // lesson: a 1-batch stream blip must not tear a valid carry down).
+// Drop entries older than a horizon from a Key-keyed timestamp map.
+//
+// A dozen throttle and log-once maps are written as `m[k] = now` and appear in no
+// erase path anywhere in the tree, so each one grows per entity ever ENCOUNTERED
+// rather than per entity present: a long session in a populated region accumulates
+// them for its whole life, and every later pass walks all of them. resetSession was
+// their only release, and a session that never swaps worlds never gets one.
+//
+// C++03, so this is a template over the map type rather than a lambda predicate.
+template <class MapT>
+inline unsigned int pruneStaleStamps(MapT& m, unsigned long now, unsigned long horizonMs) {
+    unsigned int dropped = 0;
+    for (typename MapT::iterator it = m.begin(); it != m.end(); ) {
+        if ((now - it->second) > horizonMs) { m.erase(it++); ++dropped; }
+        else                                { ++it; }
+    }
+    return dropped;
+}
+
 const unsigned long CARRY_HEAL_MS = 1500; // min gap between self-heal pickups
 const unsigned long CARRY_DROP_MS = 3000; // stream must stop reporting the carry
                                           // this long before the local copy drops

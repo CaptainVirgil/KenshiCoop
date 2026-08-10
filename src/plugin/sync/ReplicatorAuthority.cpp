@@ -13,6 +13,26 @@
 
 namespace coop {
 
+// Hash of a body's template stringID, or 0 when it cannot be read.
+//
+// The identity witness for suppressed_ (see suppressedSid_): an address that
+// round-trips through its own hand proves the pointer is live, not that it is the
+// same CHARACTER - the engine can despawn one body and allocate another at that
+// address. The template sid is the cheapest thing that tells those apart, and 0
+// means "unknown", which callers must treat as "do not vouch for this".
+static u32 suppressWitness(Character* c) {
+    if (!c) return 0;
+    char sid[48]; char fac[48];
+    float x, y, z, hd, age; bool dead;
+    if (!engine::describeCharacter(c, sid, sizeof(sid), fac, sizeof(fac),
+                                   &x, &y, &z, &hd, &dead, &age))
+        return 0;
+    if (!sid[0]) return 0;
+    u32 h = 2166136261u;
+    for (const char* p = sid; *p; ++p) { h ^= (unsigned char)*p; h *= 16777619u; }
+    return h ? h : 1u;
+}
+
 void Replicator::debugMark(Character* c, int colorId, const char* tag) {
     static int en = -1;
     if (en < 0) {
@@ -118,8 +138,18 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // Hysteresis (step 5, spike 18): a hard streamed/unstreamed edge churned
     // boundary NPCs. Suppress only after a sustained unstreamed run (~1 s), and
     // restore only after a sustained streamed dwell (~2 s), counted in frames.
-    const unsigned int SUPPRESS_AFTER_FRAMES = 75;
-    const unsigned int RESTORE_AFTER_FRAMES  = 150;
+    // ~1 s to hide, ~2 s to restore - the same intent the old 75/150 frame counts
+    // had at 75 fps, but now independent of frame rate and of how often each pass
+    // runs. See the AuthCount note in Replicator.h.
+    const unsigned long SUPPRESS_AFTER_MS = 1000;
+    const unsigned long RESTORE_AFTER_MS  = 2000;
+    const unsigned long authNow = nowMs();
+    // Bound a single step so a load hitch cannot bank seconds of dwell in one go.
+    const unsigned long DWELL_STEP_MAX_MS = 250;
+    // How much wider the single re-judge sweep reaches after a census dropout. A
+    // body only leaves the enumeration by walking, so one census gap can move it a
+    // few hundred units at most; 1.25x covers that without paying for it every tick.
+    const float CENSUS_REJUDGE_SCALE = 1.25f;
 
     // Hands the host streamed a fresh sample for this tick = the authoritative set.
     std::set<Key> keep;
@@ -166,12 +196,33 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         } else ++it;
     }
 
+    // Refresh the local player positions the freeze's proximity exemption reads.
+    // A few Hz deliberately: the exemption is a coarse radius test, and this
+    // pass runs every render frame - a per-frame captureSquad here would be
+    // exactly the kind of cost the rest of this work is trying to remove.
+    if (pcSampleMs_ == 0 || (nowMs() - pcSampleMs_) >= PC_SAMPLE_MS) {
+        pcSampleMs_ = nowMs();
+        static EntityState pcBuf[PC_SAMPLE_MAX]; // main-thread only
+        unsigned int np = engine::captureSquad(gw, /*leaderOnly*/ false,
+                                               pcBuf, PC_SAMPLE_MAX);
+        if (np > PC_SAMPLE_MAX) np = PC_SAMPLE_MAX;
+        for (unsigned int p = 0; p < np; ++p) {
+            pcSampleX_[p] = pcBuf[p].x;
+            pcSampleZ_[p] = pcBuf[p].z;
+        }
+        pcSampleN_ = np;
+    }
+
     // Enumerate the join's local world NPCs (same interest query as the host).
     const unsigned int MAX_NPCS = 256;
     static Character*  chars[MAX_NPCS]; // main-thread only
     static EntityState states[MAX_NPCS];
     bool nearTrunc = false;
-    unsigned int n = engine::listNpcs(gw, chars, states, MAX_NPCS, &nearTrunc);
+    // full = auditRows_: the judgment below reads only the hand and the position,
+    // so the diagnostic-only fields are gathered ONLY when something is going to
+    // print them. Under the harness the rows stay byte-identical.
+    unsigned int n = engine::listNpcs(gw, chars, states, MAX_NPCS, &nearTrunc,
+                                      auditRows_);
 
     // Protocol 36 wide-radius existence pass: enumerate out to the census
     // radius so local-only ghosts get culled at render range instead of at the
@@ -184,9 +235,42 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     bool wideTrunc = false;
     bool censusFresh = censusRadius_ > 0.0f && censusRecvMs_ != 0 &&
                        (nowMs() - censusRecvMs_) <= 5000;
-    if (censusFresh)
-        wn = engine::listNpcsWide(gw, censusRadius_, wChars, wStates, NPC_CENSUS_MAX,
-                                  &wideTrunc);
+    // Throttle the sweep to ~10 Hz. Its inputs move at 1 Hz (the peer's census) and
+    // its outputs feed dwell counters measured in seconds, so re-running four
+    // spatial queries out to censusRadius_ on every render frame bought nothing but
+    // the cost. The near pass above stays per-frame - it is the stream bubble.
+    //
+    // `wideRan` gates everything downstream that consumes wStates/wn, because on a
+    // skipped frame wn is 0 and "enumerated nothing" must not be read as "nothing
+    // exists": the authCount_/attention prune below would erase the counters of
+    // every wide-only body, and the 5 s audit would report an empty world.
+    const unsigned long WIDE_SWEEP_MS = 100;
+    bool wideRan = false;
+    if (censusFresh && (wideSweepMs_ == 0 || (nowMs() - wideSweepMs_) >= WIDE_SWEEP_MS)) {
+        wideSweepMs_ = nowMs();
+        wideRan = true;
+        // Re-judge sweep on the stale->fresh edge. Nothing is judged while the
+        // census is silent, so a body that drifts past censusRadius_ during the gap
+        // would otherwise never be judged again - it is simply outside every later
+        // enumeration. Widening the FIRST pass after the census returns reaches the
+        // cohort that drifted out, which is the whole leak: travel is a continuous
+        // zone stream, zone streaming stalls the host's main thread, so the gaps
+        // happen exactly while both squads are covering ground.
+        //
+        // One pass, not a permanent widening - the cost is a bigger enumeration, and
+        // the reason the radius is what it is has not changed.
+        float radius = censusRadius_;
+        if (censusRejudge_) radius = censusRadius_ * CENSUS_REJUDGE_SCALE;
+        wn = engine::listNpcsWide(gw, radius, wChars, wStates, NPC_CENSUS_MAX,
+                                  &wideTrunc, auditRows_);
+        if (censusRejudge_) {
+            char b[160]; _snprintf(b, sizeof(b) - 1,
+                "[census] re-judge sweep radius=%.0f (was stale; enumerated=%u trunc=%d)",
+                radius, wn, wideTrunc ? 1 : 0);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            censusRejudge_ = false;
+        }
+    }
 
     // Phase 0.5: account the time wide culling spends DISABLED. Staleness is a
     // deliberate fail-open (a silent host must not mass-suppress a loaded area),
@@ -210,6 +294,8 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 "[census] fresh again (wide culling re-enabled; staleMs=%lu edges=%lu)",
                 censusStaleMs_, censusStaleEdges_);
             b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            // Arm the widened sweep for the NEXT pass: this tick already enumerated.
+            censusRejudge_ = true;
         }
         censusFreshPrev_  = censusFresh;
         censusFreshChkMs_ = nowF;
@@ -294,15 +380,20 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // Prune counters for hands the enumeration no longer sees (left interest),
     // preserving suppressed entries (a hidden body may drop out of the query but
     // must keep its counters so the restore dwell works when it returns).
-    std::set<Key> seen;
-    for (unsigned int i = 0; i < n; ++i) seen.insert(keyOf(states[i]));
-    for (unsigned int i = 0; i < wn; ++i) seen.insert(keyOf(wStates[i]));
-    for (std::map<Key, AuthCount>::iterator it = authCount_.begin(); it != authCount_.end(); ) {
-        if (seen.find(it->first) == seen.end() &&
-            suppressed_.find(it->first) == suppressed_.end()) authCount_.erase(it++);
-        else ++it;
+    // Only prune on a frame that actually swept wide. Otherwise `seen` holds just
+    // the near band and every wide-only body looks absent, so its counters - and
+    // its attention latch - would be erased and rebuilt 10x a second.
+    if (wideRan) {
+        std::set<Key> seen;
+        for (unsigned int i = 0; i < n; ++i) seen.insert(keyOf(states[i]));
+        for (unsigned int i = 0; i < wn; ++i) seen.insert(keyOf(wStates[i]));
+        for (std::map<Key, AuthCount>::iterator it = authCount_.begin(); it != authCount_.end(); ) {
+            if (seen.find(it->first) == seen.end() &&
+                suppressed_.find(it->first) == suppressed_.end()) authCount_.erase(it++);
+            else ++it;
+        }
+        pruneAttention(seen);
     }
-    pruneAttention(seen);
 
     for (unsigned int i = 0; i < n; ++i) {
         // Proxy bodies answer to their streamed key's census entry, not their
@@ -343,20 +434,36 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         // Dormant and census-absent: neither client is speaking for this
         // region, so there is nothing to judge. Hold the debounce at zero
         // rather than letting it climb silently - when attention does arrive,
-        // the body gets a full SUPPRESS_AFTER_FRAMES to be corroborated
+        // the body gets a full SUPPRESS_AFTER_MS to be corroborated
         // instead of being hidden on the first frame someone looks at it.
         if (!exists && !observedAt(k, attnAnch, nAttnAnch,
                                    states[i].x, states[i].y, states[i].z)) {
             ac.unstreamed = 0;
             continue;
         }
-        if (exists) { ac.unstreamed = 0; if (ac.streamed < 1000000u) ++ac.streamed; }
-        else        { ac.streamed = 0;   if (ac.unstreamed < 1000000u) ++ac.unstreamed; }
+        {
+            const unsigned long dt = (ac.lastMs == 0) ? 0
+                : ((authNow - ac.lastMs) > DWELL_STEP_MAX_MS ? DWELL_STEP_MAX_MS
+                                                            : (authNow - ac.lastMs));
+            ac.lastMs = authNow;
+            if (exists) { ac.unstreamed = 0; ac.streamed   += dt; }
+            else        { ac.streamed   = 0; ac.unstreamed += dt; }
+        }
         if (exists) {
             // Host owns it again: hand it back once the stream has DWELLED (a
             // boundary NPC that flickers into the set for a frame stays hidden).
-            if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
-                engine::restoreNpc(gw, chars[i]);
+            if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_MS) {
+                // Only forget the entry if the un-hide actually happened. Erasing on
+                // a failed restore leaves the body invisible and off the update list
+                // with nothing left that knows to retry it; keeping it means the ~2 s
+                // re-assertion sweep comes back around.
+                if (!engine::restoreNpc(gw, chars[i])) {
+                    char rb[128]; _snprintf(rb, sizeof(rb) - 1,
+                        "[authority] restore MISS hand=%u,%u (engine call failed; retrying)",
+                        k.i, k.s);
+                    rb[sizeof(rb) - 1] = '\0'; coop::logErrLine(rb);
+                    continue;
+                }
                 suppressed_.erase(s);
                 s = suppressed_.end();
                 ++authRestores_;
@@ -399,7 +506,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             // Host neither streams nor lists it (census-absent ghost): after
             // the debounce, hide + freeze so the local AI can't run a divergent
             // copy on top of the host-driven world.
-            if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_FRAMES) {
+            if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_MS) {
                 // Phase 2 hardening: only RECORD the suppression when the engine
                 // call actually landed. A faulted hide used to be booked as done,
                 // leaving the body visible forever with no evidence - the silent
@@ -408,6 +515,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 // log the miss once at the threshold crossing.
                 if (engine::suppressNpc(gw, chars[i])) {
                     suppressed_[k] = chars[i];
+                    suppressedSid_[k] = suppressWitness(chars[i]);
                     ++authSuppresses_;
                     lifeSet(k, LIFE_CULLED, "suppress");
                     debugMark(chars[i], 1, lifeName(LIFE_CULLED));
@@ -417,7 +525,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                         states[i].hIndex, states[i].hSerial, nm, (unsigned)keep.size(), n,
                         (unsigned)suppressed_.size(), authSuppresses_, authRestores_);
                       b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
-                } else if (ac.unstreamed == SUPPRESS_AFTER_FRAMES) {
+                } else if (ac.unstreamed >= SUPPRESS_AFTER_MS) {
                     char b[96]; _snprintf(b, sizeof(b) - 1,
                         "[authority] suppress MISS hand=%u,%u (engine call failed; retrying)",
                         states[i].hIndex, states[i].hSerial);
@@ -433,7 +541,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // judged are skipped by pointer (its streamed logic is authoritative
     // inside the bubble), as is anything applyTargets drove this tick. Same
     // hysteresis counters so a census-boundary NPC doesn't churn.
-    if (censusFresh && wn > 0) {
+    if (censusFresh && wideRan && wn > 0) {
         unsigned long nowR = nowMs(); // recently-driven grace reference
         std::set<Character*> nearSet;
         for (unsigned int i = 0; i < n; ++i) nearSet.insert(chars[i]);
@@ -482,11 +590,23 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 ac.unstreamed = 0;
                 continue;
             }
-            if (exists) { ac.unstreamed = 0; if (ac.streamed < 1000000u) ++ac.streamed; }
-            else        { ac.streamed = 0;   if (ac.unstreamed < 1000000u) ++ac.unstreamed; }
+            {
+                const unsigned long dt = (ac.lastMs == 0) ? 0
+                    : ((authNow - ac.lastMs) > DWELL_STEP_MAX_MS ? DWELL_STEP_MAX_MS
+                                                                : (authNow - ac.lastMs));
+                ac.lastMs = authNow;
+                if (exists) { ac.unstreamed = 0; ac.streamed   += dt; }
+                else        { ac.streamed   = 0; ac.unstreamed += dt; }
+            }
             if (exists) {
-                if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_FRAMES) {
-                    engine::restoreNpc(gw, wChars[i]);
+                if (s != suppressed_.end() && ac.streamed >= RESTORE_AFTER_MS) {
+                    if (!engine::restoreNpc(gw, wChars[i])) {
+                        char rb[128]; _snprintf(rb, sizeof(rb) - 1,
+                            "[authority] restore MISS hand=%u,%u (engine call failed; retrying)",
+                            k.i, k.s);
+                        rb[sizeof(rb) - 1] = '\0'; coop::logErrLine(rb);
+                        continue;
+                    }
                     suppressed_.erase(s);
                     s = suppressed_.end();
                     ++authRestores_;
@@ -512,9 +632,10 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                     if (censusFreezeAi_ && drift >= 0.0f)
                         censusFreezeDivergedAi(wChars[i], k, drift);
                 }
-            } else if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_FRAMES) {
+            } else if (s == suppressed_.end() && ac.unstreamed >= SUPPRESS_AFTER_MS) {
                 if (engine::suppressNpc(gw, wChars[i])) {
                     suppressed_[k] = wChars[i];
+                    suppressedSid_[k] = suppressWitness(wChars[i]);
                     ++authSuppresses_;
                     ++censusCulls_;
                     lifeSet(k, LIFE_CULLED, "cull-wide");
@@ -528,7 +649,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                         (unsigned)censusHands_.size(), wn,
                         (unsigned)suppressed_.size(), censusCulls_);
                       b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
-                } else if (ac.unstreamed == SUPPRESS_AFTER_FRAMES) {
+                } else if (ac.unstreamed >= SUPPRESS_AFTER_MS) {
                     char b[96]; _snprintf(b, sizeof(b) - 1,
                         "[census] cull MISS hand=%u,%u (engine call failed; retrying)",
                         wStates[i].hIndex, wStates[i].hSerial);
@@ -563,6 +684,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         authReassertMs_ = now;
         unsigned int pruned = 0;
         std::map<Key, Character*> migrated;
+        std::map<Key, u32> migratedSid;
         for (std::map<Key, Character*>::iterator it = suppressed_.begin();
              it != suppressed_.end(); ) {
             unsigned int h[5];
@@ -577,6 +699,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                     debugMarkers_.erase(mi);
                 }
                 authCount_.erase(it->first);
+                suppressedSid_.erase(it->first);
                 ++pruned; ++authPruned_;
                 suppressed_.erase(it++);
                 continue;
@@ -584,8 +707,43 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             Key ck; ck.i = h[0]; ck.s = h[1]; ck.t = h[2];
             ck.c = h[3]; ck.cs = h[4];
             if (ck < it->first || it->first < ck) {
-                migrated[ck] = it->second;
+                // The hand changed. Two things produce that and they need
+                // opposite treatment: a combat detach re-containering the body we
+                // hid (migrate, or the hide stops re-asserting under a key that
+                // will never resolve again), and the engine having despawned our
+                // body and allocated a DIFFERENT one at the same address (do not
+                // migrate - that hides an innocent NPC, and an invisible solid
+                // body in a doorway is the worst failure this subsystem has).
+                //
+                // The live-pointer round-trip above cannot tell them apart: a
+                // recycled body round-trips to itself just as cleanly. The
+                // template sid can. No witness, or a witness that disagrees,
+                // means prune - and pruning is genuinely safe here, because the
+                // ordinary authority pass re-judges the body under its new key
+                // next tick and re-hides it if it should be. Being wrong this way
+                // costs a flicker; being wrong the other way is permanent.
+                std::map<Key, u32>::iterator wi = suppressedSid_.find(it->first);
+                u32 wasSid = (wi != suppressedSid_.end()) ? wi->second : 0;
+                u32 nowSid = suppressWitness(it->second);
+                if (wasSid != 0 && nowSid == wasSid) {
+                    migrated[ck] = it->second;
+                    migratedSid[ck] = wasSid;
+                } else {
+                    // Not vouched for. Un-hide before letting go: the body is
+                    // live, and dropping the entry without restoring would strand
+                    // it invisible with nothing left tracking it.
+                    engine::restoreNpc(gw, it->second);
+                    ++authRestores_;
+                    char b[192]; _snprintf(b, sizeof(b) - 1,
+                        "[authority] suppress MIGRATE REFUSED hand=%u,%u -> %u,%u "
+                        "(sid witness %s) - restored, the ordinary pass re-judges it",
+                        (unsigned)it->first.i, (unsigned)it->first.s,
+                        (unsigned)ck.i, (unsigned)ck.s,
+                        (wasSid == 0) ? "missing" : "disagrees");
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                }
                 authCount_.erase(it->first);
+                suppressedSid_.erase(it->first);
                 suppressed_.erase(it++);
                 continue;
             }
@@ -601,9 +759,23 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
              it != migrated.end(); ++it) {
             if (suppressed_.find(it->first) != suppressed_.end()) continue;
             suppressed_[it->first] = it->second;
+            suppressedSid_[it->first] = migratedSid[it->first];
             if (keep.find(it->first) == keep.end() &&
                 drivenChars_.find(it->second) == drivenChars_.end())
                 engine::suppressNpc(gw, it->second);
+        }
+        // Reconcile the witness map against the set it witnesses. Every erase
+        // path above drops both, but suppressed_ is written and cleared from
+        // several files, and a witness for a key that is no longer suppressed is
+        // both dead weight and - if that key is ever suppressed again - a stale
+        // answer to the identity question. Cheap: this sweep is 2 s, and the map
+        // is the same size as the one it mirrors.
+        if (suppressedSid_.size() != suppressed_.size()) {
+            for (std::map<Key, u32>::iterator wi = suppressedSid_.begin();
+                 wi != suppressedSid_.end(); ) {
+                if (suppressed_.find(wi->first) == suppressed_.end()) suppressedSid_.erase(wi++);
+                else ++wi;
+            }
         }
         if (pruned > 0) {
             char b[128]; _snprintf(b, sizeof(b) - 1,
@@ -616,7 +788,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         // wasn't vouched live this pass (this tick's enumerations, driven and
         // proxy sets, plus the just-validated suppressed bodies). A pruned
         // body that comes back into judgment simply gets a fresh label.
-        if (!debugMarkers_.empty()) {
+        if (wideRan && !debugMarkers_.empty()) {
             std::set<Character*> vouched;
             for (unsigned int i = 0; i < n; ++i)  vouched.insert(chars[i]);
             for (unsigned int i = 0; i < wn; ++i) vouched.insert(wChars[i]);
@@ -645,7 +817,11 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
     // transient (one debounce, ~1 s). Test-ExistenceParity gates on it.
     // KENSHICOOP_DEBUG_CENSUS=1 additionally dumps a row per ghost.
     static unsigned long auditMs = 0; // main-thread only
-    if ((now - auditMs) >= 5000) {
+    // Only audit on a frame that swept wide: the counts below are built from
+    // wn/wStates, and on a skipped frame that reads as an empty world - the log
+    // would claim wide=0 and ghost=0 every time the 5 s tick happened to land
+    // between sweeps. At 10 Hz the wait is at most another 100 ms.
+    if (wideRan && (now - auditMs) >= 5000) {
         auditMs = now;
         unsigned int cDrv = 0, cCen = 0, cHid = 0, cGhost = 0, cDorm = 0;
         unsigned int cMine = 0;   // bodies in cells WE author (presence authority)
@@ -1019,13 +1195,20 @@ unsigned int Replicator::attentionAnchors(GameWorld* gw, const float* raw,
 
 void Replicator::rebuildClaimedCells() {
     claimedCells_.clear();
+    contestedCells_.clear();
     for (std::map<std::pair<u32, u32>, CellClaim>::const_iterator it = claimSlots_.begin();
          it != claimSlots_.end(); ++it) {
         std::pair<int, int> cell(it->second.cx, it->second.cz);
         u32 owner = it->first.first;
         std::map<std::pair<int, int>, u32>::iterator ex = claimedCells_.find(cell);
         if (ex == claimedCells_.end()) claimedCells_[cell] = owner;
-        else if (owner == (u32)CELL_OWNER_HOST) ex->second = owner;  // host wins ties
+        else {
+            // Two claimants on one cell. The host still wins the verdict, so
+            // everything that reads claimedCells_ is unchanged; record the tie
+            // so the per-body split knows this is a cell worth sharing out.
+            if (ex->second != owner) contestedCells_.insert(cell);
+            if (owner == (u32)CELL_OWNER_HOST) ex->second = owner;  // host wins ties
+        }
     }
     // Remember it, so walking out of a cell does not hand it to the host.
     for (std::map<std::pair<int, int>, u32>::const_iterator it = claimedCells_.begin();
@@ -1047,10 +1230,45 @@ u32 Replicator::authorityFor(GameWorld* gw, float x, float z) const {
     return (u32)CELL_OWNER_HOST;
 }
 
+u32 Replicator::authorityForBody(GameWorld* gw, float x, float z,
+                                 const Key& k) const {
+    const u32 cellOwner = authorityFor(gw, x, z);
+    if (!splitAuthority_ || !cellAuth_) return cellOwner;
+    if (contestedCells_.empty()) return cellOwner;
+    int cx = 0, cz = 0;
+    if (!engine::cellAt(gw, x, z, &cx, &cz)) return cellOwner;
+    if (contestedCells_.find(std::make_pair(cx, cz)) == contestedCells_.end())
+        return cellOwner;
+    // Contested: both players are standing here, so the cell verdict hands one
+    // client the whole town and the other nothing. Split by a hash of the hand
+    // instead. The hand is save-stable, so both clients compute the SAME answer
+    // for the same body without exchanging anything, and because the partition
+    // is by identity rather than by position it has no boundary for a body to
+    // walk across - which is what makes it free of the handoff churn that
+    // spatial authority has to damp with dwell counters.
+    //
+    // Only the two-player case is modelled: ids are 0 (host) and 1 (join),
+    // matching resolveOwnRanks. FNV-1a over the five hand words.
+    u32 h = 2166136261u;
+    h = (h ^ k.t)  * 16777619u;
+    h = (h ^ k.c)  * 16777619u;
+    h = (h ^ k.cs) * 16777619u;
+    h = (h ^ k.i)  * 16777619u;
+    h = (h ^ k.s)  * 16777619u;
+    return (h & 1u) ? 1u : (u32)CELL_OWNER_HOST;
+}
+
 bool Replicator::authorHoldsBody(GameWorld* gw, u32 localId, const Key& k,
                                  Character* c, float x, float z) {
     if (!cellAuth_) return false;
-    u32 owner = authorityFor(gw, x, z);
+    // Body-aware: inside a contested cell this can hand the body to whichever
+    // client the hash picked, which is exactly what LICENSES the suppression
+    // machinery below to run on the half we gave away. Splitting the publish
+    // duty without splitting this would leave a body that the peer streams
+    // reading as ours - so parkDivergedCopy, the freeze and suppression would
+    // all stand down while the peer wrote it, and the local AI would simulate
+    // it at the same time. Split both, or split neither.
+    u32 owner = authorityForBody(gw, x, z, k);
     // Ours to author, or nobody's we have heard from: either way this body is
     // not ours to judge. The second case matters as much as the first - a cell
     // whose owner has sent no census is unspoken-for, not empty, and treating
@@ -1076,9 +1294,30 @@ bool Replicator::authorHoldsBody(GameWorld* gw, u32 localId, const Key& k,
     // so the receiver defers to it and handover happens only when the author
     // STOPS streaming - a decision one side makes alone, needing no agreement
     // about whose cell a drifting body is standing in.
+    // ...but "the peer's stream holds this body" has to mean NOW. drivenChars_ is
+    // this tick's set and says exactly that. drivenSeen_ is the grace map, pruned
+    // on a 30 s horizon, and it was consulted for MEMBERSHIP alone - so a body the
+    // peer stopped streaming half a minute ago still read as peer-driven and this
+    // client declined to author it for the rest of that window. The handover this
+    // function exists to make possible ("handover happens only when the author
+    // STOPS streaming") was the one thing it delayed.
+    //
+    // Same recency form the wide pass already uses against the same map a few
+    // hundred lines up, and the same 8 s: long enough to ride out a body dropping
+    // out of the stream for a beat at the mid band's ~2 Hz cadence, short enough
+    // that a real handover is not held up by a stream that has genuinely ended.
+    const unsigned long CELL_YIELD_GRACE_MS = 8000;
     bool peerDrives = false;
-    if (c) peerDrives = drivenChars_.find(c) != drivenChars_.end() ||
-                        drivenSeen_.find(c)  != drivenSeen_.end();
+    if (c) {
+        if (drivenChars_.find(c) != drivenChars_.end()) {
+            peerDrives = true;
+        } else {
+            std::map<Character*, unsigned long>::const_iterator ds = drivenSeen_.find(c);
+            unsigned long nowY = nowMs();
+            peerDrives = (ds != drivenSeen_.end()) &&
+                         (nowY - ds->second) < CELL_YIELD_GRACE_MS;
+        }
+    }
     // Say so once per body rather than per tick: the old line was 30% of this
     // scenario's log and said the same thing every frame.
     if (peerDrives && cellYield_.insert(k).second) {
@@ -1353,6 +1592,16 @@ void Replicator::reconcileProxy(Character* c, const EntityState& st,
                                 const std::map<Character*, Key>& keyOf) {
     std::map<Character*, Key>::const_iterator pk = keyOf.find(c);
     if (pk == keyOf.end()) return;
+    // A body the drive is walking is not a divergence to repair - it is being
+    // written by its owner right now. parkDivergedCopy halts and teleports, and
+    // the freeze below halts every tick for 20 s, so running either against a
+    // driven body puts two writers on it and the copy stops dead mid-stride.
+    // This path is the worst case of that: a PROXY is by definition minted from
+    // the peer's stream, so it is always driven when the peer is streaming it.
+    if (drivenChars_.find(c) != drivenChars_.end()) {
+        ++freezeSkipDriven_;
+        return;
+    }
     // st carries the LOCAL enumeration's hand; the census row answers to the
     // stream key, so the drift is measured and the park keyed by that.
     float drift = parkDivergedCopy(c, st, pk->second);
@@ -1443,6 +1692,53 @@ float Replicator::parkDivergedCopy(Character* c, const EntityState& st, const Ke
 // detour is not installed (KENSHICOOP_AI_SUSPEND=0).
 void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift) {
     if (!c) return;
+    // NEVER freeze a body one of our own characters is standing next to.
+    //
+    // This freeze exists for genuinely divergent WANDERERS - the comments
+    // above it measure 500-900 u, and the threshold sits at 120 u precisely to
+    // clear the ~50 u seat-schedule class. A body within arm's reach of a
+    // player is none of those, and suspending its AI breaks interaction with
+    // it: talking to a frozen seated NPC crashed the join twice on 2026-08-09
+    // (unhandled C++ exception inside the engine's dialogue path, no
+    // KenshiCoop frame on the stack - the engine's dialogue state machine does
+    // not tolerate a partner whose AI has been suspended underneath it).
+    // Release an existing freeze on approach too, so an NPC that was already
+    // frozen becomes talkable when you walk up to it rather than staying inert.
+    if (pcSampleN_ > 0) {
+        float cx, cy, cz;
+        if (engine::readPos(c, &cx, &cy, &cz)) {
+            for (unsigned int p = 0; p < pcSampleN_; ++p) {
+                float dx = cx - pcSampleX_[p];
+                float dz = cz - pcSampleZ_[p];
+                if (dx * dx + dz * dz <= FREEZE_PC_EXEMPT_DIST * FREEZE_PC_EXEMPT_DIST) {
+                    std::map<Key, unsigned long>::iterator fit = censusFrozen_.find(k);
+                    if (fit != censusFrozen_.end()) censusFrozen_.erase(fit);
+                    return;
+                }
+            }
+        }
+    }
+    // NEVER halt a body the drive is currently walking. This freeze calls
+    // haltMovement() EVERY TICK for its whole 20 s hold, and drivenChars_ is
+    // cleared and rebuilt by applyTargets every tick - so a body can be
+    // walk-ordered by the drive and halted by this pass in the same frame, for
+    // twenty seconds. That is the NPCs-march-in-place report: measured live,
+    // one Holy Sentinel sat at zero=656 of active=672 frames (97.6%) with an
+    // outstanding destination 45 u away and a commanded 22.5 u/s, and the same
+    // body later tracked 1008 consecutive active frames with ZERO frozen ones
+    // once the hold expired. The [life] ledger shows the same hand being
+    // adopted PARKED->HI while its freeze hold was still running, ~3.3 band
+    // transitions per second across the town.
+    //
+    // The drive is the stronger claim: a body the owner is actively streaming
+    // has a position to be at, and holding it still is precisely the
+    // divergence this exists to prevent. Keep the latch armed - only skip the
+    // actuation - so the hold still expires on schedule and an undriven body
+    // is quieted as before.
+    if (drivenChars_.find(c) != drivenChars_.end()) {
+        ++freezeSkipDriven_;
+        return;
+    }
     // 20 s hold (was 5 s): a diverged working slave released after only 5 s
     // below-threshold walked back toward its local job spot / owner and was
     // over the 120 u park line again before the next 5 s park cooldown fired

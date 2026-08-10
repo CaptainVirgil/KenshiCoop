@@ -330,11 +330,10 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
         // template already near the reply position means the census-missing
         // hand is probably THAT body under a hand we cannot correlate (engine
         // re-container, baked block just loaded) - minting would stand a
-        // double on top of it. Bound proxies (they answer to their own stream
-        // keys - pack members mint meters apart) and suppressed culls (hidden;
-        // often the very copy whose old hand got culled) are excluded, so a
-        // legit mint only defers while a visible uncorrelated twin stands
-        // there; the far-retry cadence re-judges in 5 s.
+        // double on top of it. Bound proxies are excluded (they answer to their
+        // own stream keys - pack members mint meters apart); suppressed bodies
+        // are NOT, see below. So a legit mint only defers while an uncorrelated
+        // twin stands there, and the far-retry cadence re-judges in 5 s.
         //
         // CENSUS-ONLY scope (2026-07-16 spawn_sync fix): the guard is for an
         // UNCORRELATED census hand (its exact identity is unknown, so a nearby
@@ -352,9 +351,13 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
             for (std::map<Key, Character*>::iterator pi = proxyByKey_.begin();
                  pi != proxyByKey_.end() && ne < NPC_CENSUS_MAX; ++pi)
                 excl[ne++] = pi->second;
-            for (std::map<Key, Character*>::iterator si = suppressed_.begin();
-                 si != suppressed_.end() && ne < NPC_CENSUS_MAX; ++si)
-                excl[ne++] = si->second;
+            // Suppressed bodies are deliberately NOT excluded. They used to be, on
+            // the reasoning that a hidden cull is often the very copy whose old hand
+            // got culled - but a hidden body is still a body standing on that spot,
+            // so excluding it let a mint land directly on top of one. The player sees
+            // one NPC until authority restores the original, and then two. Treating
+            // it as a twin costs a deferral the far-retry cadence re-judges in 5 s;
+            // treating it as absent costs a duplicate that never resolves itself.
             Character* twin = engine::sameTemplateNear(gw, p.charSid,
                                                        p.x, p.y, p.z,
                                                        MINT_DUPE_RADIUS,
@@ -409,8 +412,14 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
         lifeSet(k, LIFE_RESOLVED, "mint");
         // Dead on arrival: latch the down state now (the same reliable-latch
         // path an EVT_DEATH would take) so the proxy spawns INTO ragdoll
-        // instead of standing up for a frame. Latched entries never age out.
-        if (p.dead) targets_[k].deathLatched = true;
+        // instead of standing up for a frame. The latch survives ordinary
+        // age-out; it is dropped only after the owner has stopped streaming the
+        // body for LATCH_STALE_MS, and the stamp below is what dates that.
+        if (p.dead) {
+            Driven& pd = targets_[k];
+            pd.deathLatched = true;
+            if (pd.lastSeenMs == 0) pd.lastSeenMs = nowMs();
+        }
         // mintDist (Phase 1 telemetry): how far from our squad the proxy
         // appeared - the spawn-parity oracle gates its distribution.
         char b[224]; _snprintf(b, sizeof(b) - 1,
@@ -577,6 +586,15 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
         Key k; k.t = ev.sType; k.c = ev.sContainer; k.cs = ev.sContainerSerial;
         k.i = ev.sIndex; k.s = ev.sSerial;
         Driven& d = targets_[k]; // creates a placeholder if the body isn't streamed yet
+        // Start the age-out clock on a placeholder. lastSeenMs is "last ingest for
+        // this hand", and a reliable event IS an ingest - the only one this hand
+        // may ever get. Left at 0 the entry reads as never-seen, which the latched
+        // age-out cannot date and therefore could never drop: an EVT_KNOCKOUT for
+        // a body the owner does not stream leaked one map entry, permanently, and
+        // the KO/death edge loop emits those for every world NPC it captures.
+        // Safe against the starve-hold at the top of applyTargets: that path also
+        // requires interp.latest(), which an unstreamed placeholder fails.
+        if (d.lastSeenMs == 0) d.lastSeenMs = nowMs();
         switch (ev.event) {
             case EVT_DEATH:    d.deathLatched = true;  d.koLatched = true;  break;
             case EVT_KNOCKOUT: d.koLatched = true;                          break;
@@ -681,6 +699,15 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
                                        ev.aIndex, ev.aSerial };
                 int kind = (int)ev.arg;
                 bool ok = occ && engine::applyFurniture(0, occ, fh, kind, true);
+                // Hold the bed fast-exit off this body for a beat. That path keys on
+                // `hostMoving` from the INTERPOLATED sample, which still describes the
+                // world before this event - so without the hold it dumps a body back
+                // out of the bed we were just told to put it in.
+                if (ok && kind == 1) {
+                    std::map<Key, Driven>::iterator dt = targets_.find(k);
+                    if (dt != targets_.end())
+                        dt->second.furnEnterHoldMs = nowMs() + tuning_.furnHealDebounceMs;
+                }
                 char fb[160]; _snprintf(fb, sizeof(fb) - 1,
                     "[furn] RECV ENTER id=%u occ=%u,%u furn=%u,%u kind=%d ok=%d",
                     ev.eventId, ev.sIndex, ev.sSerial, ev.aIndex, ev.aSerial,
@@ -880,6 +907,7 @@ void Replicator::rekeyPeerBody(GameWorld* gw, const Key& oldK, const Key& newK,
         if (sit != suppressed_.end()) {
             engine::restoreNpc(gw, c);
             suppressed_.erase(sit);
+            suppressedSid_.erase(oldK);   // the witness goes with the entry
             wasSuppressed = true;
         }
         // A body transferred into a tab WE own is ours to control now, not
