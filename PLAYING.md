@@ -62,7 +62,7 @@ outright — no fallback, and the failure just looks like "it won't connect."
 When the updater finishes it prints something like:
 
 ```
-  Build:  fork-1  (protocol 56)
+  Build:  v0.50  (protocol 56)
 ```
 
 Send that to the other player. The label and the protocol number must match. Both values
