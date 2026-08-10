@@ -51,6 +51,29 @@ unsigned long monoUs();
 void logLine(const char* msg);
 void logErrLine(const char* msg);
 
+// ---- Main-thread liveness watchdog -----------------------------------------
+//
+// A main-thread HANG and a crash are indistinguishable in this log: in both, the
+// lines simply stop. That cost a real diagnosis on 2026-08-10 - the host's log
+// ended mid-session and was read as a crash, when in fact the main thread froze
+// and the ENet thread went on logging `[net] bandwidth` alone for 28 more
+// seconds (out collapsed 5.4 -> 0.3 KB/s while in held at ~5, because nothing
+// was draining the inbound queue).
+//
+// That asymmetry is the tool: the network thread keeps running when the main
+// thread does not, so it can witness and NAME the stall. The main thread stamps
+// a heartbeat and a phase label; the net thread's existing 5 s tick reports any
+// gap. `phase` must be a string LITERAL - it is stored by pointer and read from
+// another thread, so it has to outlive the call.
+void mainThreadBeat(const char* phase);
+// 0 when the main thread has never beaten (pre-hook), else ms since it last did.
+unsigned long mainThreadStalledMs();
+// The phase label in force at the last beat - i.e. what it was doing when it
+// stopped. Never null.
+const char* mainThreadPhase();
+// Monotonic beat count, so a stall report can distinguish "frozen" from "slow".
+unsigned long mainThreadBeats();
+
 // Re-point the log at a new path and mode tag, mid-session.
 //
 // The role a player actually plays is chosen in the F2 panel at Connect time,

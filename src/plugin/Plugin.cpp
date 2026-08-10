@@ -1800,6 +1800,12 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     // interest, and until now NOTHING measured it - which left "the game
     // stutters" as an argument rather than a number. Whichever client authors
     // a town pays the publish side; whichever drives it pays the apply side.
+    // Main-thread heartbeat, stamped at each phase boundary. The net thread reads
+    // these to report a freeze; the phase label is what turns "the log stopped"
+    // into "it stopped HERE". Literals only - the pointer is published to another
+    // thread. Four stores and four clock reads per frame, against a budget the
+    // [budget] line already measures in microseconds.
+    coop::mainThreadBeat("publish");
     const unsigned long tPub0 = coop::monoUs();
     tickReplicatePublish(gw, worldLive);
     const unsigned long tPub1 = coop::monoUs();
@@ -1813,15 +1819,25 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     // once BEFORE the engine tick so a host-issued order takes effect this frame.
     tickScenarioStart(gw);
 
+    // "engine" covers Kenshi's own tick. A stall reported under this phase is the
+    // GAME hanging with the plugin merely on the stack, which is a different bug
+    // from one reported under publish/apply - and the log could not tell them
+    // apart before.
+    coop::mainThreadBeat("engine");
     g_mainLoop_orig(gw, dt); // run the engine (incl. local AI)
 
     // Replication apply (post-engine): our transform is the last word the renderer
     // samples. Re-checks gameplayLive so a swap STARTED by this engine tick skips
     // apply (its caches are now stale; the reset runs next tick's reload edge).
+    coop::mainThreadBeat("apply");
     const unsigned long tApp0 = coop::monoUs();
     tickReplicateApply(gw, worldLive);
     const unsigned long tApp1 = coop::monoUs();
     logTickBudget(tPub1 - tPub0, tApp1 - tApp0);
+    // Last beat of the frame. If a stall is ever reported under "frame-end" the
+    // hang is downstream of everything above - the load backstop or the scenario
+    // tail - rather than in replication.
+    coop::mainThreadBeat("frame-end");
 
     // Coordinated load deferred-signal backstop: if the LOADGAME signal stalls
     // past the grace window, pump SaveManager::execute() once from end-of-tick.

@@ -417,6 +417,10 @@ void NetLink::threadLoop() {
     // just reports them, once every few seconds, in the units a decision needs.
     DWORD lastBwMs   = GetTickCount();
     enet_uint32 bwOut0 = 0, bwIn0 = 0;
+    // Main-thread stall latch, driven from the same 5 s tick as the bandwidth
+    // line below. Thread-local to threadLoop like the bandwidth state it rides.
+    bool          mainStallActive_ = false;
+    unsigned long mainStallLastMs_ = 0;
     // Entity-batch de-duplication state (see the send block below).
     u32   lastSentStamp    = 0;
     DWORD lastKeepaliveMs  = GetTickCount();
@@ -1721,6 +1725,45 @@ void NetLink::threadLoop() {
                 b[sizeof(b) - 1] = '\0';
                 netLog(b);
                 bwOut0 = outNow; bwIn0 = inNow; lastBwMs = nowBw;
+
+                // Main-thread watchdog. THIS thread is the only witness a frozen
+                // main thread has: on 2026-08-10 a host log ended mid-session and
+                // was read as a crash, when the main thread had actually stopped
+                // and these bandwidth lines kept printing alone for 28 s. The
+                // giveaway was in the numbers - out collapsed to 0.3 KB/s while in
+                // held at ~5 KB/s, because nothing was draining the inbound queue.
+                // Say that in words instead of leaving it to be reconstructed.
+                //
+                // 5 s of no beat is far past any legitimate frame: the budget line
+                // reports whole-plugin cost in MICROseconds and flags anything over
+                // 2 ms. Re-armed on recovery so a long stall reports once, and
+                // escalating so an ongoing freeze keeps stamping the log until the
+                // process dies - the last line then bounds how long it hung.
+                const unsigned long stalled = coop::mainThreadStalledMs();
+                if (stalled >= 5000) {
+                    if (!mainStallActive_ || (stalled - mainStallLastMs_) >= 15000) {
+                        mainStallActive_ = true;
+                        mainStallLastMs_ = stalled;
+                        char sb[224];
+                        _snprintf(sb, sizeof(sb) - 1,
+                                  "[watchdog] MAIN THREAD STALLED %lums phase='%s' "
+                                  "beats=%lu - the game is frozen, not merely quiet; "
+                                  "inbound is not being drained",
+                                  stalled, coop::mainThreadPhase(),
+                                  coop::mainThreadBeats());
+                        sb[sizeof(sb) - 1] = '\0';
+                        netErr(sb);
+                    }
+                } else if (mainStallActive_) {
+                    mainStallActive_ = false;
+                    mainStallLastMs_ = 0;
+                    char sb[160];
+                    _snprintf(sb, sizeof(sb) - 1,
+                              "[watchdog] main thread RECOVERED phase='%s' beats=%lu",
+                              coop::mainThreadPhase(), coop::mainThreadBeats());
+                    sb[sizeof(sb) - 1] = '\0';
+                    netLog(sb);
+                }
             }
         }
 

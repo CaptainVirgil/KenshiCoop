@@ -1296,7 +1296,14 @@ HitMaterialType __fastcall hitByMelee_hook(Character* self, CutDirection dir,
                     char n[24];
                     _snprintf(n, sizeof(n) - 1, "%d", (int)(shown + 0.5f));
                     n[sizeof(n) - 1] = '\0';
-                    floaterSpawn(self, n, 1); // red, like a hurt reading
+                    // GREEN (colour 0), not red. Kenshi's convention is green for
+                    // damage YOU DEAL and red for damage you TAKE, and this floater
+                    // is only ever reached for a hit one of OUR OWN attackers threw
+                    // (the g_reportAttackers test above) - so it is always the
+                    // former. Shipped red on the strength of "red = a hurt reading",
+                    // which is the right instinct about the victim and the wrong one
+                    // about whose readout this is.
+                    floaterSpawn(self, n, 0);
                 }
             }
         }

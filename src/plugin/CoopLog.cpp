@@ -155,6 +155,41 @@ bool logRetag(const char* newPath, const char* newTag) {
 void logLine(const char* msg)    { writeLine("INFO",  msg); }
 void logErrLine(const char* msg) { writeLine("ERROR", msg); }
 
+// ---- Main-thread liveness watchdog (see CoopLog.h) --------------------------
+// Deliberately lock-free: the beat is on the game's hot path and must not
+// contend with the net thread's logging critical section. Reads on the other
+// side are diagnostic - a torn or one-tick-stale value changes a number in a
+// log line, never a decision - so aligned 32-bit volatile writes are enough,
+// and are what this toolset offers anyway (<atomic> does not ship with VC10).
+// g_beatPhase is a literal pointer by contract, so publishing it is one store.
+namespace {
+volatile unsigned long g_beatMs    = 0;
+volatile unsigned long g_beatCount = 0;
+const char* volatile   g_beatPhase = "pre-hook";
+}
+
+void mainThreadBeat(const char* phase) {
+    if (phase) g_beatPhase = phase;
+    ++g_beatCount;
+    // Stamped LAST: a reader that sees a fresh timestamp has necessarily seen
+    // the phase and count that go with it.
+    g_beatMs = wallClockMs();
+}
+
+unsigned long mainThreadStalledMs() {
+    const unsigned long beat = g_beatMs;
+    if (beat == 0) return 0;              // never beaten - not a stall
+    const unsigned long now = wallClockMs();
+    return (now > beat) ? (now - beat) : 0;
+}
+
+const char* mainThreadPhase() {
+    const char* p = g_beatPhase;
+    return p ? p : "?";
+}
+
+unsigned long mainThreadBeats() { return g_beatCount; }
+
 void logClose() {
     if (!g_init) return;
     EnterCriticalSection(&g_cs);
