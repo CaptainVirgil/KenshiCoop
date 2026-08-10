@@ -1610,6 +1610,20 @@ void Replicator::reconcileProxy(Character* c, const EntityState& st,
 }
 
 float Replicator::parkDivergedCopy(Character* c, const EntityState& st, const Key& k) {
+    // Never park a body the drive is walking. park() HALTS and teleports, so
+    // running it against a driven copy puts two writers on one body - the same
+    // collision the census freeze had, by a different route.
+    //
+    // Guarded HERE rather than at the call sites because there are three of
+    // them (near pass, wide pass, reconcileProxy) and only one was covered when
+    // this was first fixed. The live session proved the gap: the freeze
+    // exemption fired 10,401 times while bodies still sat at 97% frozen frames,
+    // because 1,006 census parks were halting them anyway. One guard inside the
+    // function cannot be forgotten by a fourth caller.
+    if (drivenChars_.find(c) != drivenChars_.end()) {
+        ++freezeSkipDriven_;
+        return -1.0f;
+    }
     // v38 pack-hidden fix: existence culling exempts census-present NPCs, but
     // both clients then run INDEPENDENT sims of the same body - the join's
     // copy can stand somewhere the host's copy isn't (the "pack hidden" save:
