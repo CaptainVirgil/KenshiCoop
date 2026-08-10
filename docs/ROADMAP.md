@@ -8,13 +8,14 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`fork-6` is the last public release. Everything since is unreleased — and the next release is `v0.50`, not `fork-8`.**
+**`v0.51` is the last public release, and it is the first build shaped by a
+session two humans actually played on two machines.**
 
 | | |
 |---|---|
-| Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1 |
-| Public release | `fork-6` — three assets (per-OS archive + the kit zip the updaters resolve). The last release made while this was still a fork |
-| Local build | protocol 56, installed on both the Steam install and `~/Kenshi-Join`. Ships as **`v0.50`** — the first release under the project's own identity |
+| Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1. `v0.50` and `v0.51` interoperate; only the updated side gets v0.51's fixes |
+| Public release | `v0.51` — five assets (per-OS archive, the kit zip the updaters resolve, and both updater scripts) |
+| Local build | protocol 56, installed on the Steam install; sha256 checked against the gated artifact |
 | Gate | 733 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
 | Interop | **`fork-6` will NOT connect to the current build** — protocol 54 vs 56. The handshake compares `PROTOCOL_VERSION`, not the label, and a mismatch is a hard reject |
 
@@ -92,12 +93,8 @@ Still open, in cost order:
 
 ## Open decisions (cheap, need Virgil)
 
-- **Cut `v0.50`, or hold.** A large amount landed 2026-08-08/09 and none of
-  it has been released: the instruction audit, ENet pin + stamp, the
-  full-include-path header scan, the Windows DOA checks, the entity-batch
-  receive clamp with `netlinktest`, then the played-session fixes (inventory
-  cadence, drive catch-up, mid-band keepalive, the freeze-vs-drive collision,
-  damage floaters) and weather sync. fork-7 predates all of it.
+- ~~**Cut `v0.50`, or hold.**~~ **Done** — `v0.50` shipped 2026-08-09, then
+  `v0.51` the same night with the fixes the two-machine session produced.
   **Protocol is now 56**, so this is a hard cut: both players must update the
   same day. Since the bump is already spent, item 28's census `truncated` flag
   should land BEFORE the release rather than waiting for a bump of its own.
