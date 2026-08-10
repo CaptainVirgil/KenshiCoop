@@ -23,6 +23,12 @@
 // is not needed.
 class WeatherSystem { public: static WeatherSystem* getInstance(); };
 
+// WeatherRegion needs NO re-declaration here: the known duplicate definition
+// in PhysicsCollection.h (the very trap that makes kenshi/Weather.h
+// un-includable) arrives via the EngineInternal.h prelude, and it carries
+// setCurrentSeason with the same RVA (0x9DAC10) as Weather.h's copy. Adding a
+// minimal decl beside WeatherSystem was tried and is a C2011 redefinition.
+
 // Minimal GLOBAL re-declaration of the engine's speech bubble, for the same
 // reason as WeatherSystem above: GetRealAddress resolves through the MANGLED
 // NAME, so the signatures must be spelled exactly as KenshiLib exports them.
@@ -1765,7 +1771,23 @@ const unsigned WX_INST_STRENGTH     = 0x14;
 const unsigned WX_INST_END_MIN      = 0x48;
 const unsigned WX_INST_TIME         = 0x50;
 const unsigned WX_WEATHER_DATA      = 0x08;
-const unsigned WX_SEASON_WEATHERS   = 0x08;
+// Container internals, learned the hard way (2026-08-10). The engine's two
+// container templates BOTH carry an Ogre::STLAllocator base whose virtual
+// destructor defeats empty-base optimisation, so element storage does NOT
+// start at the member offset:
+//   lektor<T>            = vptr@+0x00, u32 count@+0x08, u32 max@+0x0C, T* stuff@+0x10
+//   Ogre::vector<T>::type= vptr@+0x00, T* first@+0x08, T* last@+0x10, T* end@+0x18
+// The original walk treated Season::weathers (lektor @0x08) as {begin,end}
+// pointers at +0x08/+0x10 - which reads the ALLOCATOR VTABLE as "begin" and
+// count|maxSize packed as "end", so its own n>4096 sanity guard fired on
+// every call and the weather channel dropped every packet it ever received.
+// Offsets below are member offset + intra-container offset, and every walk
+// bounds on COUNT, never on pointer subtraction.
+const unsigned WX_REG_SEASONS_FIRST = 0x10; // WeatherRegion::seasons(@0x08).first
+const unsigned WX_REG_SEASONS_LAST  = 0x18; // WeatherRegion::seasons(@0x08).last
+const unsigned WX_SEASON_W_COUNT    = 0x10; // Season::weathers(@0x08).count
+const unsigned WX_SEASON_W_ARR      = 0x18; // Season::weathers(@0x08).stuff
+const unsigned WX_WEATHER_SEASON    = 0xA8; // Weather::season (owning Season*)
 
 template <typename T> T  fieldGet(void* base, unsigned off) {
     return *(T*)((char*)base + off);
@@ -1777,6 +1799,9 @@ template <typename T> void fieldSet(void* base, unsigned off, T v) {
 typedef void* (*WeatherGetInstFn)();
 WeatherGetInstFn g_weatherInstFn = 0;
 int              g_weatherResolved = 0; // 0 untried, 1 ok, -1 failed
+// x64 member call: this in RCX - same shape as the bubble hooks' originals.
+typedef void (__fastcall* WxSetSeasonFn)(void* self, int seasonIndex, int seasonEnd);
+WxSetSeasonFn    g_wxSetSeasonFn = 0;   // null -> raw-write fallback, never disables
 
 // The stringID of a Weather*, via its GameData. Empty on any fault.
 void weatherSidOf(void* w, char* out, unsigned cap) {
@@ -1815,32 +1840,89 @@ bool readWeatherSeh(void* r, WeatherRead* out) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return false; }
 }
 
-// Find OUR Weather* with this stringID in the current season's table.
-void* findWeatherBySidSeh(void* r, const char* want) {
+// One season's weather table, bounded on COUNT (see the lektor layout note at
+// the offset block - bounding on pointer subtraction is the bug this replaces).
+void* seasonFindSidSeh(void* season, const char* want) {
+    if (!season) return 0;
+    const unsigned n = fieldGet<unsigned>(season, WX_SEASON_W_COUNT);
+    if (n == 0 || n > 256) return 0; // 256: obviously-bad read, skip the season
+    void** arr = fieldGet<void**>(season, WX_SEASON_W_ARR);
+    if (!arr) return 0;
+    char sid[64];
+    for (unsigned i = 0; i < n; ++i) {
+        if (!arr[i]) continue;
+        weatherSidOf(arr[i], sid, sizeof(sid));
+        if (sid[0] && strcmp(sid, want) == 0) return arr[i];
+    }
+    return 0;
+}
+
+// Find OUR Weather* with this stringID, searching EVERY season of the region -
+// a cross-season packet's sid legitimately lives in a season we are not in.
+// The sender's seasonIndex is searched FIRST: the same sid can exist in
+// several seasons (Weather objects are per-(GameData,Season); the sid is the
+// shared GameData's), and a first-match walk in file order would resolve an
+// ambiguous sid into the wrong season. *outSeasonIdx reports where the match
+// was found (-1 = not found / no preference honoured).
+void* findWeatherBySidSeh(void* r, const char* want, int preferIdx, int* outSeasonIdx) {
+    if (outSeasonIdx) *outSeasonIdx = -1;
     __try {
-        void* season = fieldGet<void*>(r, WX_REG_SEASON);
-        if (!season || !want || !want[0]) return 0;
-        // lektor<Weather*> is the engine's vector: {T* begin; T* end; ...}.
-        void** first = fieldGet<void**>(season, WX_SEASON_WEATHERS);
-        void** last  = fieldGet<void**>(season, WX_SEASON_WEATHERS + sizeof(void*));
-        if (!first || !last || last < first) return 0;
-        const unsigned n = (unsigned)(last - first);
-        if (n > 4096) return 0; // obviously-bad read; bail rather than walk it
-        char sid[64];
-        for (unsigned i = 0; i < n; ++i) {
-            if (!first[i]) continue;
-            weatherSidOf(first[i], sid, sizeof(sid));
-            if (sid[0] && strcmp(sid, want) == 0) return first[i];
+        if (!r || !want || !want[0]) return 0;
+        void** sFirst = fieldGet<void**>(r, WX_REG_SEASONS_FIRST);
+        void** sLast  = fieldGet<void**>(r, WX_REG_SEASONS_LAST);
+        if (!sFirst || !sLast || sLast < sFirst) return 0;
+        const unsigned nS = (unsigned)(sLast - sFirst);
+        if (nS == 0 || nS > 64) return 0; // regions hold a handful of seasons
+        // Pass A: the sender's season, if it exists here.
+        if (preferIdx >= 0 && (unsigned)preferIdx < nS) {
+            void* w = seasonFindSidSeh(sFirst[preferIdx], want);
+            if (w) { if (outSeasonIdx) *outSeasonIdx = preferIdx; return w; }
+        }
+        // Pass B: everything else.
+        for (unsigned si = 0; si < nS; ++si) {
+            if (preferIdx >= 0 && si == (unsigned)preferIdx) continue;
+            void* w = seasonFindSidSeh(sFirst[si], want);
+            if (w) { if (outSeasonIdx) *outSeasonIdx = (int)si; return w; }
         }
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) { noteFault(FAULT_WEATHER); return 0; }
 }
 
-bool applyWeatherSeh(void* r, void* w, const WeatherRead* in, bool* outChanged) {
+bool applyWeatherSeh(void* r, void* w, const WeatherRead* in, int foundSeasonIdx,
+                     bool* outChanged) {
     __try {
         void* wi = fieldGet<void*>(r, WX_REG_INSTANCE);
         if (!wi) return false;
         bool ch = false;
+        // Season FIRST, and through the engine's own setter. The raw int
+        // writes this replaces never repointed currentSeason (@0x38), so a
+        // cross-season packet left the region's index saying one season while
+        // its Season* pointed at another. setCurrentSeason's full behaviour is
+        // unverified (it may roll a fresh weather via getNewSeason) - which is
+        // exactly why it runs BEFORE the instance writes below: whatever it
+        // does to the weather, our write lands last. Fallback if it misbehaves
+        // live: derive the Season* from the walk's outSeasonIdx and raw-write
+        // currentSeason + the two ints here instead.
+        {
+            const int wantIdx = (foundSeasonIdx >= 0) ? foundSeasonIdx
+                                                      : in->seasonIndex;
+            const int curIdx = fieldGet<int>(r, WX_REG_SEASON_IDX);
+            if (curIdx != wantIdx) {
+                if (g_wxSetSeasonFn) {
+                    g_wxSetSeasonFn(r, wantIdx, in->seasonEndDay);
+                } else {
+                    // Unresolved setter: legacy raw writes (currentSeason
+                    // stays stale, exactly as before this fix).
+                    fieldSet<int>(r, WX_REG_SEASON_IDX, wantIdx);
+                    fieldSet<int>(r, WX_REG_SEASON_END, in->seasonEndDay);
+                }
+                ch = true;
+            } else if (fieldGet<int>(r, WX_REG_SEASON_END) != in->seasonEndDay) {
+                // Same season: the end-day alone is a plain int, safe raw.
+                fieldSet<int>(r, WX_REG_SEASON_END, in->seasonEndDay);
+                ch = true;
+            }
+        }
         if (w && fieldGet<void*>(wi, WX_INST_WEATHER) != w) {
             fieldSet<void*>(wi, WX_INST_WEATHER, w); ch = true;
         }
@@ -1848,10 +1930,9 @@ bool applyWeatherSeh(void* r, void* w, const WeatherRead* in, bool* outChanged) 
         if (fieldGet<float>(wi, WX_INST_STRENGTH) != in->strength)       { fieldSet<float>(wi, WX_INST_STRENGTH, in->strength);       ch = true; }
         if (fieldGet<int>  (wi, WX_INST_END_MIN)  != in->endTimeMinutes) { fieldSet<int>  (wi, WX_INST_END_MIN,  in->endTimeMinutes); ch = true; }
         if (fieldGet<float>(wi, WX_INST_TIME)     != in->weatherTime)    { fieldSet<float>(wi, WX_INST_TIME,     in->weatherTime);    ch = true; }
-        if (fieldGet<int>  (r, WX_REG_SEASON_IDX) != in->seasonIndex)    { fieldSet<int>  (r, WX_REG_SEASON_IDX, in->seasonIndex);    ch = true; }
-        if (fieldGet<int>  (r, WX_REG_SEASON_END) != in->seasonEndDay)   { fieldSet<int>  (r, WX_REG_SEASON_END, in->seasonEndDay);   ch = true; }
         // The engine's own "state moved, re-derive the visuals" flag - the
         // supported way in, rather than calling the private updateWeatherEffects.
+        // Stays LAST.
         if (ch) fieldSet<bool>(r, WX_REG_REQ_EFFECTS, true);
         if (outChanged) *outChanged = ch;
         return true;
@@ -1868,6 +1949,10 @@ void resolveWeather() {
     if (g_weatherResolved != 0) return;
     g_weatherInstFn = (WeatherGetInstFn)KenshiLib::GetRealAddress(
         &WeatherSystem::getInstance);
+    // Non-virtual member with an RVA, same rule as everything else here.
+    // Failure keys nothing: applyWeatherSeh degrades to the raw-write path.
+    g_wxSetSeasonFn = (WxSetSeasonFn)KenshiLib::GetRealAddress(
+        &WeatherRegion::setCurrentSeason);
     g_weatherResolved = g_weatherInstFn ? 1 : -1;
 }
 
@@ -1895,8 +1980,9 @@ bool applyWeather(const WeatherRead& in, int* outWhy) {
         if (outWhy) *outWhy = WEATHER_NO_REGION;
         return false;
     }
-    // An unresolvable stringID means the sender's season table is not ours.
-    // Leave the sky alone rather than writing a half-state: stale beats wrong.
+    // An unresolvable stringID (after searching EVERY season of the region)
+    // means the sender's weather genuinely is not in our data. Leave the sky
+    // alone rather than writing a half-state: stale beats wrong.
     // Fast path, and the case that actually matters: the sender's weather is the
     // one we are ALREADY running. Then the weather pointer needs no change at
     // all, and searching the season table for it is both pointless and - proven
@@ -1911,17 +1997,35 @@ bool applyWeather(const WeatherRead& in, int* outWhy) {
     memset(&mine, 0, sizeof(mine));
     const bool haveMine = readWeatherSeh(r, &mine);
     void* w = 0;
+    int foundIdx = -1; // -1: fast path / not found; season handling then keys
+                       // off in.seasonIndex directly
     if (haveMine && in.sid[0] && strcmp(mine.sid, in.sid) == 0) {
         w = 0;  // same weather: leave WX_INST_WEATHER alone, sync the rest
     } else {
-        w = findWeatherBySidSeh(r, in.sid);
+        w = findWeatherBySidSeh(r, in.sid, in.seasonIndex, &foundIdx);
+        // First-execution telemetry: until 2026-08-10 this walk had NEVER run
+        // to completion in the field (the lektor mis-read tripped its own
+        // sanity guard on every call), so the corrected layout needs live
+        // proof. One line per distinct outcome, not per packet.
+        {
+            static int lastFound = -2; // -2: never logged
+            const int nowFound = w ? foundIdx : -1;
+            if (nowFound != lastFound) {
+                lastFound = nowFound;
+                char b[128];
+                _snprintf(b, sizeof(b) - 1,
+                          "[weather] walk found=%d idx=%d prefer=%d sid='%s'",
+                          w ? 1 : 0, foundIdx, in.seasonIndex, in.sid);
+                b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            }
+        }
         if (in.sid[0] && !w) {
             if (outWhy) *outWhy = WEATHER_NO_SID;
             return false;
         }
     }
     bool changed = false;
-    if (!applyWeatherSeh(r, w, &in, &changed)) return false; // stays WEATHER_FAULT
+    if (!applyWeatherSeh(r, w, &in, foundIdx, &changed)) return false; // stays WEATHER_FAULT
     if (outWhy) *outWhy = changed ? WEATHER_CHANGED : WEATHER_SAME;
     return changed;
 }
