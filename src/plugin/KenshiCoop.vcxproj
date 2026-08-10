@@ -119,6 +119,7 @@
          startPlugin export may exist. (The orphaned NetClient/MainThreadQueue/
          ScenarioApi/Protocol.h stack was deleted in Phase 1.) -->
     <ClCompile Include="Plugin.cpp" />
+    <ClCompile Include="BuildStamp.cpp" />
     <ClCompile Include="CoopLog.cpp" />
     <ClCompile Include="core\Config.cpp" />
     <ClCompile Include="core\CrashDump.cpp" />

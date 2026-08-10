@@ -144,11 +144,14 @@ source order for this reason — it is what makes the two artifacts comparable a
 
 ## Verifying the two builds agree
 
-**The last proof is stale.** It held at `5a7902d` (2026-08-08); since then the generated
-`DepsPin.h` stamp and the map-based loadability check landed on the **Linux script only**
-(`grep -c DEPS_PIN scripts/build_plugin_direct.ps1` → 0, against 7 for the shell script),
-and the stamp changes a string literal's length. No Windows-built DLL has ever shipped.
-Port those two features across before trusting a fresh comparison — roadmap item 46.
+**The last proof is stale.** It held at `5a7902d` (2026-08-08). Since then the generated
+`DepsPin.h` stamp and the post-link checks exist in **both** scripts (an earlier version
+of this paragraph claimed Linux-only — that went stale within a day; check with grep, not
+prose), and as of 2026-08-10 both also generate `KENSHICOOP_BUILD_STAMP` and compile
+`BuildStamp.cpp` unconditionally. The stamps embed timestamps, so `.rdata` will differ by
+string content between any two runs — a byte-for-byte comparison must mask them out.
+No Windows-built DLL has ever shipped, and the Windows port has still never run on a
+real Windows machine. Re-prove before trusting a fresh comparison — roadmap item 46.
 
 The procedure itself is still correct:
 

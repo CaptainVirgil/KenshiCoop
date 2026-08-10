@@ -27,6 +27,7 @@
 #include <deque>
 
 #include "CoopLog.h"
+#include "BuildStamp.h"
 #include "core/Config.h"
 #include "core/CrashDump.h"
 #include "core/OwnRanks.h"
@@ -2263,11 +2264,15 @@ void logStartupBanner() {
         b[sizeof(b) - 1] = '\0';
         coopLog(b);
     }
-    // Build stamp: changes every compile, so the test runner can confirm a fresh
-    // DLL is actually deployed (anti-stale guard) rather than an old cached copy.
+    // Build stamp: the time of the LINK, not of some TU's last compile.
+    // __DATE__/__TIME__ used to sit here, and under the incremental build it
+    // froze - three consecutive releases on 2026-08-10 carried one identical
+    // stamp, and two live "which build is he running?" calls went wrong on it.
+    // kcBuildStamp() reads a value both build scripts regenerate and recompile
+    // unconditionally every run (see BuildStamp.h).
     {
-        char b[96];
-        _snprintf(b, sizeof(b) - 1, "KenshiCoop: build %s %s", __DATE__, __TIME__);
+        char b[128];
+        _snprintf(b, sizeof(b) - 1, "KenshiCoop: build %s", kcBuildStamp());
         b[sizeof(b) - 1] = '\0';
         coopLog(b);
     }
