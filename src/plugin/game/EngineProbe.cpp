@@ -250,6 +250,57 @@ bool installCreateItemTraceHook() {
     return ok == want && want >= 1;
 }
 
+// ---- Buy probe (house-furniture strip, ROADMAP deferred item, step 1) --------
+// Buying a house makes Kenshi strip its pre-placed furniture; the deed channel
+// replicates the ownership and not that consequence, so the peer keeps a
+// furnished house (live 2026-08-10). BuildingInterior - the container the
+// internals live in - is UNDUMPED, so the strip primitive cannot be named from
+// headers. This detour watches the whole purchase transaction instead:
+// Building::buyMeCallback IS the transaction (buyMeAsk shows the dialog;
+// the callback runs on the answer). Logs the building, the dialog result, and
+// getNumInternalBuildings before/after the original - one live purchase then
+// answers WHERE the strip happens (inside the callback or deferred) and how
+// many internals it removes, which is the fact the reproduction path needs.
+// _NV_ wrapper because buyMeCallback is virtual (vtable 0x288); the wrapper is
+// the non-virtual entry GetRealAddress can take, same as hitByMeleeAttack.
+namespace {
+
+typedef void (__fastcall* BuyMeCbFn)(Building* self, int result);
+BuyMeCbFn g_buyMeOrig = 0;
+
+void __fastcall buyMeCb_hook(Building* self, int result) {
+    int before = -1, after = -1;
+    if (self && g_bldNumInternalFn) {
+        __try { before = g_bldNumInternalFn(self); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { before = -2; }
+    }
+    if (g_buyMeOrig) g_buyMeOrig(self, result);
+    if (self && g_bldNumInternalFn) {
+        __try { after = g_bldNumInternalFn(self); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { after = -2; }
+    }
+    char b[192];
+    _snprintf(b, sizeof(b) - 1,
+        "[buyspy] buyMeCallback bld=%p result=%d internals %d -> %d%s",
+        (void*)self, result, before, after,
+        (before > 0 && after == before) ? " (NO strip inside the callback - it is deferred or elsewhere)"
+        : (before > after && after >= 0) ? " (STRIP CONFIRMED inside the callback)"
+        : "");
+    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+}
+
+} // namespace
+
+bool probeInstallBuySpy() {
+    intptr_t a = KenshiLib::GetRealAddress(&Building::_NV_buyMeCallback);
+    if (!a) { coop::logLine("[buyspy] _NV_buyMeCallback did not resolve"); return false; }
+    bool ok = KenshiLib::AddHook(a, (void*)&buyMeCb_hook,
+                                 (void**)&g_buyMeOrig) == KenshiLib::SUCCESS;
+    coop::logLine(ok ? "[buyspy] buyMeCallback detour installed"
+                     : "[buyspy] AddHook FAILED for buyMeCallback");
+    return ok;
+}
+
 int probeReplayWeaponMint(GameWorld* gw, const unsigned int cHand[5]) {
     if (!g_wmHave) { coop::logLine("[mkspy] replay: nothing captured"); return 0; }
     if (!gw || !gw->theFactory || !g_createItemFn || !g_handCtorFn) return 0;

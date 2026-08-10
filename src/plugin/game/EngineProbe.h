@@ -89,6 +89,12 @@ int mintGradedGearForTest(GameWorld* gw, const unsigned int cHand[5], const char
 // Returns 1 round-trip ok / 0 unavailable or empty / -1 native save/load failed.
 int probeNativeSnapshot(GameWorld* gw);
 
+// Buy probe (house-furniture strip investigation): detour on
+// Building::buyMeCallback logging internals-count before/after the purchase
+// transaction. Harness-only like everything in this TU; installed at startup
+// when KENSHICOOP_BUY_PROBE=1.
+bool probeInstallBuySpy();
+
 } // namespace engine
 } // namespace coop
 

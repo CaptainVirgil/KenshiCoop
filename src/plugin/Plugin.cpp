@@ -56,6 +56,7 @@
 #include "sync/SaveXfer.h"
 #ifdef KENSHICOOP_HARNESS
 #include "test/Scenario.h" // scenario runner: Harness/Debug builds only (Phase 1)
+#include "game/EngineProbe.h" // buy probe install (KENSHICOOP_BUY_PROBE=1)
 #endif
 
 namespace {
@@ -2626,6 +2627,16 @@ void installEngineDetours() {
         else
             coopLog("[shop] FAILED to install buyItem detour; purchase logging off");
     }
+
+#ifdef KENSHICOOP_HARNESS
+    // Buy probe (house-furniture strip investigation, ROADMAP deferred item):
+    // env-gated, default OFF - it is a research detour, not a sync channel.
+    // Harness-only because EngineProbe.cpp is Release-excluded.
+    {
+        const char* bp = getenv("KENSHICOOP_BUY_PROBE");
+        if (bp && bp[0] == '1') coop::engine::probeInstallBuySpy();
+    }
+#endif
 
     // Cross-owner trade veto (KENSHICOOP_BLOCK_XFER, default ON in real sessions):
     // refuse a UI inventory drag whose source + destination squad characters are

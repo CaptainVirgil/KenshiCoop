@@ -100,7 +100,7 @@ $enetPin = Get-GitPin (Join-Path $repo "third_party\enet\enet") @("--always","--
 # unconditionally - a stamp read by an incrementally-skipped TU is exactly the
 # lie the old __DATE__/__TIME__ banner told. Keep in lockstep with
 # build_plugin.sh.
-$repoPin    = Get-GitPin $repo @("--always","--dirty")
+$repoPin    = Get-GitPin $repo @("--tags","--always","--dirty") # --tags: gh release tags are lightweight
 $buildStamp = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $repoPin
 $genDir = Join-Path $repo "build\generated"
 New-Item -ItemType Directory -Force -Path $genDir | Out-Null
