@@ -1545,22 +1545,26 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // suspended while that word is FRESH; release only once the
                 // stream has actually gone quiet, which is the old behaviour and
                 // still the right answer for a body nobody is describing.
-                // Gated on aiSuspend_ for two reasons, both load-bearing. Without
-                // the suspend the hold achieves nothing - local AI keeps writing the
-                // body and the two-writer problem this exists to solve is untouched,
-                // so releasing is strictly better. And g_aiSuspended is rebuilt each
-                // tick by a clearAiSuspend() that is ITSELF gated on aiSuspend_: an
-                // unguarded insert here would go into a set nothing ever empties and
-                // freeze the body for the rest of the session.
-                const bool freshWord =
-                    aiSuspend_ &&
-                    (newestMs != 0) && ((now - newestMs) <= MID_STILL_HOLD_MS);
-                if (freshWord) {
-                    engine::addAiSuspend(c);
-                    lifeSet(it->first, LIFE_PARKED, "mid-rest-held");
-                    debugMark(c, 2, lifeName(LIFE_PARKED));
-                    continue;   // stays in drivenChars_: it is still ours to hold
-                }
+                // TRIED AND REVERTED, v0.51 -> v0.52 (2026-08-10, live session).
+                // The idea was to keep a still mid body DRIVEN with its AI
+                // suspended while a fresh keepalive was in hand, instead of
+                // releasing it to local AI - on the reasoning that local AI runs
+                // the NPC's schedule (doors at night) rather than idling.
+                //
+                // It made the thing it targeted worse, measured within three
+                // minutes: [ai] suspended fell from 23/123 to 1/101, and the
+                // player reported door spam spreading from night-only to daytime.
+                // Holding here `continue`s past the uniform suspend below, so a
+                // body caught by the hold got its AI quieted for that tick and
+                // then, the moment the hold lapsed, was released WITHOUT passing
+                // through the release path's own bookkeeping - net fewer suspended
+                // bodies, not more. The release below is deliberate and its
+                // comment block explains what breaks without it.
+                //
+                // The real defect this was chasing is still open: ~100 driven
+                // bodies run local AI alongside the peer's stream. Fixing it means
+                // changing what the RELEASE does, not adding a second path that
+                // races it.
                 drivenChars_.erase(c);
                 drivenSeen_.erase(c); // wide pass may census-park it again
                 d.parked = false; d.haveDest = false;

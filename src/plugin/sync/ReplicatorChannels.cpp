@@ -2572,11 +2572,27 @@ void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
     // publish cadence, so they are rate-limited to one line per distinct reason.
     if (wrote || why != weatherLastWhy_) {
         weatherLastWhy_ = why;
-        char b[208];
+        // On a sid miss, say what WE have too. The lookup searches the receiver's
+        // CURRENT season table only, so the interesting question is whether our
+        // season differs from the sender's - in which case the incoming sid is
+        // absent for a structural reason and cannot resolve until the seasons
+        // agree. Without both sides on one line this is a guess.
+        char mineDesc[96]; mineDesc[0] = '\0';
+        if (why == engine::WEATHER_NO_SID) {
+            engine::WeatherRead mine;
+            memset(&mine, 0, sizeof(mine));
+            if (engine::readWeather(&mine))
+                _snprintf(mineDesc, sizeof(mineDesc) - 1, " ours='%s' ourSeason=%d",
+                          mine.sid, mine.seasonIndex);
+            else
+                _snprintf(mineDesc, sizeof(mineDesc) - 1, " ours=<unreadable>");
+            mineDesc[sizeof(mineDesc) - 1] = '\0';
+        }
+        char b[320];
         _snprintf(b, sizeof(b) - 1,
-                  "[weather] %s '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  "[weather] %s '%s' str=%.2f eff=%.2f end=%d season=%d%s",
                   WHY[why], wr.sid, (double)wr.strength, (double)wr.effectStrength,
-                  wr.endTimeMinutes, wr.seasonIndex);
+                  wr.endTimeMinutes, wr.seasonIndex, mineDesc);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
 }
