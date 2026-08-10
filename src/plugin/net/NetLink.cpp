@@ -125,7 +125,8 @@ NetLink::NetLink()
     : isHost_(false), port_(0),
       enetHost_(0), serverPeer_(0), inbound_(0),
       outOwner_(0), outStampMs_(0), haveOut_(false),
-      thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0), myId_(0),
+      thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0),
+      negotiated_(0), myId_(0),
       sendEpoch_(0),
       steamPeer_(0),
       unknownPkts_(0), unknownLogMs_(0),
@@ -413,9 +414,16 @@ void NetLink::threadLoop() {
     if (steam) {
         if (steamp2p::installEnetHooks(port_)) {
             netLog("transport=steam (ENet tunnelled over Steam P2P)");
+            InterlockedExchange(&negotiated_, (LONG)TRANSPORT_STEAM);
         } else {
             netErr("steam transport requested but hooks failed; falling back to UDP");
+            // The demotion the config layer never sees: g_cfg still says steam,
+            // but every byte from here on rides plain UDP. negotiated_ is how
+            // the panel and the log tell the truth about it.
+            InterlockedExchange(&negotiated_, (LONG)TRANSPORT_UDP);
         }
+    } else {
+        InterlockedExchange(&negotiated_, (LONG)TRANSPORT_UDP);
     }
 
     if (isHost_) {
@@ -1794,6 +1802,16 @@ void NetLink::threadLoop() {
                 // 2 ms. Re-armed on recovery so a long stall reports once, and
                 // escalating so an ongoing freeze keeps stamping the log until the
                 // process dies - the last line then bounds how long it hung.
+                // Relay refinement: steam-direct vs steam-relay, from the
+                // cached session state (same thread writes it). Both directions
+                // - Valve can insert or drop the relay mid-session.
+                {
+                    const LONG cur = negotiated_;
+                    if (cur == (LONG)TRANSPORT_STEAM && steamp2p::usingRelay())
+                        InterlockedExchange(&negotiated_, (LONG)TRANSPORT_STEAM_RELAY);
+                    else if (cur == (LONG)TRANSPORT_STEAM_RELAY && !steamp2p::usingRelay())
+                        InterlockedExchange(&negotiated_, (LONG)TRANSPORT_STEAM);
+                }
                 const unsigned long stalled = coop::mainThreadStalledMs();
                 if (stalled >= 5000) {
                     if (!mainStallActive_ || (stalled - mainStallLastMs_) >= 15000) {

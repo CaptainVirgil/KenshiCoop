@@ -39,6 +39,11 @@ SteamId selfId();
 // and allows Valve-relay fallback. Call before the net thread starts.
 void setPeer(SteamId id);
 
+// True when the last observed session state showed a Valve relay in the
+// path. Written and read on the NET thread (logSessionState / NetLink's 5 s
+// tick), so no atomics; a one-beat-stale answer only delays a log label.
+bool usingRelay();
+
 // Accept an inbound P2P session from a specific SteamID. Used by the Steam
 // invite layer's P2PSessionRequest_t callback so a session opens even if the
 // request arrives before setPeer() pre-accepts it. No-op until init() succeeds.

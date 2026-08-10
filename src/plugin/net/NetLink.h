@@ -226,6 +226,20 @@ public:
     int  lastFault()   const { return (int)faultKind_; }
     u32  peerVersion() const { return (u32)faultPeerVer_; }
     void clearFault()  { InterlockedExchange(&faultKind_, (LONG)FAULT_NONE); }
+    // What the socket layer is ACTUALLY doing, as opposed to what the config
+    // asked for. Three demotion points can silently turn a requested Steam
+    // transport into plain UDP, and the third (installEnetHooks failing on
+    // this thread) never wrote anything back - so the panel kept saying
+    // "Steam" over a UDP socket on 2026-08-10. Written by the NET thread,
+    // read by the panel; TRANSPORT_STEAM upgrades to _RELAY when the Steam
+    // session reports a Valve relay in the path.
+    enum Negotiated {
+        TRANSPORT_UNKNOWN = 0, // net thread not started / not yet decided
+        TRANSPORT_UDP,
+        TRANSPORT_STEAM,       // Steam P2P tunnel, direct (NAT punch)
+        TRANSPORT_STEAM_RELAY  // Steam P2P tunnel via a Valve relay
+    };
+    int negotiatedTransport() const { return (int)negotiated_; }
     // host = 0; client = id from WELCOME. myId_ is written by the NET thread when
     // the WELCOME arrives and read here on the MAIN thread, so it is a volatile
     // LONG written via InterlockedExchange; an aligned 32-bit volatile read is
@@ -369,6 +383,7 @@ private:
     // the panel. Volatile LONG + Interlocked for the same reason as myId_.
     volatile LONG faultKind_;
     volatile LONG faultPeerVer_;
+    volatile LONG negotiated_;  // Negotiated enum; same write/read rules
     // Written by the NET thread on WELCOME (InterlockedExchange) and read on the
     // MAIN thread via localId(); volatile LONG so the read is atomic + uncached.
     volatile LONG myId_;

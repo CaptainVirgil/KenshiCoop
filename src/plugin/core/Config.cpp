@@ -447,7 +447,13 @@ std::string describeConfig(const Config& c) {
     std::string s = "KenshiCoop: effective cfg";
     s += " scenario='" + c.scenario + "'";
     if (!c.setupScene.empty()) s += " setup='" + c.setupScene + "'";
-    s += " transport=" + c.transport;
+    // transportCfg, not transport: this line reports what the CONFIG asked
+    // for, and the negotiated reality can differ (Steam demoted to UDP by a
+    // missing peer id, a failed steamp2p init, or hooks failing on the net
+    // thread). The negotiated answer lives in the [net] transport= line and
+    // the panel's Connected suffix. On 2026-08-10 this field, read as fact,
+    // produced a wrong "you switched to Steam" call - name intent as intent.
+    s += " transportCfg=" + c.transport;
     struct Flag { const char* name; bool on; };
     const Flag flags[] = {
         { "inv",     c.invSync },      { "xfer",    c.xferSync },

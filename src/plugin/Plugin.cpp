@@ -802,7 +802,22 @@ void coopPanelDrive() {
     int ostate;
     char nb[224];
     if (g_peerPresent) {
-        detail = g_cfg.isHost ? "Connected - peer joined" : "Connected to host";
+        // Say what the socket layer is ACTUALLY doing, not what the config
+        // asked for - the hooks-failed demotion happens on the net thread and
+        // never writes g_cfg.transport back, so on 2026-08-10 the panel said
+        // Steam over a session that was plain UDP the whole time.
+        const char* via = "";
+        switch (g_net.negotiatedTransport()) {
+        case coop::NetLink::TRANSPORT_UDP:         via = " (UDP)"; break;
+        case coop::NetLink::TRANSPORT_STEAM:       via = " (Steam direct)"; break;
+        case coop::NetLink::TRANSPORT_STEAM_RELAY: via = " (Steam relay)"; break;
+        default: break; // UNKNOWN: net thread mid-start, say nothing
+        }
+        _snprintf(nb, sizeof(nb) - 1, "%s%s",
+                  g_cfg.isHost ? "Connected - peer joined" : "Connected to host",
+                  via);
+        nb[sizeof(nb) - 1] = '\0';
+        detail = nb;
         ostate = 2;
     } else if (g_net.lastFault() == coop::NetLink::FAULT_VERSION) {
         _snprintf(nb, sizeof(nb) - 1,

@@ -258,6 +258,10 @@ void spikeTick() {
 
 // ---- Public API ---------------------------------------------------------------
 
+bool usingRelay() {
+    return g_haveLastState && g_lastState.usingRelay != 0;
+}
+
 bool init() {
     if (g_ready) return true;
 
