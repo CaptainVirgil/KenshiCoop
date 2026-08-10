@@ -1805,7 +1805,20 @@ struct WeatherRead {
 bool readWeather(WeatherRead* out);
 // Returns true when something was actually changed (so the caller can log an
 // edge rather than every beat). A name that does not resolve returns false.
-bool applyWeather(const WeatherRead& in);
+//
+// `outWhy` distinguishes the four ways this returns false, which are otherwise
+// indistinguishable at the call site - and were, on 2026-08-10: the host logged
+// four [weather] SEND and the join logged nothing at all, so "never arrived" and
+// "arrived and was dropped" could not be told apart from the receiver's log.
+enum WeatherWhy {
+    WEATHER_CHANGED = 0,   // applied, sky moved
+    WEATHER_NO_SYSTEM,     // WeatherSystem::getInstance never resolved
+    WEATHER_NO_REGION,     // no active WeatherRegion on this client right now
+    WEATHER_NO_SID,        // the sender's stringID is not in OUR season table
+    WEATHER_FAULT,         // the field write faulted (see FAULT_WEATHER)
+    WEATHER_SAME           // resolved fine, nothing differed - the healthy no-op
+};
+bool applyWeather(const WeatherRead& in, int* outWhy = 0);
 
 struct DeedRead {
     unsigned int hand[5]; // [type, container, containerSerial, index, serial]

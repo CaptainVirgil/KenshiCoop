@@ -675,7 +675,8 @@ void Replicator::applyTargets(GameWorld* gw) {
                 continue;
             } else if (localKind == 1 && hostMoving &&
                        (d.furnEnterHoldMs == 0 ||
-                        (long)(now - d.furnEnterHoldMs) >= 0)) {
+                        ((long)(now - d.furnEnterHoldMs) >= 0 &&
+                         d.interp.newestMs() > d.furnEnterSample))) {
                 // Bed fast-exit (conscious sleep wake): a bed pose has NO
                 // reliable EXIT edge (publishOwned suppresses furniture edges
                 // while taskIsBedPose), so a host that wakes and WALKS would
@@ -694,9 +695,12 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // landed: `hostMoving` comes off the delayed sample, so right after
                 // the peer lays a KO'd body into a bed the stale batch still shows
                 // its carrier walking, and this would dump the body back on the
-                // floor. furnEnterHoldMs keeps the fast path for the case it exists
-                // for and stands down for the window where the event is newer than
-                // the stream.
+                // floor. The hold keeps the fast path for the case it exists for and
+                // stands down while the event is newer than the stream - and it takes
+                // BOTH terms to know that: wall clock says the window elapsed, and
+                // `newestMs() > furnEnterSample` says a sample actually arrived in it.
+                // Time alone expires against the very snapshot it is waiting out,
+                // which is what put a body on the floor at 78 ms RTT on 2026-08-10.
                 bool ok = engine::applyFurniture(gw, c, lfr.furn, 1, false);
                 engine::endAction(c);
                 d.furnNoSeeTick = 0;
@@ -1521,6 +1525,41 @@ void Replicator::applyTargets(GameWorld* gw) {
                     if (d.walkBranchPrev || d.restEnterMs == 0) d.restEnterMs = now;
                     applyRest(c, d, out, haveActual, ax, ay, az, now, isSquad);
                     d.walkBranchPrev = false;
+                }
+                // HOLD it, do not hand it back to local AI, as long as the owner
+                // is still telling us where it is.
+                //
+                // The release exists so a far body can "idle naturally between
+                // host movements". It does not idle - local AI runs the NPC's
+                // SCHEDULE. Measured live 2026-08-10 on a real two-machine
+                // session: only 23 of 123 driven bodies had suspended AI, so
+                // ~100 bodies were being written by the peer's stream AND
+                // running their own AI at once. At night that schedule is
+                // go-home-and-sleep, which means pathing through doors, which is
+                // why the town's doors flapped open and shut all night with
+                // nothing reconciling them (the door channel was silent).
+                //
+                // The keepalive shipped in v0.50 is what makes holding correct:
+                // a stationary mid body now has its pose on the wire, so we know
+                // where the owner says it is rather than guessing. Keep the AI
+                // suspended while that word is FRESH; release only once the
+                // stream has actually gone quiet, which is the old behaviour and
+                // still the right answer for a body nobody is describing.
+                // Gated on aiSuspend_ for two reasons, both load-bearing. Without
+                // the suspend the hold achieves nothing - local AI keeps writing the
+                // body and the two-writer problem this exists to solve is untouched,
+                // so releasing is strictly better. And g_aiSuspended is rebuilt each
+                // tick by a clearAiSuspend() that is ITSELF gated on aiSuspend_: an
+                // unguarded insert here would go into a set nothing ever empties and
+                // freeze the body for the rest of the session.
+                const bool freshWord =
+                    aiSuspend_ &&
+                    (newestMs != 0) && ((now - newestMs) <= MID_STILL_HOLD_MS);
+                if (freshWord) {
+                    engine::addAiSuspend(c);
+                    lifeSet(it->first, LIFE_PARKED, "mid-rest-held");
+                    debugMark(c, 2, lifeName(LIFE_PARKED));
+                    continue;   // stays in drivenChars_: it is still ours to hold
                 }
                 drivenChars_.erase(c);
                 drivenSeen_.erase(c); // wide pass may census-park it again

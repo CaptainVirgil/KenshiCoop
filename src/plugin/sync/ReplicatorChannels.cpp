@@ -803,6 +803,24 @@ void Replicator::publishDoors(const SyncContext& ctx) {
     const unsigned long SAMPLE_MS = tuning_.doorSampleMs;  // doors move in clicks; 1 Hz is plenty
     const unsigned long RESEND_MS = tuning_.doorResendMs;  // safety resend for rows we ever sent
     unsigned long now = nowMs();
+    // Rollup first, and unconditionally: "nothing happened" is precisely the answer
+    // the two conditional [door] lines cannot give, and it is the answer a silent
+    // flapping-door report needs. Runs before the sample gate so a channel that is
+    // enabled and idle still says so once every 30 s.
+    if (doorRollupMs_ == 0) doorRollupMs_ = now;
+    if (now - doorRollupMs_ >= 30000) {
+        char rb[208];
+        _snprintf(rb, sizeof(rb) - 1,
+                  "[door] rollup sent=%lu (resend=%lu) recv=%lu applied=%lu"
+                  " nohand=%lu converged=%lu over=%lus",
+                  doorSent_, doorResent_, doorRecv_, doorApplied_,
+                  doorNoHand_, doorConverged_,
+                  (unsigned long)((now - doorRollupMs_) / 1000));
+        rb[sizeof(rb) - 1] = '\0'; coop::logLine(rb);
+        doorSent_ = doorResent_ = doorRecv_ = 0;
+        doorNoHand_ = doorConverged_ = doorApplied_ = 0;
+        doorRollupMs_ = now;
+    }
     if (!sync::gateSampleDue(now, doorSampleMs_, SAMPLE_MS)) return;
     doorSampleMs_ = now;
 
@@ -876,6 +894,8 @@ void Replicator::publishDoors(const SyncContext& ctx) {
         pkt.open    = (u8)(r.open ? 1 : 0);
         pkt.locked  = (u8)(r.locked ? 1 : 0);
         net.queueDoor(pkt);
+        ++doorSent_;
+        if (!changed) ++doorResent_;
         if (changed) { // resends stay silent; the change is the signal
             char b[160];
             _snprintf(b, sizeof(b) - 1,
@@ -905,14 +925,20 @@ void Replicator::applyDoors(const SyncContext& ctx) {
         dr.knownOpen = (int)p.open; dr.knownLocked = (int)p.locked;
         dr.seeded = true;
         dr.holdUntilMs = nowMs() + tuning_.doorEchoHoldMs;
+        ++doorRecv_;
         engine::DoorRead cur;
-        if (!engine::readDoorByHand(p.hand, &cur))
+        if (!engine::readDoorByHand(p.hand, &cur)) {
+            ++doorNoHand_;
             continue; // out-of-interest or runtime door - accepted edge
+        }
         bool lockMoves = cur.hasLock && (cur.locked != (int)p.locked);
-        if (cur.open == (int)p.open && !lockMoves)
+        if (cur.open == (int)p.open && !lockMoves) {
+            ++doorConverged_;
             continue; // already converged (resend or echo)
+        }
         bool ok = engine::writeDoorByHand(p.hand, (int)p.open,
                                           cur.hasLock ? (int)p.locked : -1, 0);
+        ++doorApplied_;
         char b[176];
         _snprintf(b, sizeof(b) - 1,
                   "[door] RECV hand=%u.%u.%u.%u.%u open=%u locked=%u was=%d/%d ok=%d seq=%u",
@@ -2530,12 +2556,26 @@ void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
     wr.seasonIndex    = newest->seasonIndex;
     wr.seasonEndDay   = newest->seasonEndDay;
     wr.valid          = true;
-    // Logs only the EDGE: applyWeather returns true when it actually wrote
-    // something, so a matching sky is silent.
-    if (engine::applyWeather(wr)) {
-        char b[160];
-        _snprintf(b, sizeof(b) - 1, "[weather] APPLY '%s' str=%.2f eff=%.2f end=%d season=%d",
-                  wr.sid, (double)wr.strength, (double)wr.effectStrength,
+    // Every outcome is logged, not only the write. This channel used to log the
+    // EDGE alone, so a receiver that dropped every packet produced a log
+    // indistinguishable from one that never received any - which is exactly the
+    // state the 2026-08-10 session left us in, with four [weather] SEND on the
+    // host and nothing whatsoever on the join. A silent drop is an undiagnosable
+    // drop; absence is not evidence.
+    int why = engine::WEATHER_FAULT;
+    bool wrote = engine::applyWeather(wr, &why);
+    static const char* WHY[] = { "APPLY", "no-weather-system", "no-active-region",
+                                 "sid-not-in-our-table", "field-write-faulted",
+                                 "already-matching" };
+    if (why < 0 || why > 5) why = engine::WEATHER_FAULT;
+    // The write is an edge worth seeing every time; the no-ops repeat at the
+    // publish cadence, so they are rate-limited to one line per distinct reason.
+    if (wrote || why != weatherLastWhy_) {
+        weatherLastWhy_ = why;
+        char b[208];
+        _snprintf(b, sizeof(b) - 1,
+                  "[weather] %s '%s' str=%.2f eff=%.2f end=%d season=%d",
+                  WHY[why], wr.sid, (double)wr.strength, (double)wr.effectStrength,
                   wr.endTimeMinutes, wr.seasonIndex);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }

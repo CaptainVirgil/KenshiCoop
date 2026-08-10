@@ -50,10 +50,13 @@ The roster is `grep -n healDue src/plugin/sync/ReplicatorDrive.cpp`. Every heal 
 the delayed stream must go through it, must reset on every path that makes the condition
 moot (a `*SeeTick` left armed is a heal that never fires again), and needs both halves.
 
-One known exception, and it is a live instance of the very pattern warned about above: the
-bed **fast-exit** does not use `healDue()`. It gates on `furnEnterHoldMs`, an absolute
-wall-clock deadline stamped once at pickup — time-only, with no stream-progress term.
-Treat it as debt, not as the example to copy.
+The bed **fast-exit** is armed by an event rather than by a sighting, so it does not call
+`healDue()` — but it applies the same two terms inline: `furnEnterHoldMs` (the wall-clock
+deadline) *and* `interp.newestMs() > furnEnterSample` (a sample actually arrived inside
+that window). It used to be time-only, which is how a body landed on the floor at 78 ms
+RTT on 2026-08-10 while its owner saw it in bed — the deadline expired against the very
+snapshot it existed to wait out. **A hold armed by an event still needs the stream term;
+wall clock alone is not a debounce.**
 
 ### 3. Who authors this?
 

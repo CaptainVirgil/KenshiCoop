@@ -892,8 +892,13 @@ private:
         unsigned long chainSeeSample;  // as carrySeeSample, for the shackle relock
         unsigned long chainNoSeeTick;
         // Set when a reliable furniture ENTER is applied: the bed fast-exit must not
-        // undo it on the strength of a sample older than the event.
+        // undo it on the strength of a sample older than the event. `furnEnterHoldMs`
+        // is the wall-clock deadline; `furnEnterSample` is `interp.newestMs()` as it
+        // stood when the event landed. BOTH must be past before the fast-exit may
+        // fire - wall clock alone expires against the very sample it exists to wait
+        // out, because sample() re-serves one snapshot for seconds.
         unsigned long furnEnterHoldMs;
+        unsigned long furnEnterSample;
         // Stealth sync (protocol 20):
         unsigned long sneakTick;      // last setStealthMode apply (mode-flap throttle)
         // Prone posture sync (protocol 53):
@@ -947,7 +952,8 @@ private:
                    furnHealTick(0), furnSeeTick(0), furnSeeSample(0), furnNoSeeTick(0),
                    furnPeerTick(0),
                    haveChainOwner(false), chainHealTick(0),
-                   chainSeeTick(0), chainSeeSample(0), chainNoSeeTick(0), furnEnterHoldMs(0),
+                   chainSeeTick(0), chainSeeSample(0), chainNoSeeTick(0),
+                   furnEnterHoldMs(0), furnEnterSample(0),
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
@@ -1893,6 +1899,14 @@ private:
     std::map<Key, DoorRow> doorRows_;
     u32           doorSeqOut_;
     unsigned long doorSampleMs_;
+    // Door channel telemetry. BOTH [door] lines are conditional - SEND logs only on
+    // a change, RECV only for a hand that resolves AND disagrees - so an empty
+    // channel and a busy one that resolves to nothing have always looked identical
+    // in the log. On 2026-08-10 that silence was read as "the host is not
+    // publishing", which the log could not actually support. These counters can.
+    unsigned long doorSent_, doorResent_, doorRecv_;
+    unsigned long doorNoHand_, doorConverged_, doorApplied_;
+    unsigned long doorRollupMs_;
     bool          doorSync_;
     // Protocol 27 placed-building sync. OwnBuild = a building WE placed
     // (registered from the local placement edge; we are its progress
@@ -2396,6 +2410,9 @@ private:
     unsigned long weatherLastSendMs_;
     u32           weatherSeqOut_;
     u32           weatherSeqIn_;
+    // Last receive-side outcome, so a repeating no-op logs once rather than at
+    // the publish cadence. -1 = nothing received yet.
+    int           weatherLastWhy_;
     // Last state we published, so a settled sky is silent. Plain fields rather
     // than engine::WeatherRead: this header is included where the engine facade
     // is not, and the change gate only needs these.

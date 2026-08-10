@@ -91,6 +91,11 @@ const float NPC_MOVE_VEL = 0.75f; // NPC est. velocity (u/s) above which it is "
 // sample()), or the peer releases the body between keepalives and the whole
 // point is lost. 1500 leaves margin for one dropped slice.
 const unsigned long MID_STILL_KEEPALIVE_MS = 1500;
+// How stale the owner's word on a STILL body may get before we stop holding it
+// and hand it back to local AI. Comfortably more than one keepalive interval so
+// a single dropped beat does not release the body, and short enough that a body
+// the owner genuinely stopped describing still returns to its own AI.
+const unsigned long MID_STILL_HOLD_MS = 5000;
 // A body this close to one of our own characters is never AI-frozen: the freeze
 // targets divergent wanderers (measured 500-900 u), and suspending the AI of an
 // NPC you are standing next to breaks interaction with it - talking to a frozen

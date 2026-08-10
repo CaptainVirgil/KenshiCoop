@@ -705,8 +705,11 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
                 // out of the bed we were just told to put it in.
                 if (ok && kind == 1) {
                     std::map<Key, Driven>::iterator dt = targets_.find(k);
-                    if (dt != targets_.end())
+                    if (dt != targets_.end()) {
                         dt->second.furnEnterHoldMs = nowMs() + tuning_.furnHealDebounceMs;
+                        // ...and the stream position the hold is waiting to outrun.
+                        dt->second.furnEnterSample = dt->second.interp.newestMs();
+                    }
                 }
                 char fb[160]; _snprintf(fb, sizeof(fb) - 1,
                     "[furn] RECV ENTER id=%u occ=%u,%u furn=%u,%u kind=%d ok=%d",

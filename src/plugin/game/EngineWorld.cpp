@@ -1883,17 +1883,28 @@ bool readWeather(WeatherRead* out) {
     return true;
 }
 
-bool applyWeather(const WeatherRead& in) {
+bool applyWeather(const WeatherRead& in, int* outWhy) {
+    if (outWhy) *outWhy = WEATHER_FAULT;
     resolveWeather();
-    if (g_weatherResolved != 1) return false;
+    if (g_weatherResolved != 1) {
+        if (outWhy) *outWhy = WEATHER_NO_SYSTEM;
+        return false;
+    }
     void* r = activeRegionSeh();
-    if (!r) return false;
+    if (!r) {
+        if (outWhy) *outWhy = WEATHER_NO_REGION;
+        return false;
+    }
     // An unresolvable stringID means the sender's season table is not ours.
     // Leave the sky alone rather than writing a half-state: stale beats wrong.
     void* w = findWeatherBySidSeh(r, in.sid);
-    if (in.sid[0] && !w) return false;
+    if (in.sid[0] && !w) {
+        if (outWhy) *outWhy = WEATHER_NO_SID;
+        return false;
+    }
     bool changed = false;
-    if (!applyWeatherSeh(r, w, &in, &changed)) return false;
+    if (!applyWeatherSeh(r, w, &in, &changed)) return false; // stays WEATHER_FAULT
+    if (outWhy) *outWhy = changed ? WEATHER_CHANGED : WEATHER_SAME;
     return changed;
 }
 
@@ -1937,22 +1948,38 @@ void bubbleMaybeEmit(void* self) {
                                                   // costs a repeat line at worst
 }
 
+// The capture body is its own function so the SEH wrappers below need no object
+// unwinding: `std::string` lives in here, `__try` lives out there (C2712).
+void bubbleCapture(void* self, const std::string* text, const Ogre::Vector3* pos) {
+    PendingBubble& b = g_bubbles[self];
+    if (text) { b.text = *text; b.haveText = true; }
+    if (pos)  { b.x = pos->x; b.y = pos->y; b.z = pos->z; b.havePos = true; }
+    bubbleMaybeEmit(self);   // may clear the map; `b` is not touched after this
+}
+
+// Both hooks obey the rule the rest of this file already does and the dialogue
+// channel originally skipped: engine-supplied pointers are read under SEH. `text`
+// is a std::string handed across the MSVCP100 boundary by code we do not own, and
+// a bad one must cost a dropped caption, not the process.
+//
+// Calling through is separate and unconditional-except-for-null: if a trampoline
+// is missing, RETURNING is survivable (the bubble does not draw) and jumping to 0
+// is not - that is an access violation at address 0, which is what a player saw
+// on 2026-08-10 while talking to a seated NPC.
 void __fastcall bubbleSetText_hook(void* self, const std::string* text) {
     if (self && text) {
-        PendingBubble& b = g_bubbles[self];
-        b.text = *text; b.haveText = true;
-        bubbleMaybeEmit(self);
+        __try { bubbleCapture(self, text, 0); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    g_bubbleTextOrig(self, text);
+    if (g_bubbleTextOrig) g_bubbleTextOrig(self, text);
 }
 
 void __fastcall bubbleSetPos_hook(void* self, const Ogre::Vector3* pos) {
     if (self && pos) {
-        PendingBubble& b = g_bubbles[self];
-        b.x = pos->x; b.y = pos->y; b.z = pos->z; b.havePos = true;
-        bubbleMaybeEmit(self);
+        __try { bubbleCapture(self, 0, pos); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    g_bubblePosOrig(self, pos);
+    if (g_bubblePosOrig) g_bubblePosOrig(self, pos);
 }
 
 } // namespace
@@ -1962,14 +1989,22 @@ bool installDialogueHooks() {
     intptr_t pAddr = KenshiLib::GetRealAddress(
         static_cast<void (DialogueSpeechBubble::*)(const Ogre::Vector3&)>(
             &DialogueSpeechBubble::setPosition));
-    bool ok = true;
-    if (!tAddr || KenshiLib::AddHook(tAddr, (void*)&bubbleSetText_hook,
-                                     (void**)&g_bubbleTextOrig) != KenshiLib::SUCCESS)
-        ok = false;
-    if (!pAddr || KenshiLib::AddHook(pAddr, (void*)&bubbleSetPos_hook,
-                                     (void**)&g_bubblePosOrig) != KenshiLib::SUCCESS)
-        ok = false;
-    return ok;
+    bool tOk = tAddr && KenshiLib::AddHook(tAddr, (void*)&bubbleSetText_hook,
+                                           (void**)&g_bubbleTextOrig) == KenshiLib::SUCCESS;
+    bool pOk = pAddr && KenshiLib::AddHook(pAddr, (void*)&bubbleSetPos_hook,
+                                           (void**)&g_bubblePosOrig) == KenshiLib::SUCCESS;
+    // KenshiLib has no RemoveHook, so a half-install cannot be undone - but it CAN
+    // be named. A bubble needs both halves to publish, so one hook alone is a
+    // channel that captures nothing while still costing every call: say which half
+    // is missing rather than letting `[dlg]` be silent for an unknown reason.
+    if (!tOk || !pOk) {
+        char db[160]; _snprintf(db, sizeof(db) - 1,
+            "[dlg] WARNING hook install incomplete: setText=%s setPosition=%s"
+            " - dialogue capture is disabled this session",
+            tOk ? "ok" : "FAILED", pOk ? "ok" : "FAILED");
+        db[sizeof(db) - 1] = '\0'; coop::logLine(db);
+    }
+    return tOk && pOk;
 }
 
 unsigned int drainDialogue(DialogueLine* out, unsigned int maxOut) {
@@ -1996,7 +2031,11 @@ void showDialogue(GameWorld* gw, float x, float y, float z, const char* text) {
         if (d2 < bestD2) { bestD2 = d2; best = chars[i]; }
     }
     if (!best || bestD2 > 40.0f * 40.0f) return;
-    floaterSpawn(best, text, 3); // neutral colour - speech, not damage
+    // Neutral colour - speech, not damage. Under SEH because `best` is a body the
+    // enumerator saw some microseconds ago and zone streaming can retire one at any
+    // point between: a caption is never worth a crash.
+    __try { floaterSpawn(best, text, 3); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 } // namespace engine

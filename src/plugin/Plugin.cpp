@@ -2018,6 +2018,35 @@ void coopUiConnect(bool isHost, bool useSteam, unsigned long long peerId) {
         }
     }
 
+    // THE ROLE ITSELF, not just the log name. g_cfg.isHost was read from
+    // coop_config.json at plugin load, and every role-derived switch was frozen
+    // against it - but the role is really decided HERE, in the panel. A player
+    // whose config said "host" and who pressed JOIN therefore ran the whole
+    // session with the HOST's behaviour flags.
+    //
+    // That is not cosmetic. reportCombat is join-only: with it stuck off, the
+    // damage guard still suppressed the player's local swings (that part does
+    // not care about role) while nothing was reported for the host to apply -
+    // so their melee did no damage at all, and no floating numbers appeared
+    // because the floater rides the same report path. Measured live 2026-08-10:
+    // zero combat hits published across a whole session.
+    //
+    // Re-derive rather than re-read: loadConfig would also undo any env
+    // override the harness set.
+    g_cfg.isHost = isHost;
+    g_repl.setReportCombat(!isHost);
+    coop::engine::setCombatReport(!isHost);
+    g_repl.setGateAuthority(!isHost && g_cfg.gateAuthority);
+    g_repl.setStreamNpcs(isHost || g_cfg.cellAuth);
+    {
+        char rb[160]; _snprintf(rb, sizeof(rb) - 1,
+            "[role] behaviour re-derived for %s: combat-report %s, gate-authority %s",
+            isHost ? "HOST" : "JOIN",
+            (!isHost) ? "ON" : "off",
+            (!isHost && g_cfg.gateAuthority) ? "ON" : "off");
+        rb[sizeof(rb) - 1] = '\0'; coopLog(rb);
+    }
+
     // Steam transport with no Steam is not a connection that will ever succeed,
     // and it is not recoverable without a game restart: the Steam client has to be
     // running BEFORE Kenshi starts, because the process resolves steam_api64 once
