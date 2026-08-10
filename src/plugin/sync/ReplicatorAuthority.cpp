@@ -1652,6 +1652,30 @@ float Replicator::parkDivergedCopy(Character* c, const EntityState& st, const Ke
     unsigned long cool = censusFrozen_.count(k) ? 1000 : 5000;
     std::map<Key, unsigned long>::iterator pm = parkMs_.find(k);
     if (pm != parkMs_.end() && (nowP - pm->second) < cool) return d;
+    // Never halt/teleport a body that is fighting or being fought. Live
+    // 2026-08-10 23:27: parks+freezes fired on actively fighting NPCs
+    // ('Hundred Guardian', d=207-216, damage guard armed) in the final second
+    // before an instant-death crash on the join - not proven as the cause
+    // (crashTracer was off), but teleporting a body the engine has mid-swing
+    // is wrong regardless, and it IS the visible combat shuffling
+    // (slide=8137, softWalk=16269 that session). modeActive because inCombat
+    // flickers between combo sections; underMelee because relocating a body
+    // that is being HIT is equally wrong. fleeing is deliberately NOT exempt:
+    // divergent flee is precisely what the park exists to stop.
+    //
+    // Placed INSIDE the function, before the cooldown slot is consumed, so
+    // all call sites are covered (the parkDivergedCopy guard lesson) and the
+    // park retries promptly once the fight ends. Returning -1 also skips the
+    // follow-on freeze at every caller, and protects the anchor-break
+    // endAction below. Cost: one readCombat per key per cooldown at most.
+    {
+        engine::CombatRead cr;
+        if (engine::readCombat(c, &cr) &&
+            (cr.inCombat || cr.modeActive || cr.underMelee)) {
+            ++freezeSkipCombat_;
+            return -1.0f;
+        }
+    }
     parkMs_[k] = nowP;
     // Anchor break (world_parity 2026-07-17): a census copy chained/caged at
     // the WRONG fixture (cross-client furniture identity is unreliable) is
@@ -1764,6 +1788,23 @@ void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift)
     bool over = (drift > censusParkDist_); // censusParkDist_ > 0 implied (drift >= 0)
     std::map<Key, unsigned long>::iterator it = censusFrozen_.find(k);
     bool wasFrozen = (it != censusFrozen_.end());
+    // Combat exemption, same rationale as the park's (see parkDivergedCopy):
+    // the endAction below drops an in-progress ATTACK, and the per-tick
+    // suspend+halt freezes a body the engine is animating mid-swing. Latch
+    // deliberately untouched - like the driven exemption above, only the
+    // actuation is skipped, so the hold expires on schedule, repeat-offender
+    // memory survives a skirmish, and a combat-skipped body keeps wasFrozen
+    // so the one-shot endAction cannot fire on combat exit either. Gated on
+    // (over || wasFrozen) so readCombat runs only for diverged-or-latched
+    // bodies (historically < ~30), never the whole census band.
+    if (over || wasFrozen) {
+        engine::CombatRead cr;
+        if (engine::readCombat(c, &cr) &&
+            (cr.inCombat || cr.modeActive || cr.underMelee)) {
+            ++freezeSkipCombat_;
+            return;
+        }
+    }
     if (over) {
         censusFrozen_[k] = now;                 // (re)arm / refresh the hold
         if (!wasFrozen) engine::endAction(c);   // drop the in-progress flee/attack once

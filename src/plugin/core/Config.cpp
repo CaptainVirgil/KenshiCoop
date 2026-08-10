@@ -232,11 +232,15 @@ void loadConfig(Config& c) {
     // fights with those stale numbers. "0" is the A/B escape hatch.
     c.statsSync = envOr("KENSHICOOP_STATS_SYNC", "1") != "0";
 
-    // Carried-body sync (protocol 18): DEFAULT ON - reliable pickup/drop
-    // edges + self-healing carried state for player-squad members. Without
-    // it the peer's down-enforcement drags/teleports a carried KO'd body
-    // along the ground behind its carrier. "0" is the A/B escape hatch.
-    c.crashTracer = envOr("KENSHICOOP_CRASH_TRACER", "0") == "1";
+    // Crash tracer (vectored exception dump, core/CrashDump.h): DEFAULT OFF -
+    // the handler is vectored at priority 1 and the engine throws routinely,
+    // so the cost is paid on every exception, not only the fatal one. Env for
+    // the harness, json ("crashTracer": true in coop_config.json) for players:
+    // the game launches from Steam, so an env-only knob means editing launch
+    // options mid-session - which is why two live crashes on 2026-08-10 went
+    // untraced. Ask a player to flip the json key when taking a crash report.
+    c.crashTracer = envOr("KENSHICOOP_CRASH_TRACER",
+                          fileOr(f, "crashTracer", "0").c_str()) == "1";
 
     // Per-channel cadences and self-heal debounces. c.tuning starts at the
     // SyncTuning defaults, so each call below only replaces what was actually
