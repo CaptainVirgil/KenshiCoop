@@ -1834,14 +1834,20 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     tickReplicateApply(gw, worldLive);
     const unsigned long tApp1 = coop::monoUs();
     logTickBudget(tPub1 - tPub0, tApp1 - tApp0);
-    // Last beat of the frame. If a stall is ever reported under "frame-end" the
-    // hang is downstream of everything above - the load backstop or the scenario
-    // tail - rather than in replication.
-    coop::mainThreadBeat("frame-end");
+    // Replication is done. A stall reported under "load-pump" is the backstop
+    // below - OUR code, pumping SaveManager::execute() - and nothing else.
+    coop::mainThreadBeat("load-pump");
 
     // Coordinated load deferred-signal backstop: if the LOADGAME signal stalls
     // past the grace window, pump SaveManager::execute() once from end-of-tick.
     tickLoadPumpBackstop(gw);
+
+    // Everything of ours has now run and returned. A stall reported under
+    // "frame-end" is therefore downstream of the whole plugin: the engine did
+    // not come back to us. The first real freeze (2026-08-10, 5668 ms) landed
+    // here - but that beat was stamped BEFORE the load backstop, so it could not
+    // separate "the engine hung" from "our save pump hung". These two beats can.
+    coop::mainThreadBeat("frame-end");
 
     // Scenario onTick (harness) AFTER apply, so a join's RECV line reflects the
     // applied pos; latches the verdict + begins the capture hold on completion.
