@@ -1452,7 +1452,43 @@ void Replicator::applyTargets(GameWorld* gw) {
         // Its drive shares the near-tier code below, but its counters/oracles
         // are tracked apart: the near-tier gates guard the validated 20 Hz
         // pipeline, the mid tier is judged by the anti-zombie oracle.
-        bool midTier = !isSquad && segMs > 250;
+        //
+        // v0.57 DEMOTE HYSTERESIS (deep-dive 2026-08-10, adversarially
+        // verified). The raw `segMs > 250` read is bimodal for a mid body:
+        // the publisher's scan overlap re-sends a mover ~50 ms after its
+        // rotation slot whenever a skipped body precedes it in the window, so
+        // lastSegMs reads 50 on one arrival and ~C on the next. Classified
+        // raw, the body flapped near<->mid in a comb at n x C (dominant
+        // ~1.4 s), 320-500 cycles/min town-wide in the measured session -
+        // 4,592 PARKED->MID ledger pairs in 50 min, PARKED dwell 114 ms, and
+        // every mid re-entry ran the mid-rest branch (clearGoals + endAction
+        // + halt + teleport + release). That IS the shuffle. The decisive
+        // number: 3,398 demotes against 66 npcMoving edges - the flapping
+        // term was this classifier, not the walk-hold.
+        //
+        // Entry to mid stays instant (the EMA already cushions run 105155);
+        // LEAVING mid requires the short cadence sustained over two
+        // CONSECUTIVE arrivals. A genuine near body streams at 20 Hz and
+        // clears that in ~100 ms; a lone overlap artifact is always followed
+        // by a >250 gap segment and never demotes.
+        {
+            const unsigned long tnewest = d.interp.newestMs();
+            if (tnewest != 0 && tnewest != d.tierArrMs) {
+                d.tierArrMs = tnewest;
+                const unsigned long tseg = d.interp.lastSegMs();
+                if (tseg != 0 && tseg <= 250) {
+                    if (d.shortSegs < 200) ++d.shortSegs;
+                } else {
+                    d.shortSegs = 0;
+                }
+            }
+            if (!d.midHeld) {
+                if (segMs > 250) d.midHeld = true;
+            } else if (d.shortSegs >= 2) {
+                d.midHeld = false;
+            }
+        }
+        bool midTier = !isSquad && d.midHeld;
         if (midTier) d.midSeenMs = now;
         if (!isSquad) {
             if (d.wasMoving && !npcMoving) {

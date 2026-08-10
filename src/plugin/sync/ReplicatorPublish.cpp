@@ -366,14 +366,51 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
                 // Now decided once per slice (the scan itself is), so the row
                 // simply persists in the cache for the whole 50 ms window and
                 // is guaranteed to be in whichever frame the net thread samples.
-                if (row.cMoving == 0 && row.cSpeed <= 0.25f) {
-                    if (stillSent >= stillQuota) continue;
-                    std::map<Key, unsigned long>::iterator sit = midStillMs_.find(mk);
-                    const unsigned long lastSent = (sit != midStillMs_.end()) ? sit->second : 0;
-                    if (lastSent != 0 &&
-                        (midSliceMs_ - lastSent) < MID_STILL_KEEPALIVE_MS) continue;
-                    midStillMs_[mk] = midSliceMs_;
-                    ++stillSent;
+                // v0.57: stillness judged by POSITION against the last SENT
+                // row, not by the cMoving/cSpeed flags - for the reason
+                // Interp::push records: the flags lie in both directions, and
+                // this file's own march-oracle comment carries the proof (a
+                // parked Garru streams cSpeed=15.2). Flag-classified, a
+                // standing body with a live speed SETTING was streamed as a
+                // mover at full rotation cadence forever, with identical
+                // positions. Same 2 cm epsilon as Interp. A shoved or
+                // park-teleported body has a moving POSITION and is correctly
+                // treated as a mover.
+                std::map<Key, MidSent>::iterator sit = midSent_.find(mk);
+                if (sit == midSent_.end()) {
+                    // First sighting: send unconditionally - a first sample is
+                    // information whatever the body is doing.
+                    MidSent ms0;
+                    ms0.ms = midSliceMs_;
+                    ms0.x = row.x; ms0.y = row.y; ms0.z = row.z;
+                    midSent_[mk] = ms0;
+                } else {
+                    const float mdx = row.x - sit->second.x;
+                    const float mdy = row.y - sit->second.y;
+                    const float mdz = row.z - sit->second.z;
+                    const bool still =
+                        (mdx * mdx + mdy * mdy + mdz * mdz) <= 0.0004f;
+                    if (still) {
+                        if (stillSent >= stillQuota) continue;
+                        if ((midSliceMs_ - sit->second.ms) < MID_STILL_KEEPALIVE_MS)
+                            continue;
+                        ++stillSent;
+                    } else {
+                        // One send per rotation (v0.57): the scan window is
+                        // quota*4 while the cursor advances by quota, so a
+                        // mover past any skipped body is re-sent 50 ms after
+                        // its own slot - the receiver's lastSegMs reads 50 and
+                        // its tier classifier flaps (the shuffle; deep-dive
+                        // 2026-08-10). Suppress within MID_RESEND_MIN_MS
+                        // without consuming quota; the design cadence is
+                        // ~500 ms, so every mover still lands each rotation.
+                        if ((midSliceMs_ - sit->second.ms) < MID_RESEND_MIN_MS) {
+                            ++midResendSup_;
+                            continue;
+                        }
+                    }
+                    sit->second.ms = midSliceMs_;
+                    sit->second.x = row.x; sit->second.y = row.y; sit->second.z = row.z;
                 }
                 midRows_.push_back(row);
                 ++added;
@@ -391,11 +428,11 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // unbounded-growth shape InvRecv::seenMs was added to fix. Drop entries
         // no keepalive has touched in a minute; a body that comes back simply
         // sends one keepalive immediately, which is the correct answer anyway.
-        if (midStillMs_.size() > 512) {
-            for (std::map<Key, unsigned long>::iterator pit = midStillMs_.begin();
-                 pit != midStillMs_.end(); ) {
-                if (nowPub - pit->second > 60000) midStillMs_.erase(pit++);
-                else                              ++pit;
+        if (midSent_.size() > 512) {
+            for (std::map<Key, MidSent>::iterator pit = midSent_.begin();
+                 pit != midSent_.end(); ) {
+                if (nowPub - pit->second.ms > 60000) midSent_.erase(pit++);
+                else                                 ++pit;
             }
         }
     }
@@ -1102,9 +1139,9 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         char b[320];
         _snprintf(b, sizeof(b) - 1,
                   "[census] sent n=%u radius=%.0f mid=%u anchors=%u%s"
-                  " enum=%u notmine=%u proxyrow=%u attnR=%.0f",
+                  " enum=%u notmine=%u proxyrow=%u attnR=%.0f resendSup=%lu",
                   m, censusRadius_, (unsigned)midBand_.size(), na, det,
-                  n, nNotMine, nProxyRow, attentionRadius_);
+                  n, nNotMine, nProxyRow, attentionRadius_, midResendSup_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
         // KENSHICOOP_DEBUG_CENSUS=1: dump every census row (hand + name) at the
         // same 10 s cadence, so a join-side cull can be classified against the

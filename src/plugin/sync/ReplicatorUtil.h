@@ -97,6 +97,12 @@ const unsigned long MID_STILL_KEEPALIVE_MS = 1500;
 // than one keepalive interval, so a single dropped beat would not have released
 // the body. The number was never the problem.
 const unsigned long MID_STILL_HOLD_MS = 5000;
+// One mid-band send per rotation (v0.57): a mover row for a hand sent more
+// recently than this is suppressed WITHOUT consuming quota. The rotation is
+// pinned near 500 ms by the /10 quota, so 350 keeps every mover at its design
+// cadence while killing the scan-overlap double-sends whose 50 ms segments
+// flapped the receiver's tier classifier (deep-dive 2026-08-10).
+const unsigned long MID_RESEND_MIN_MS = 350;
 // A body this close to one of our own characters is never AI-frozen: the freeze
 // targets divergent wanderers (measured 500-900 u), and suspending the AI of an
 // NPC you are standing next to breaks interaction with it - talking to a frozen

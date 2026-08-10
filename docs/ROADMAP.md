@@ -194,13 +194,20 @@ check and forces the decision to be made deliberately.
   + `LevelEditor::deleteObject` (0x776690), verified against
   `getNumInternalBuildings` before/after. Remember the lektor layout lesson
   from the weather fix before walking anything.
-- **NPC shuffling.** Three theories killed by measurement in one night:
-  stream starvation (extrapolation diffs to zero settled), two-writer
-  (suspension is 100% of driven bodies under the honest counter), and the
-  fixture-pose exemption (the uniform suspend runs BEFORE applyRest — the
-  early return skips only the park fallback). No fix ships without a
-  surviving theory. The v0.56 combat exemption may reduce the combat-adjacent
-  part; measure before theorising further.
+- **NPC shuffling — ROOT-CAUSED AND FIXED (v0.57, 2026-08-10).** After three
+  theories died by measurement (starvation, two-writer, fixture-pose), a
+  five-agent deep dive with adversarial verification found it: the
+  hysteresis-free mid-tier classifier (`segMs > 250`) flapping on the
+  publisher's scan-overlap double-sends (50 ms segments), driving 4,592
+  PARKED↔MID cycles in 50 min, each one a clearGoals+endAction+halt+teleport+
+  release. Decisive number: 3,398 demotes vs 66 walk-hold edges. Fixes:
+  receiver demote-hysteresis (2 consecutive sub-250 arrivals to leave mid),
+  publisher one-send-per-rotation (MID_RESEND_MIN_MS), stillness by position
+  not flags. Live verdicts must move TOGETHER: ledger pair rate, reissueNpc,
+  [census] park, worstZero, resendSup=. The RELEASED-body two-writer family
+  (doors at night) is a separate open item — fix direction A in the deep-dive
+  record (restructure the release; v0.51's attempt failed on shape, not
+  concept).
 - **`~/Kenshi-Join` holds two different game versions** — kenshi_x64.exe
   1.0.68 at its root, 1.0.65 under `RE_Kenshi/`. Any future on-disk RVA work
   must name which binary it measured (and note `GetRealAddress`'s space is

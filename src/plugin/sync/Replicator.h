@@ -935,6 +935,19 @@ private:
         // accrued under sparse mid coverage - classed to the mid ledger
         // (like young-ring coverage snaps), not steady-state near tracking.
         unsigned long midSeenMs;
+        // v0.57 tier hysteresis (deep-dive 2026-08-10). midHeld is the STICKY
+        // mid classification: entry instant on a sparse segment, exit only
+        // after `shortSegs` >= 2 CONSECUTIVE sub-250 ms arrivals. The raw
+        // per-tick `segMs > 250` read is bimodal for a mid body - the
+        // publisher's scan overlap re-sends a mover ~50 ms after its rotation
+        // slot - and classifying raw flapped near<->mid at up to 500
+        // cycles/min, each mid re-entry running clearGoals+endAction+halt+
+        // teleport+release (the measured 4,592 PARKED->MID ledger pairs = the
+        // town-wide shuffle). A genuine near body streams at 20 Hz and clears
+        // the 2-arrival bar in ~100 ms.
+        bool          midHeld;
+        unsigned char shortSegs;
+        unsigned long tierArrMs;   // newest arrival already counted for the streak
         Driven() : fresh(false), haveActual(false), lx(0), ly(0), lz(0), parked(false),
                    haveDest(false), dx(0), dy(0), dz(0),
                    suppressed(false), lastSeenMs(0),
@@ -957,7 +970,8 @@ private:
                    sneakTick(0), proneTick(0), crawlDrive(false),
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
-                   zeroF(0), activeF(0), midSeenMs(0) {
+                   zeroF(0), activeF(0), midSeenMs(0),
+                   midHeld(false), shortSegs(0), tierArrMs(0) {
             chainOwner[0] = chainOwner[1] = chainOwner[2] = chainOwner[3] = chainOwner[4] = 0;
         }
     };
@@ -1165,7 +1179,15 @@ private:
     // by the movers-only rule, which left the peer with no task/pose word on it
     // at all; this stamps the periodic full sample that keeps it held rather
     // than released to local AI. Pruned in publishOwned (bounded growth).
-    std::map<Key, unsigned long> midStillMs_;
+    // Per-hand mid-band send memory (v0.57): last send time + last SENT
+    // position. Drives both publisher fixes from the 2026-08-10 deep dive:
+    // stillness judged by position rather than the lying cMoving/cSpeed flags
+    // (a parked Garru streams cSpeed=15.2 and was mover-classified forever),
+    // and one-send-per-rotation suppression of the scan-overlap double-sends
+    // whose 50 ms segments flapped the receiver's tier classifier.
+    struct MidSent { unsigned long ms; float x, y, z; };
+    std::map<Key, MidSent> midSent_;
+    unsigned long midResendSup_;  // cumulative suppressed re-sends (telemetry)
     // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
     // slice cursor advances (50 ms), then re-emitted on every render frame:
     // the scan behind it costs a full captureNpcByHand per body and used to run

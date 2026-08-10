@@ -62,7 +62,7 @@ Replicator::Replicator()
       censusFreshChkMs_(0),
       censusStaleMs_(0), censusStaleEdges_(0), proxyDriftLogMs_(0),
       camHintSendMs_(0), peerCamMs_(0),
-      midCursor_(0), midSliceMs_(0),
+      midCursor_(0), midSliceMs_(0), midResendSup_(0),
       censusParkDist_(0.0f), censusParks_(0), censusFreezeAi_(true),
       attentionRadius_(0.0f),
       attnFlips_(0), attnWinMs_(0), attnBaseSupp_(0), attnBaseCull_(0),
@@ -228,6 +228,9 @@ void Replicator::resetSession() {
     suppressedSid_.clear();
     midBand_.clear();          // host mid-band round-robin (rebuilt by next census)
     midCursor_ = 0; midSliceMs_ = 0;
+    midSent_.clear();          // per-hand send memory: OLD world's hands/positions
+                               // (its predecessor midStillMs_ was never cleared
+                               // here - a pre-existing gap this rename closes)
     life_.clear();             // Phase 3 lifecycle: the OLD world's journeys
     lifeSweepMs_ = 0;
     // Debug markers hold raw Character* from the OLD world plus GUI label
