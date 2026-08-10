@@ -8,16 +8,17 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`v0.51` is the last public release, and it is the first build shaped by a
-session two humans actually played on two machines.**
+**`v0.55` is the last public release; `v0.56` (protocol 58) is built and
+gated locally. Five releases in one evening (v0.51–v0.55) were shaped by the
+first sessions two humans actually played on two machines.**
 
 | | |
 |---|---|
-| Protocol | **56** — weather (55) and dialogue (56) on 2026-08-09, the first wire changes since fork-1. `v0.50` and `v0.51` interoperate; only the updated side gets v0.51's fixes |
-| Public release | `v0.51` — five assets (per-OS archive, the kit zip the updaters resolve, and both updater scripts) |
-| Local build | protocol 56, installed on the Steam install; sha256 checked against the gated artifact |
-| Gate | 733 prototest / 17 tunneltest / 46 netlinktest / 33 contract, green |
-| Interop | **`fork-6` will NOT connect to the current build** — protocol 54 vs 56. The handshake compares `PROTOCOL_VERSION`, not the label, and a mismatch is a hard reject |
+| Protocol | **58** — census truncation bit (2026-08-10), after 57 (mod fingerprint) and 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
+| Public release | `v0.55` (protocol 57) — five assets (per-OS archive, kit zip, both updater scripts) |
+| Local build | protocol 58; the banner's build stamp is now the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log again |
+| Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |
+| Interop | any release before the current protocol will NOT connect — the handshake compares `PROTOCOL_VERSION`, not the label |
 
 fork-1 through fork-5 were dead on arrival (no `/GL`) and are withdrawn or
 superseded; fork-5 was deleted outright, tag included.
@@ -95,9 +96,8 @@ Still open, in cost order:
 
 - ~~**Cut `v0.50`, or hold.**~~ **Done** — `v0.50` shipped 2026-08-09, then
   `v0.51` the same night with the fixes the two-machine session produced.
-  **Protocol is now 56**, so this is a hard cut: both players must update the
-  same day. Since the bump is already spent, item 28's census `truncated` flag
-  should land BEFORE the release rather than waiting for a bump of its own.
+  Protocol has since moved 56 -> 57 -> 58; every bump is a hard cut and both
+  players update the same day. Item 28's census flag landed with 58.
 - ~~Detach the GitHub fork.~~ **Done 2026-08-09** — `isFork: false`,
   `parent: null`. Standalone repo. Attribution to nhoral and
   RE_Kenshi/KenshiLib is in the README's opening block and Credits, and
@@ -124,14 +124,11 @@ per packet before the clamp shipped.
 
 | # | Item |
 |---|---|
-| 28 | One coordinated `PROTOCOL_VERSION` bump, batching every wire change worth making |
 | 40 | Extract the P2P accept + Steam callback pump out of `SteamInvite`, then delete the unreachable lobby code. Needs a **2-minute Steam connect**, not a play-test, and must ship **alone** so a break is unambiguous |
 
-A bump is a hard reject for anyone on the old build, so it is spent once. The
-census `truncated` flag is the anchor: carry it in **bit 15 of the existing u16
-`count`**, so `sizeof` stays 7, an old receiver fails `count <= NPC_CENSUS_MAX`,
-drops the packet, and trips the census-STALE path that *disables* wide culling —
-fail-safe rather than fail-destructive.
+A bump is a hard reject for anyone on the old build, so it is spent once.
+Item 28 (the census truncation bit) shipped as protocol 58 on 2026-08-10 —
+see `docs/PROTOCOL_HISTORY.md` §58 for what the receiver now does with it.
 
 ---
 
@@ -178,3 +175,34 @@ check and forces the decision to be made deliberately.
 - **Windows VM** — the native Windows *build* is proven; what needs a Windows
   machine now is a *run*, and the brother's machine is that for free. The
   dockur recipe stays documented in the build skill.
+
+---
+
+## Deferred with findings recorded (2026-08-10, v0.56 planning)
+
+- **House furniture strip on purchase.** Buying a house makes Kenshi empty its
+  pre-placed furniture; the deed channel replicates the ownership and not the
+  consequence, so the peer keeps furnished walls. The internals container is
+  behind `Building::myInterior` (`BuildingInterior*` @0x1F0) and
+  **BuildingInterior is undumped** — no strip primitive is nameable from
+  headers. Recorded path: (1) Harness-only detour on `Building::buyMeCallback`
+  (RVA 0x7AC460, the whole purchase transaction — deliberately not called by
+  the deed channel, double-charge) to trace what the strip actually invokes;
+  (2) candidate reproduction: `ZoneMapContent::findAllBuildings` (RVA
+  0x9FA220, lektor out) + `Building::isFurniture` (0x296440) +
+  `isIndoors` (0x546DB0) == house, then `removeAnInternalBuilding` (0x7CC2E0)
+  + `LevelEditor::deleteObject` (0x776690), verified against
+  `getNumInternalBuildings` before/after. Remember the lektor layout lesson
+  from the weather fix before walking anything.
+- **NPC shuffling.** Three theories killed by measurement in one night:
+  stream starvation (extrapolation diffs to zero settled), two-writer
+  (suspension is 100% of driven bodies under the honest counter), and the
+  fixture-pose exemption (the uniform suspend runs BEFORE applyRest — the
+  early return skips only the park fallback). No fix ships without a
+  surviving theory. The v0.56 combat exemption may reduce the combat-adjacent
+  part; measure before theorising further.
+- **`~/Kenshi-Join` holds two different game versions** — kenshi_x64.exe
+  1.0.68 at its root, 1.0.65 under `RE_Kenshi/`. Any future on-disk RVA work
+  must name which binary it measured (and note `GetRealAddress`'s space is
+  not `base + header RVA` regardless — see `EngineInventory.cpp`'s
+  prologue-scan).
