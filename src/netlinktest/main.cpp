@@ -192,12 +192,15 @@ static void buildEntityBatch(std::vector<unsigned char>& out, unsigned count, u3
 }
 
 // [NpcCensusHeader][u32 hand[5] * count][f32 pos[3] * count], exactly need bytes.
-static void buildCensus(std::vector<unsigned char>& out, unsigned count) {
+// trunc sets the v58 truncation bit on the wire count; the payload still
+// carries `count` real rows - the flag says the list is incomplete, not short.
+static void buildCensus(std::vector<unsigned char>& out, unsigned count,
+                        bool trunc = false) {
     NpcCensusHeader hdr;
     std::memset(&hdr, 0, sizeof(hdr));
     hdr.type    = (u8)PKT_NPC_CENSUS;
     hdr.ownerId = OWNER;
-    hdr.count   = (u16)count;
+    hdr.count   = (u16)(count | (trunc ? NPC_CENSUS_TRUNC : 0));
     const unsigned rowHands = 5 * sizeof(u32);
     const unsigned rowPos   = 3 * sizeof(f32);
     out.resize(sizeof(hdr) + count * (rowHands + rowPos));
@@ -495,6 +498,28 @@ int main() {
         check(validIn && census.size() == 1 &&
               census[0].ownerId == OWNER && census[0].pos.size() == 2 * 3,
               "  ... delivered whole: hands + positions, owner-tagged");
+    }
+
+    // 8b) v58 truncation flag: a flagged count is masked before the bound
+    //     check, delivered whole, and the flag survives to the Inbound record.
+    {
+        census.clear();
+        std::vector<unsigned char> tr;
+        buildCensus(tr, 3, true);
+        check(sendRaw(peer, &tr[0], (unsigned)tr.size()),
+              "census count=3|TRUNC sent");
+        bool truncIn = false;
+        DWORD deadline = GetTickCount() + 10000;
+        while (!truncIn && (long)(GetTickCount() - deadline) < 0) {
+            pumpClient(client, got);
+            drainCensus(inbound, census);
+            size_t i;
+            for (i = 0; i < census.size(); ++i)
+                if (census[i].hands.size() == 3 * 5 && census[i].truncated)
+                    truncIn = true;
+            if (!truncIn) Sleep(2);
+        }
+        check(truncIn, "flagged census delivered with truncated=true (v58)");
     }
 
     // 9) Unknown packet type: dropped (and logged/rate-limited inside NetLink),

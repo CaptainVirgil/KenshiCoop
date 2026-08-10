@@ -79,6 +79,8 @@ struct InboundNpcCensus {
     u32                ownerId;
     std::vector<u32>   hands; // count*5, readObjectHand layout
     std::vector<float> pos;   // count*3, host position per row (v38 parking)
+    bool               truncated; // v58: sender's enumeration hit its cap -
+                                  // absent hands are UNKNOWN, not gone
 };
 
 // One received conservation DROP intent (Phase W2): the owning character + item identity +
@@ -526,9 +528,10 @@ public:
     }
     // NET thread: one received NPC existence census (protocol 36), owner-tagged.
     void pushNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                       unsigned int count) {
+                       unsigned int count, bool truncated) {
         InboundNpcCensus nc;
         nc.ownerId = ownerId;
+        nc.truncated = truncated;
         if (hands && count > 0) nc.hands.assign(hands, hands + count * 5);
         if (pos && count > 0) nc.pos.assign(pos, pos + count * 3);
         EnterCriticalSection(&cs_); npcCensus_.push_back(nc); LeaveCriticalSection(&cs_);

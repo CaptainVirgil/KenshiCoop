@@ -31,7 +31,7 @@ typedef double         f64;
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 57;
+const u16 PROTOCOL_VERSION = 58;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -1543,11 +1543,24 @@ struct ResearchPacket {
 struct NpcCensusHeader {
     u8  type;    // = PKT_NPC_CENSUS
     u32 ownerId; // network player id of the sender (the host)
-    u16 count;   // number of 5xu32 hands (then 3xf32 positions) that follow
+    // Low 15 bits: number of 5xu32 hands (then 3xf32 positions) that follow.
+    // Bit 15 (v58, NPC_CENSUS_TRUNC): the sender's ENUMERATION hit
+    // NPC_CENSUS_MAX, so the set of absent hands is unknowable this beat -
+    // the receiver must not treat absence as evidence. The flag describes the
+    // enumeration, not the row count: rows dropped by the cell-authority gate
+    // are absent for a KNOWN reason and do not set it. Rode bit 15 rather
+    // than an appended byte because this is a Path-A packet (arrays read at
+    // data+sizeof(header)): a byte would shift every hand one byte early on
+    // an old receiver and mass-cull; bit 15 instead reads as count>512 there,
+    // the packet is dropped, the census goes STALE and wide culling disables
+    // - fail-safe (see docs/PROTOCOL_HISTORY.md, 58).
+    u16 count;
 };
 
 // Hard cap on hands per census packet (512 * 20 B = ~10 KB, fragmented fine).
 const unsigned int NPC_CENSUS_MAX = 512;
+// v58: bit 15 of NpcCensusHeader.count. See the struct comment.
+const u16 NPC_CENSUS_TRUNC = 0x8000;
 
 // Camera hint (protocol 43, BOTH directions, ~1 Hz UNRELIABLE latest-wins):
 // the sender's camera world center, so the receiver can anchor an interest

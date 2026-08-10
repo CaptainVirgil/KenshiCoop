@@ -76,8 +76,10 @@ public:
     // 36, host -> join, 1 Hz). 'hands' is count*5 u32s (readObjectHand layout);
     // 'pos' is count*3 floats (v38: host position per row, park authority).
     // [NpcCensusHeader][u32 hand[5] * count][f32 pos[3] * count].
+    // truncated: the sender's enumeration hit its cap (v58) - carried as bit
+    // 15 of the wire count so the header size never moves.
     void queueNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                        unsigned int count);
+                        unsigned int count, bool truncated);
 
     // MAIN thread: queue a reliable conservation DROP intent (Phase W2). A fixed-size POD
     // (like an event), sent once on the RELIABLE channel; the peer relocates its own copy
@@ -317,7 +319,7 @@ private:
     std::vector<OutWorldClaim>  outWorldClaim_;
     // Reliable NPC existence census (protocol 36): 5xu32 hands, flat. Guarded
     // by outCs_. 1 Hz from the host, so at most a couple pending at once.
-    struct OutNpcCensus { u32 ownerId; std::vector<u32> hands; std::vector<float> pos; };
+    struct OutNpcCensus { u32 ownerId; std::vector<u32> hands; std::vector<float> pos; bool truncated; };
     std::vector<OutNpcCensus> outNpcCensus_;
     // Reliable conservation DROP intents (Phase W2), fixed-size PODs. Guarded by outCs_.
     std::vector<WorldDropPacket> outWorldDrops_;

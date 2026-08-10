@@ -1123,6 +1123,17 @@ private:
     // is never enumerated so it cannot even be counted as a ghost. These feed
     // the appended fields on the 5 s [audit] exist line.
     bool                      censusPubTrunc_;   // host: last publish hit NPC_CENSUS_MAX
+    // v58 receive side: the peer's last census carried the truncation bit, so
+    // absence is UNKNOWN and the suppress dwell is held at zero.
+    bool                      censusTrunc_;
+    unsigned long             censusTruncLogMs_; // 30 s re-log while truncated
+    // The receiver's own LAST COMPLETED wide sweep hit its cap. Persisted
+    // because the sweep runs at ~10 Hz while the near pass runs per frame: the
+    // per-frame local wideTrunc is false on every skipped frame, and a guard
+    // reading it would flap. Same meaning as the audit's wideCap=, which was
+    // computed, logged, and never consulted - "the enumeration judged an
+    // INCOMPLETE world; absence stopped meaning absent" now actually gates.
+    bool                      wideTruncPrev_;
     bool                      censusFreshPrev_;  // join: freshness at the last sample
     // Armed when the census goes stale -> fresh: the next wide pass enumerates at a
     // widened radius once, to reach bodies that drifted out while nothing was being

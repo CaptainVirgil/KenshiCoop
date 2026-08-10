@@ -340,7 +340,7 @@ Named so the table above is not mistaken for complete.
 
 1. Bump `PROTOCOL_VERSION` in `src/netproto/Wire.h`.
 2. Update the size/offset assertions in `src/prototest/main.cpp` and the
-   `PROTOCOL_VERSION` check at `main.cpp:312`.
+   `PROTOCOL_VERSION` check (grep `PROTOCOL_VERSION` in it; the line number rots).
 3. Add a row to §3 **in the same commit**, with the Class column filled honestly.
    If it is an INSERT, say which field's offset moved and to where. If it is a
    REPURPOSE, add it to §4.3 as well — that is the only record that will survive,
@@ -354,7 +354,11 @@ Nothing mechanically gates step 3: `prototest` asserts the `PROTOCOL_VERSION` li
 
 ## Next bump worth spending, if one is spent
 
-`NpcCensusHeader` has no truncation flag. A census row's absence is read by the peer
+**SPENT — this became protocol 58 (2026-08-10); entry at the bottom of this
+file.** The analysis below is kept because the append-vs-bit-15 reasoning is
+the part worth re-reading before any future Path-A header change.
+
+`NpcCensusHeader` had no truncation flag. A census row's absence is read by the peer
 as "this body does not exist", and it culls its real local copy against that — so when
 the enumeration hits `NPC_CENSUS_MAX` the remainder is broadcast as absent. The publish
 code has always said so in its own comment.
@@ -472,3 +476,42 @@ lines, `#` comments and surrounding whitespace are ignored, and the text is
 case-folded, so two byte-different files describing the same load order still
 match. `0` means the file could not be read — UNKNOWN, never reported as a
 mismatch, on the same rule the census follows about absence.
+
+---
+
+## 58 — the census truncation bit (2026-08-10) — EVIDENCED
+
+Bit 15 of `NpcCensusHeader.count` (`NPC_CENSUS_TRUNC`) now means: the sender's
+enumeration hit `NPC_CENSUS_MAX`, so the set of absent hands is unknowable this
+beat. The header stays 7 bytes; the low 15 bits remain the row count.
+
+**Class: REPURPOSE** of `count`'s top bit (recorded in §4.3 as required). No
+struct size or field offset moved; prototest's size pin is unchanged and its
+census framing test - which had been computing `need` without the v38 positions
+block, pinning a wire that no longer existed - was corrected in the same
+commit.
+
+**Why bit 15 and not an appended byte:** see the "Next bump worth spending"
+section above, kept verbatim. Short form: `PKT_NPC_CENSUS` is Path-A, an
+appended byte shifts every trailing array read by one on an old receiver and
+mass-culls the loaded area; a flagged count instead reads as `count > 512`
+there, the packet drops, the census goes STALE, and wide culling disables -
+fail-safe. netlinktest had already regression-locked the drop.
+
+**Receiver semantics:** absence against a truncated census holds the suppress
+dwell at zero (the dormancy idiom) in both the near and wide passes; presence
+is still applied, so reconciliation is additive. The same guard also consults
+the receiver's own persisted wide-sweep truncation (`wideCap` in the audit
+line, which had been computed and logged but never gated anything). The
+truncated->complete edge arms the widened re-judge sweep, exactly as the
+stale->fresh edge does, because bodies unjudged during the window may have
+drifted past the normal radius. Accepted residual: a body suppressed BEFORE
+truncation began, whose row then fell out of the capped list, cannot restore
+until a complete census or the re-judge - nearest-first ordering keeps the
+near world listed, so the residual lives in the far band.
+
+### §4.3 addendum
+
+| Field | Old meaning | New meaning (v58) |
+|---|---|---|
+| `NpcCensusHeader.count` bit 15 | part of the count (values > 512 impossible in practice, dropped by the receiver cap) | `NPC_CENSUS_TRUNC` — enumeration truncated; mask with `0x7FFF` before any use as a count |

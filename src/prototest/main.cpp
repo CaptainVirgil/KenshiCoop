@@ -329,7 +329,7 @@ static void testSizes() {
     CHECK("EVT_SQUAD_MOVE distinct", EVT_SQUAD_MOVE != EVT_RECRUIT &&
           EVT_SQUAD_MOVE != EVT_NONE && EVT_SQUAD_MOVE != EVT_EXIT_FURNITURE);
     CHECK_EQ("PROTOCOL_VERSION (v56: dialogue relay)",
-             (int)PROTOCOL_VERSION, 57);
+             (int)PROTOCOL_VERSION, 58); // v58: census truncation bit
 
     // Protocol 52: the shared money pool. The two players spend from ONE wallet,
     // so the join reports CHANGES and the host the authoritative TOTAL - swap
@@ -667,30 +667,60 @@ static void testFraming() {
     need = (unsigned)sizeof(EntityBatchHeader) + (unsigned)rh.count * (unsigned)sizeof(EntityState);
     CHECK("entity batch: overrun count rejected by len>=need", !(len >= need));
 
-    // NPC census framing (protocol 36): [NpcCensusHeader][u32 hand[5] * count],
-    // the exact "len >= need" bound NetLink applies plus the NPC_CENSUS_MAX cap.
+    // NPC census framing: [NpcCensusHeader][u32 hand[5]*count][f32 pos[3]*count]
+    // - the exact "len >= need" bound NetLink applies plus the NPC_CENSUS_MAX
+    // cap. This test computed `need` WITHOUT the v38 positions block until
+    // 2026-08-10, so it was pinning a pre-v38 wire that no longer existed.
+    // v58: count's bit 15 is the truncation flag; the receiver masks it before
+    // the bound check, and a pre-58 receiver reading the flagged count raw
+    // sees >NPC_CENSUS_MAX and drops - the fail-safe the bit was chosen for.
     {
         const unsigned CN = 4;
-        unsigned char cbuf[sizeof(NpcCensusHeader) + CN * 5 * sizeof(u32)];
+        unsigned char cbuf[sizeof(NpcCensusHeader) + CN * 5 * sizeof(u32)
+                           + CN * 3 * sizeof(f32)];
         NpcCensusHeader ch;
         ch.type = (u8)PKT_NPC_CENSUS; ch.ownerId = 1; ch.count = (u16)CN;
         std::memcpy(cbuf, &ch, sizeof(ch));
         u32 hands[CN * 5];
         for (unsigned i = 0; i < CN * 5; ++i) hands[i] = 1000u + i;
         std::memcpy(cbuf + sizeof(ch), hands, sizeof(hands));
+        f32 poss[CN * 3];
+        for (unsigned i = 0; i < CN * 3; ++i) poss[i] = 10.0f * i;
+        std::memcpy(cbuf + sizeof(ch) + sizeof(hands), poss, sizeof(poss));
         NpcCensusHeader cr;
         std::memcpy(&cr, cbuf, sizeof(cr));
+        unsigned cmask = (unsigned)(cr.count & 0x7FFFu);
         unsigned clen  = (unsigned)sizeof(cbuf);
-        unsigned cneed = (unsigned)sizeof(NpcCensusHeader) + (unsigned)cr.count * 5 * (unsigned)sizeof(u32);
+        unsigned cneed = (unsigned)sizeof(NpcCensusHeader)
+                       + cmask * 5 * (unsigned)sizeof(u32)
+                       + cmask * 3 * (unsigned)sizeof(f32);
         CHECK("npc census: full payload accepted",
-              clen >= cneed && cr.count == CN && cr.count <= NPC_CENSUS_MAX);
+              clen >= cneed && cmask == CN && cmask <= NPC_CENSUS_MAX);
+        CHECK("npc census: unflagged count decodes untruncated",
+              (cr.count & NPC_CENSUS_TRUNC) == 0);
         u32 back[CN * 5];
         std::memcpy(back, cbuf + sizeof(cr), sizeof(back));
         CHECK("npc census: hands round-trip", std::memcmp(back, hands, sizeof(hands)) == 0);
+        f32 pback[CN * 3];
+        std::memcpy(pback, cbuf + sizeof(cr) + sizeof(back), sizeof(pback));
+        CHECK("npc census: positions round-trip",
+              std::memcmp(pback, poss, sizeof(poss)) == 0);
         cr.count = (u16)(CN + 1);
-        cneed = (unsigned)sizeof(NpcCensusHeader) + (unsigned)cr.count * 5 * (unsigned)sizeof(u32);
+        cneed = (unsigned)sizeof(NpcCensusHeader)
+              + (unsigned)cr.count * 5 * (unsigned)sizeof(u32)
+              + (unsigned)cr.count * 3 * (unsigned)sizeof(f32);
         CHECK("npc census: overrun count rejected by len>=need", !(clen >= cneed));
         CHECK("npc census: cap sane", NPC_CENSUS_MAX >= 256 && NPC_CENSUS_MAX <= 2048);
+        // v58 flag arithmetic, exactly as the receiver performs it.
+        u16 flagged = (u16)(CN | NPC_CENSUS_TRUNC);
+        CHECK("npc census v58: flagged count masks back", (unsigned)(flagged & 0x7FFFu) == CN);
+        CHECK("npc census v58: flag decodes", (flagged & NPC_CENSUS_TRUNC) != 0);
+        u16 flaggedOver = (u16)(513u | NPC_CENSUS_TRUNC);
+        CHECK("npc census v58: masked overrun still rejected",
+              (unsigned)(flaggedOver & 0x7FFFu) > NPC_CENSUS_MAX);
+        // The old-receiver fail-safe: a pre-58 receiver reads the RAW count.
+        CHECK("npc census v58: flagged count rejected by a pre-58 receiver",
+              (unsigned)flagged > NPC_CENSUS_MAX);
     }
 
     // Save-file chunk framing (protocol 31): [SaveFileHeader][path][payload],
@@ -2742,7 +2772,7 @@ static void testFlushWorldStateContract() {
     in.pushWorldItems(1, 0, 0);
     in.pushWorldRemove(1, 0, 0);
     in.pushWorldClaim(1, 2, 0, 0);
-    in.pushNpcCensus(1, 0, 0, 0);
+    in.pushNpcCensus(1, 0, 0, 0, false);
     in.pushWorldDrop(1, wdp);
     in.pushWorldPickup(1, wpp);
     in.pushInvXfer(1, xf);

@@ -123,12 +123,34 @@ void Replicator::applyNpcCensus(Inbound& in) {
         }
     }
     censusRecvMs_ = nowMs();
+    // v58 truncation flag, with edge handling. Truncated -> "absence is
+    // unknown": the near/wide passes hold their suppress dwell at zero (the
+    // dormancy idiom) instead of judging an incomplete list. The
+    // trunc->complete edge arms the same widened re-judge sweep the
+    // stale->fresh edge uses, and for the same reason: bodies unjudged during
+    // the window may have drifted past the normal sweep radius.
+    {
+        bool wasTrunc = censusTrunc_;
+        censusTrunc_ = nc.truncated;
+        if (wasTrunc && !censusTrunc_) {
+            censusRejudge_ = true;
+            coop::logLine("[census] recv complete again (re-judge armed)");
+        } else if (!wasTrunc && censusTrunc_) {
+            coop::logLine("[census] recv TRUNCATED (peer cap hit; absence "
+                          "unknown, wide culls suspended)");
+            censusTruncLogMs_ = censusRecvMs_;
+        } else if (censusTrunc_ &&
+                   (censusRecvMs_ - censusTruncLogMs_) > 30000) {
+            censusTruncLogMs_ = censusRecvMs_; // 30 s re-log, like the publisher
+            coop::logLine("[census] recv still TRUNCATED");
+        }
+    }
     static unsigned long logTick = 0;
     if ((censusRecvMs_ - logTick) > 10000) {
         logTick = censusRecvMs_;
         char b[96];
-        _snprintf(b, sizeof(b) - 1, "[census] recv n=%u culls=%lu",
-                  n, censusCulls_);
+        _snprintf(b, sizeof(b) - 1, "[census] recv n=%u culls=%lu trunc=%d",
+                  n, censusCulls_, censusTrunc_ ? 1 : 0);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
 }
@@ -263,6 +285,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         if (censusRejudge_) radius = censusRadius_ * CENSUS_REJUDGE_SCALE;
         wn = engine::listNpcsWide(gw, radius, wChars, wStates, NPC_CENSUS_MAX,
                                   &wideTrunc, auditRows_);
+        wideTruncPrev_ = wideTrunc; // persisted: valid until the next sweep
         if (censusRejudge_) {
             char b[160]; _snprintf(b, sizeof(b) - 1,
                 "[census] re-judge sweep radius=%.0f (was stale; enumerated=%u trunc=%d)",
@@ -441,6 +464,15 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             ac.unstreamed = 0;
             continue;
         }
+        // v58: absence against an incomplete list - the peer's census carried
+        // the truncation bit, or our own last wide sweep hit its cap - is
+        // UNKNOWN, not evidence. Same idiom as the dormancy hold above: dwell
+        // pinned at zero, restore branch below untouched (presence is still
+        // evidence), so reconciliation stays additive until a complete list.
+        if (!exists && (censusTrunc_ || wideTruncPrev_)) {
+            ac.unstreamed = 0;
+            continue;
+        }
         {
             const unsigned long dt = (ac.lastMs == 0) ? 0
                 : ((authNow - ac.lastMs) > DWELL_STEP_MAX_MS ? DWELL_STEP_MAX_MS
@@ -587,6 +619,12 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             // to cull sat in regions nobody was watching at all.
             if (!exists && !observedAt(k, attnAnch, nAttnAnch,
                                        wStates[i].x, wStates[i].y, wStates[i].z)) {
+                ac.unstreamed = 0;
+                continue;
+            }
+            // v58 truncation hold, same as the near pass. This is the branch
+            // that was deleting real bodies against a capped list.
+            if (!exists && (censusTrunc_ || wideTruncPrev_)) {
                 ac.unstreamed = 0;
                 continue;
             }
@@ -1075,12 +1113,12 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         char b[448]; _snprintf(b, sizeof(b) - 1,
             "[audit] exist near=%u wide=%u drv=%u cen=%u hid=%u ghost=%u "
             "supp=%u census=%u fresh=%d parks=%lu "
-            "nearCap=%d wideCap=%d staleMs=%lu edges=%lu ghostMax=%.0f ghostEdge=%u "
+            "nearCap=%d wideCap=%d peerTrunc=%d staleMs=%lu edges=%lu ghostMax=%.0f ghostEdge=%u "
             "dorm=%u attnR=%.0f dormPc=%u pcs=%u mine=%u skip=%u cells=%u",
             n, wn, cDrv, cCen, cHid, cGhost,
             (unsigned)suppressed_.size(), (unsigned)censusHands_.size(),
             censusFresh ? 1 : 0, censusParks_,
-            nearTrunc ? 1 : 0, wideTrunc ? 1 : 0,
+            nearTrunc ? 1 : 0, wideTrunc ? 1 : 0, censusTrunc_ ? 1 : 0,
             censusStaleMs_, censusStaleEdges_, ghostMaxD, ghostEdge,
             cDorm, attentionRadius_, cDormPc, nPc,
             cMine, authSkip, (unsigned)claimedCells_.size());

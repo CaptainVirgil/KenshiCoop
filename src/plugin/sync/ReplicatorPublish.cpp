@@ -896,11 +896,11 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     // sacrificed rows in that margin, outside the radius the peer actually judges,
     // instead of wherever the enumeration happened to stop.
     //
-    // This narrows the lie; it does not end it. If the count inside the peer's own
-    // cull radius exceeds the cap, real bodies are still broadcast as absent, and
-    // no ordering fixes that - the receiver has to be TOLD the list was truncated,
-    // which is a wire change (NpcCensusHeader has no flag) and therefore a protocol
-    // bump. Recorded in docs/PROTOCOL_HISTORY.md as the next one worth spending.
+    // This narrows the lie; v58 ENDS it: the truncation bit on the wire count
+    // tells the receiver the list is incomplete, and it stops treating absence
+    // as evidence (suppress dwell held at zero) until a complete census
+    // arrives. The ordering still matters - it keeps the NEAR world fully
+    // described while truncated, so the flag degrades judgment, not vision.
     static unsigned int order[NPC_CENSUS_MAX]; // main-thread only
     for (unsigned int i = 0; i < n; ++i) order[i] = i;
     if (trunc && n > 1) {
@@ -974,7 +974,9 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         ++m;
     }
     pruneAttention(censusKeys);
-    net.queueNpcCensus(ownerId, hands, poss, m);
+    // trunc, not censusPubTrunc_: the member only updates on log edges; the
+    // wire must carry THIS beat's truth.
+    net.queueNpcCensus(ownerId, hands, poss, m, trunc);
 
     // Phase 2 mid-band tier: rebuild the round-robin list from this census
     // walk. Everything beyond the stream bubble's KEEP band belongs to the

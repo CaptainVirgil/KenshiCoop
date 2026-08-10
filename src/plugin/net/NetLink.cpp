@@ -235,9 +235,10 @@ void NetLink::queueWorldClaim(u32 ownerId, u32 authorId, const u32* netIds,
 }
 
 void NetLink::queueNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                             unsigned int count) {
+                             unsigned int count, bool truncated) {
     OutNpcCensus oc;
     oc.ownerId = ownerId;
+    oc.truncated = truncated;
     if (count > NPC_CENSUS_MAX) count = NPC_CENSUS_MAX;
     if (hands && count > 0) oc.hands.assign(hands, hands + count * 5);
     if (pos && count > 0) oc.pos.assign(pos, pos + count * 3);
@@ -763,18 +764,28 @@ void NetLink::threadLoop() {
                         if (len >= sizeof(NpcCensusHeader) && inbound_) {
                             NpcCensusHeader hdr;
                             std::memcpy(&hdr, ev.packet->data, sizeof(hdr));
+                            // v58: mask the truncation bit BEFORE the bound
+                            // check and every offset below. A pre-58 sender
+                            // never sets it, so the mask is a no-op there; a
+                            // pre-58 RECEIVER of a flagged count sees >512 and
+                            // drops - the fail-safe the bit was chosen for.
+                            const bool truncated =
+                                (hdr.count & NPC_CENSUS_TRUNC) != 0;
+                            const unsigned count =
+                                (unsigned)(hdr.count & 0x7FFFu);
                             unsigned need = sizeof(NpcCensusHeader)
-                                          + (unsigned)hdr.count * 5 * sizeof(u32)
-                                          + (unsigned)hdr.count * 3 * sizeof(float);
-                            if (len >= need && hdr.count <= NPC_CENSUS_MAX) {
+                                          + count * 5 * sizeof(u32)
+                                          + count * 3 * sizeof(float);
+                            if (len >= need && count <= NPC_CENSUS_MAX) {
                                 const enet_uint8* p = ev.packet->data + sizeof(NpcCensusHeader);
                                 const u32* hands =
-                                    (hdr.count > 0) ? reinterpret_cast<const u32*>(p) : 0;
-                                const float* pos = (hdr.count > 0)
+                                    (count > 0) ? reinterpret_cast<const u32*>(p) : 0;
+                                const float* pos = (count > 0)
                                     ? reinterpret_cast<const float*>(
-                                          p + (unsigned)hdr.count * 5 * sizeof(u32))
+                                          p + count * 5 * sizeof(u32))
                                     : 0;
-                                inbound_->pushNpcCensus(hdr.ownerId, hands, pos, hdr.count);
+                                inbound_->pushNpcCensus(hdr.ownerId, hands, pos,
+                                                        count, truncated);
                             }
                         }
                     } else if (type == PKT_WORLD_DROP) {
@@ -1354,7 +1365,10 @@ void NetLink::threadLoop() {
             NpcCensusHeader hdr;
             hdr.type    = (u8)PKT_NPC_CENSUS;
             hdr.ownerId = censuses[i].ownerId;
-            hdr.count   = (u16)count;
+            // v58: bit 15 = the enumeration truncated. See Wire.h for why the
+            // flag rides the count instead of growing the header.
+            hdr.count   = (u16)(count |
+                                (censuses[i].truncated ? NPC_CENSUS_TRUNC : 0));
             std::memcpy(out->data, &hdr, sizeof(hdr));
             if (count > 0) {
                 std::memcpy(out->data + sizeof(hdr), &censuses[i].hands[0],
