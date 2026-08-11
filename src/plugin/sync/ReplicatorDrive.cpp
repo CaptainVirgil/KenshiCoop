@@ -1628,10 +1628,21 @@ void Replicator::applyTargets(GameWorld* gw) {
                 // stamp WHERE and WHEN this body was handed to local AI. The
                 // re-adopt (or the next park) measures how far local AI walked
                 // it in the gap - the two-writer damage, per body, countable.
-                ++midRestReleases_;
-                d.relMs = now;
-                if (haveActual) { d.relX = ax; d.relZ = az; }
-                else            { d.relX = out.x; d.relZ = out.z; }
+                // TRANSITION-gated, not per-tick. This branch re-runs every
+                // frame for a body that is already released (the erase is
+                // idempotent), so stamping here unconditionally counted ~300
+                // "releases" per second - 1,059,163 in one session - and reset
+                // the walk-origin every tick, making relWalk measure one
+                // frame's motion instead of the whole released interval. The
+                // number that matters is how far LOCAL AI takes a body between
+                // being let go and being re-adopted; only the edge starts that
+                // clock.
+                if (d.relMs == 0) {
+                    ++midRestReleases_;
+                    d.relMs = now;
+                    if (haveActual) { d.relX = ax; d.relZ = az; }
+                    else            { d.relX = out.x; d.relZ = out.z; }
+                }
                 lifeSet(it->first, LIFE_PARKED, "mid-rest");
                 debugMark(c, 2, lifeName(LIFE_PARKED));
                 continue;
@@ -1757,7 +1768,35 @@ void Replicator::applyTargets(GameWorld* gw) {
             snapOk = gapNewest > snapGate * 3.0f &&
                      (!midTier || (now - d.npcSnapTick) >= NPC_SNAP_COOL_MS);
         }
-        if (genuinelyMoving && haveActual && gapNewest > snapGate && snapOk) {
+        // LOCAL-combat veto (2026-08-10). The combat branch above is entered on
+        // the STREAMED task, and out.task lags by a send interval - up to ~500 ms
+        // on the mid band - so a copy that is swinging RIGHT NOW while the stream
+        // still describes it walking never reaches those wide combat bands. It
+        // lands here instead, on the generic gate, where a fighting body's
+        // footwork reads as drift because a fighting body does not obey walk
+        // orders. Measured live: 21,169 hard snaps on bodies in local combat
+        // against 551 from the combat drive itself - the "NPCs glitching in
+        // buildings" report, where tight interiors make the two sims' footwork
+        // diverge fastest.
+        //
+        // Not a disable: the churn ceiling the combat drive already uses
+        // (combatSnapDist_, default 20 u) replaces the generic gate, so a body
+        // that has genuinely LEFT still snaps, while melee churn converges
+        // through the walk drive as it does inside the combat branch. readCombat
+        // runs only when a snap is otherwise about to fire, so this costs
+        // exactly what the existing snapCbt counter already cost.
+        bool combatVeto = false;
+        if (genuinelyMoving && haveActual && gapNewest > snapGate && snapOk &&
+            gapNewest <= combatSnapDist_) {
+            engine::CombatRead vcr;
+            if (engine::readCombat(c, &vcr) &&
+                (vcr.inCombat || vcr.modeActive || vcr.underMelee)) {
+                combatVeto = true;
+                ++snapVetoCombat_;
+            }
+        }
+        if (genuinelyMoving && haveActual && gapNewest > snapGate && snapOk &&
+            !combatVeto) {
             // Fell behind / source warped: hard-snap to the true position
             // (no-halt teleport keeps the clip phase advancing).
             engine::applyRaw(c, newest);
@@ -2104,11 +2143,11 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         // nearly bought a behaviour change to fix a bug that did not exist.
         _snprintf(b, sizeof(b),
                   "[ai] suspended=%u driven=%u targets=%u"
-                  " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu",
+                  " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu snapVeto=%lu",
                   engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
                   (unsigned)targets_.size(),
                   midRestReleases_, relWalkDist_,
-                  relWalkMs_ / 1000, snapInCombat_);
+                  relWalkMs_ / 1000, snapInCombat_, snapVetoCombat_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).

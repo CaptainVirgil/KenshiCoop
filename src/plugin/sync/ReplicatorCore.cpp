@@ -44,7 +44,7 @@ Replicator::Replicator()
       pcSampleN_(0), pcSampleMs_(0), midRowsMs_(0), splitAuthority_(false),
       freezeSkipDriven_(0), freezeSkipCombat_(0),
       midRestReleases_(0), relWalkDist_(0.0f), relWalkMs_(0), relWalkN_(0),
-      snapInCombat_(0), weatherSync_(true), dialogueSync_(true), weatherLastSendMs_(0),
+      snapInCombat_(0), snapVetoCombat_(0), weatherSync_(true), dialogueSync_(true), weatherLastSendMs_(0),
       weatherSeqOut_(1), weatherSeqIn_(0), weatherLastWhy_(-1),
       weatherLastStrength_(0.0f), weatherLastEffect_(0.0f), weatherLastEnd_(0),
       weatherLastSeason_(0), weatherLastSeasonEnd_(0), weatherHave_(false),
