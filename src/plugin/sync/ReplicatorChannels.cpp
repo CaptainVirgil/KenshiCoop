@@ -2285,9 +2285,37 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
     bool userActed = false;
     {
         float im = 0.0f; bool ip = false;
-        while (engine::consumeSpeedIntent(gw, &im, &ip)) {
+        // BOUNDED. consumeSpeedIntent's poll fallback derives "the user acted"
+        // by diffing engine state against what we last wrote, and clears that
+        // difference on its way out - so it self-terminates only as long as
+        // every branch really does explain the state it just reported. That is
+        // a property of code we do not own the other half of (the engine can
+        // rewrite the speed between two calls), and this loop runs on the MAIN
+        // THREAD: a branch that reports without explaining does not degrade,
+        // it hangs the game with no diagnostic. A 2026-08-10 session wedged the
+        // main thread permanently inside publish - beats frozen at 376716 while
+        // the net thread kept running and inbound piled up at 47 KB/s - and
+        // this was the only unbounded engine-driven drain in the tick.
+        // Not proven to be that hang. Capped anyway: 64 real speed clicks
+        // between two frames is not a thing a human does, so the cap cannot
+        // discard a genuine vote, and it converts a hypothetical hang into one
+        // log line naming the culprit.
+        const int SPEED_INTENT_MAX = 64;
+        int drained = 0;
+        while (drained < SPEED_INTENT_MAX &&
+               engine::consumeSpeedIntent(gw, &im, &ip)) {
             speedMyReq_ = ip ? 0.0f : im;
             userActed = true;
+            ++drained;
+        }
+        if (drained >= SPEED_INTENT_MAX) {
+            // Rate-limited: if this ever fires it fires every tick.
+            if (speedIntentFloodMs_ == 0 || (now - speedIntentFloodMs_) > 10000) {
+                speedIntentFloodMs_ = now;
+                coop::logLine("[speed] WARNING intent drain hit its cap - "
+                              "consumeSpeedIntent is reporting without "
+                              "explaining; speed votes may be wrong");
+            }
         }
     }
     if (speedMyReq_ < 0.0f) {

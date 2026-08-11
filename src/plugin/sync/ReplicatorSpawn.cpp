@@ -644,9 +644,9 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
                 // for exactly the bodies most likely to be carried (world NPCs
                 // the join proxies), and only the heal - equally blind - ever
                 // retried.
-                unsigned int ch[5];
-                bool ok = carrier && localHandForStreamed(sh, ch) &&
-                          engine::applyPickup(0, carrier, ch);
+                Character* carriedC = localCharForStreamed(sh);
+                bool ok = carrier && carriedC &&
+                          engine::applyPickupChar(0, carrier, carriedC);
                 char cb[160]; _snprintf(cb, sizeof(cb) - 1,
                     "[carry] RECV PICKUP id=%u carrier=%u,%u carried=%u,%u ok=%d",
                     ev.eventId, ev.aIndex, ev.aSerial, ev.sIndex, ev.sSerial,

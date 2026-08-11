@@ -1143,7 +1143,21 @@ void Replicator::detectAndPublishWeaponDrops(GameWorld* gw, NetLink& net, u32 ow
                 // feet, so the peer relocating its own copy there reproduces the drop. (A rare
                 // intra-squad trade would be mirrored as a drop here; reconcile then corrects it.)
                 prevC.retries.erase(pe->first); prevC.retryArmMs.erase(pe->first);
-                if (!engine::objectWorldPos(cHand, pos)) {
+                // The ORIGIN sentinel applies to the owner-feet fallback too, and
+                // did not used to. The per-item read below is already guarded
+                // against (0,0,0) with a comment explaining that a town-dropped
+                // item reports its transform as origin the frame it grounds - but
+                // objectWorldPos on the OWNER can return true with zeros the same
+                // way, and that value went straight onto the wire as the mirror
+                // target. Live 2026-08-10: "[wd] DROP id=20 ... pos=0.00,0.00,0.00".
+                // The peer then relocates its copy to world origin, which reads to
+                // the player exactly as the reported symptom - one client can see a
+                // dropped item and the other cannot. Refusing the beat leaves the
+                // item unmirrored (visible to the dropper only) instead of moving it
+                // somewhere neither player will ever walk.
+                const bool ownerPosOk = engine::objectWorldPos(cHand, pos) &&
+                                        !(pos[0] == 0.0f && pos[1] == 0.0f && pos[2] == 0.0f);
+                if (!ownerPosOk) {
                     if (dumpWd) { char b[160]; _snprintf(b, sizeof(b) - 1,
                         "[wd] decrease-nopos hand=%u,%u,%u,%u,%u sid='%s' (owner pos unresolved; skip)",
                         it->t, it->c, it->cs, it->i, it->s, pe->first.c_str());
@@ -1161,6 +1175,25 @@ void Replicator::detectAndPublishWeaponDrops(GameWorld* gw, NetLink& net, u32 ow
             // UI drop it persists as the now-grounded object (conservation). Remember it so a
             // later PICKUP intent re-homes this exact object without a spatial re-query.
             std::deque<void*>& departed = prevC.ptrs[pe->first];
+            // BOUND the mirror count. delta is the difference of two ENGINE-READ
+            // inventory counts (:1095), and this loop body queues a RELIABLE
+            // packet, grows groundedWeapons_ and writes a log line on every
+            // iteration - so a single bad read does not degrade, it wedges the
+            // main thread and floods the reliable channel. The project's own
+            // doctrine says validate untrusted engine values before acting on
+            // them; a count used as an iteration bound is the same class of
+            // input as the floats we already sanitize, and it had no check at
+            // all. 256 is far past any real one-tick shed of a single sid.
+            const int WD_DROP_MAX = 256;
+            if (delta > WD_DROP_MAX) {
+                char b[200]; _snprintf(b, sizeof(b) - 1,
+                    "[wd] WARNING implausible drop delta=%d sid='%s' hand=%u,%u,%u,%u,%u "
+                    "- clamped to %d (suspect inventory read)",
+                    delta, pe->first.c_str(), it->t, it->c, it->cs, it->i, it->s,
+                    WD_DROP_MAX);
+                b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                delta = WD_DROP_MAX;
+            }
             for (int d = 0; d < delta; ++d) {
                 void* di = departed.empty() ? 0 : departed.front();
                 // Prefer the REAL dropped object's position (the exact cursor-drop spot) over

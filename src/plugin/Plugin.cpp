@@ -830,10 +830,25 @@ void coopPanelDrive() {
                     _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
                               " - mods match (%u)", g_localModsCount);
                 } else {
-                    _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
-                              " - MODS MISMATCH yours=%08x(%u) theirs=%08x(%u)",
-                              g_localModsHash, g_localModsCount,
-                              ph, (unsigned)g_net.peerModsCount());
+                    // Short by design: the panel line already carries the
+                    // connection state and transport, and the full form
+                    // (" - MODS MISMATCH yours=%08x(%u) theirs=%08x(%u)") ran
+                    // off the end of the panel where neither player could read
+                    // the half that mattered. The COUNTS are the diagnostic a
+                    // player can act on - equal counts mean same mods in a
+                    // different ORDER, which is the case that actually
+                    // happened (60 vs 60, 2d49eaad vs 4f1e54f1) and the case a
+                    // hash alone reads as unhelpfully as any other. The full
+                    // hashes stay in the log line at handshake.
+                    if (g_localModsCount == (unsigned)g_net.peerModsCount())
+                        _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
+                                  " - MODS DIFFER (both %u - check ORDER)",
+                                  g_localModsCount);
+                    else
+                        _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
+                                  " - MODS DIFFER (%u vs %u)",
+                                  g_localModsCount,
+                                  (unsigned)g_net.peerModsCount());
                 }
                 modsSuffix[sizeof(modsSuffix) - 1] = '\0';
             }
@@ -1234,17 +1249,17 @@ static void logTickBudget(unsigned long pubUs, unsigned long appUs) {
 
 void tickReplicatePublish(GameWorld* gw, bool worldLive) {
     if (worldLive) {
-        g_repl.ingest(g_inbound);
+        coop::mainThreadBeat("pub:ingest"); g_repl.ingest(g_inbound);
         // Phase 4a: drain received container-contents snapshots into the per-container
         // cache (reconciled after the engine tick by applyInventories).
-        g_repl.ingestInv(g_inbound);
+        coop::mainThreadBeat("pub:ingestInv"); g_repl.ingestInv(g_inbound);
         // Both clients latch reliable transition events (KO/death/revive) for the bodies
         // they drive, before apply (a side can emit an event for its own owned body and
         // the peer that drives that body must honour it).
-        g_repl.applyEvents(gw, g_inbound);
+        coop::mainThreadBeat("pub:applyEvents"); g_repl.applyEvents(gw, g_inbound);
     }
     if (worldLive) {
-        g_repl.publishOwned(gw, g_net, g_net.localId());
+        coop::mainThreadBeat("pub:owned"); g_repl.publishOwned(gw, g_net, g_net.localId());
         // Phase W2: BOTH clients watch their OWNED characters for a WEAPON drop and author a
         // reliable conservation intent so the peer relocates its own copy of that weapon (a
         // weapon can't be rebuilt via the W1 proxy path). Bidirectional; gated on worldSync.
@@ -1253,22 +1268,28 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // means that signal is current rather than one tick stale. Otherwise a bag snapshot
         // can be authored ahead of the intent that explains it, and the peer's reconcile
         // destroys the copy the intent was going to relocate.
-        if (g_cfg.worldSync)
+        if (g_cfg.worldSync) {
+            coop::mainThreadBeat("pub:weaponDrops");
             g_repl.detectAndPublishWeaponDrops(gw, g_net, g_net.localId());
+        }
         // Phase W3 convergence: prune ground-gear tracks whose object is gone (a stale
         // Item* is how a re-home silently no-ops, leaving the author's copy on the ground
         // as a duplicate) and finish any re-home the peer's pickup could not complete yet.
         // Ordered before publishInventories so a completed re-home ships in THIS tick's
         // snapshot; it only ever touches PEER-owned containers, so it cannot feed the
         // owned-character census above and loop.
-        if (g_cfg.worldSync)
+        if (g_cfg.worldSync) {
+            coop::mainThreadBeat("pub:groundGear");
             g_repl.reconcileGroundGear(gw);
+        }
         // Both clients stream the contents of every squad member they OWN (host tab 0,
         // join tab 1) on content-change - bidirectional, disjoint by the same tab
         // partition as positional sync. Gated on invSync so ordinary co-op sessions add
         // no inventory traffic; the peer reconciles via applyInventories (skips own).
-        if (g_cfg.invSync)
+        if (g_cfg.invSync) {
+            coop::mainThreadBeat("pub:inventories");
             g_repl.publishInventories(gw, g_net, g_net.localId());
+        }
         // Protocol 37: BOTH clients diff every tracked container (own + received)
         // against its baseline to catch a completed cross-owner UI drag - the one
         // inventory write the single-writer snapshots cannot represent - and author
@@ -1278,15 +1299,19 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // blockXfer is on, making this (and applyTransfers below) a no-op. The
         // xferLatch_/xferDefer_ reconcile-race machinery then stays dormant (never
         // populated). KENSHICOOP_BLOCK_XFER=0 restores this replicate-the-trade path.
-        if (g_cfg.xferSync)
+        if (g_cfg.xferSync) {
+            coop::mainThreadBeat("pub:transfers");
             g_repl.detectAndPublishTransfers(gw, g_net, g_net.localId());
+        }
         // Phase W1 (bidirectional): BOTH clients stream the free ground items they
         // author in their interest sphere - owner-scoped netId spaces, peer items
         // filtered by the proxy echo guard - so a join-side drop of materials/food
         // finally appears on the host. Proxies reconcile after the engine tick
         // (applyWorldItems, also both sides now).
-        if (g_cfg.worldSync)
+        if (g_cfg.worldSync) {
+            coop::mainThreadBeat("pub:worldItems");
             g_repl.publishWorldItems(gw, g_net, g_net.localId());
+        }
         // Phase 2 (player combat + medical): owner-authoritative vitals sync for
         // player-squad members, both directions. publishMedical streams OUR
         // members' medical model (change-gated, reliable); applyMedical writes
@@ -1295,18 +1320,21 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // applyTreatments lands forwarded first aid on the bodies we own.
         // Ordered after publishOwned (they use the ownHands_ set it refreshes).
         if (g_cfg.medSync) {
-            g_repl.publishMedical(gw, g_net, g_net.localId());
-            g_repl.applyMedical(gw, g_inbound, g_net, g_net.localId());
-            g_repl.applyTreatments(gw, g_inbound);
+            coop::mainThreadBeat("pub:medical"); g_repl.publishMedical(gw, g_net, g_net.localId());
+            coop::mainThreadBeat("pub:applyMedical"); g_repl.applyMedical(gw, g_inbound, g_net, g_net.localId());
+            coop::mainThreadBeat("pub:treatments"); g_repl.applyTreatments(gw, g_inbound);
             // Join-dealt authoritative damage (protocol 45): the JOIN forwards the
             // damage its guarded melee would have dealt to driven world-NPC copies;
             // the HOST applies it to the real body (blood + a frontal flesh wound),
             // which the vitals stream then mirrors back. Decouples the join PC's
             // damage from its disrupted (position-driven) copy animation.
-            if (g_cfg.isHost)
+            if (g_cfg.isHost) {
+                coop::mainThreadBeat("pub:applyHits");
                 g_repl.applyCombatHits(gw, g_inbound);
-            else
+            } else {
+                coop::mainThreadBeat("pub:pubHits");
                 g_repl.publishCombatHits(gw, g_net, g_net.localId());
+            }
         }
         // Character stats sync (protocol 17): owner-authoritative CharStats
         // stream for player-squad members, both directions. publishStats
@@ -1314,8 +1342,8 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // writes received snapshots onto the peer copies we drive. Ordered
         // after publishOwned (they use the ownHands_ set it refreshes).
         if (g_cfg.statsSync) {
-            g_repl.publishStats(gw, g_net, g_net.localId());
-            g_repl.applyStats(gw, g_inbound);
+            coop::mainThreadBeat("pub:stats"); g_repl.publishStats(gw, g_net, g_net.localId());
+            coop::mainThreadBeat("pub:applyStats"); g_repl.applyStats(gw, g_inbound);
         }
         // Shared money pool (protocol 52): Kenshi keeps ONE player wallet, so
         // both players spend from one pool with the host as authority. Publish
@@ -1324,24 +1352,28 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // total. Ordered after publishOwned so isHostRole() reflects this tick's
         // ownership partition.
         if (g_cfg.moneySync) {
-            g_repl.publishMoneyPool(replCtx(gw));
-            g_repl.applyMoneyPool(replCtx(gw));
+            coop::mainThreadBeat("pub:money"); g_repl.publishMoneyPool(replCtx(gw));
+            coop::mainThreadBeat("pub:applyMoney"); g_repl.applyMoneyPool(replCtx(gw));
         }
         // Recruitment sync (protocol 23): drain the recruit detour's edge queue
         // into reliable EVT_RECRUIT events (subject = old hand, actor = new
         // hand) and pin recruited hands to their recruiter's ownership. The
         // receive half (re-key) lives in applyEvents above. Ordered after
         // publishOwned so this tick's recruits pin BEFORE next tick's census.
-    if (g_cfg.recruitSync)
+    if (g_cfg.recruitSync) {
+        coop::mainThreadBeat("pub:recruits");
         g_repl.publishRecruits(gw, g_net, g_net.localId());
+    }
 
     // Squad management sync (protocol 35): poll the roster's pointer->hand
     // baseline (~2 Hz; a squad-tab move re-containers the body but the
     // Character* survives) and author reliable EVT_SQUAD_MOVE re-key edges,
     // pinning moved hands to the mover's ownership. The receive half (shared
     // EVT_RECRUIT re-key path) lives in applyEvents above.
-    if (g_cfg.squadSync)
+    if (g_cfg.squadSync) {
+        coop::mainThreadBeat("pub:squadMoves");
         g_repl.publishSquadMoves(gw, g_net, g_net.localId());
+    }
 
     // Change-gated sampled channels (Phase 6c): faction relations (protocol 24),
     // baked doors (26), placed buildings (27), placed-building doors (28),
@@ -1352,23 +1384,27 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
     // and cadence order, so adding a sampled channel is one table row there -
     // not an edit to this tick. Ordered after recruit/squad (ownership pins)
     // and before stealth/speed/time, exactly as the explicit blocks were.
-    g_repl.driveSampledChannels(replCtx(gw));
+    coop::mainThreadBeat("pub:sampled"); g_repl.driveSampledChannels(replCtx(gw));
         // Stealth sync (protocol 20): the HOST is the world-detection authority
         // - it streams each DRIVEN sneaker's whoSeesMeSneaking back to the
         // sneaker's owner; every client replays received snapshots onto the
         // bodies it OWNS (the indicators render on the owner's screen). The
         // posture half lives inside applyTargets (continuous BODY_SNEAK apply).
         if (g_cfg.stealthSync) {
-            if (g_cfg.isHost)
+            if (g_cfg.isHost) {
+                coop::mainThreadBeat("pub:stealth");
                 g_repl.publishStealth(gw, g_net, g_net.localId());
-            g_repl.applyStealthFeedback(gw, g_inbound);
+            }
+            coop::mainThreadBeat("pub:stealthFb"); g_repl.applyStealthFeedback(gw, g_inbound);
         }
         // Consensus game-speed sync: detect local speed clicks as REQUESTS,
         // host arbitrates effective = min(requests) (capped at 1x while either
         // player squad fights) and broadcasts; the join applies the SET. Runs
         // after publishOwned (the combat flag samples the ownHands_ set).
-        if (g_cfg.speedSync)
+        if (g_cfg.speedSync) {
+            coop::mainThreadBeat("pub:speed");
             g_repl.syncSpeed(gw, g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+        }
         // Phase 6 (6a evidence spike): env-gated ([shackledbg]) per-character
         // shackle/lock trace. No-op unless KENSHICOOP_DEBUG_SHACKLE=1, so it is
         // free to leave in the tick for manual-session characterization.
@@ -1378,17 +1414,21 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
         // multiplier the speed layer's quiet writes fold in on top of the
         // arbitrated consensus effective. AFTER syncSpeed so a slew change
         // applies against this tick's consensus state.
-        if (g_cfg.timeSync)
+        if (g_cfg.timeSync) {
+            coop::mainThreadBeat("pub:time");
             g_repl.syncTime(gw, g_inbound, g_net, g_net.localId(), g_cfg.isHost);
-            g_repl.syncWeather(g_inbound, g_net, g_net.localId(), g_cfg.isHost);
-            g_repl.syncDialogue(gw, g_inbound, g_net, g_net.localId());
+        }
+            coop::mainThreadBeat("pub:weather"); g_repl.syncWeather(g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+            coop::mainThreadBeat("pub:dialogue"); g_repl.syncDialogue(gw, g_inbound, g_net, g_net.localId());
         // Runtime-spawn proxy replication (protocol 21): the join asks about
         // streamed hands it couldn't resolve last tick (host RUNTIME spawns)
         // and mints local proxy bodies from the host's replies; the host
         // answers requests. BEFORE the engine tick so a proxy bound this
         // frame is driven by this frame's applyTargets.
-        if (g_cfg.spawnSync)
+        if (g_cfg.spawnSync) {
+            coop::mainThreadBeat("pub:spawns");
             g_repl.syncSpawns(gw, g_inbound, g_net, g_net.localId(), g_cfg.isHost);
+        }
     }
 }
 
@@ -1846,6 +1886,12 @@ void mainLoop_hook(GameWorld* gw, float dt) {
     // into "it stopped HERE". Literals only - the pointer is published to another
     // thread. Four stores and four clock reads per frame, against a budget the
     // [budget] line already measures in microseconds.
+    // "publish" is the ENTRY beat; each stage inside tickReplicatePublish
+    // re-stamps its own name (pub:owned, pub:worldItems, ...). A 21.9 s stall
+    // on 2026-08-10 reported the bare "publish" and could not say which of
+    // thirteen stages hung - the same coarseness the frame-end beat had before
+    // it was split. If a stall ever names "publish" again, it is the entry
+    // itself; anything else names its stage.
     coop::mainThreadBeat("publish");
     const unsigned long tPub0 = coop::monoUs();
     tickReplicatePublish(gw, worldLive);

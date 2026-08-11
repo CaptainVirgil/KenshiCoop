@@ -309,6 +309,17 @@ bool applyPickup(GameWorld* gw, Character* carrier,
     return false;
 }
 
+// The pointer form the carry heal now uses. Counts against the CARRIER, same
+// as applyPickup, so a test can assert "the heal fired" without caring which
+// overload the drive chose. Returns false like its sibling: these fakes model
+// the engine DECLINING, which is the case the drive's retry logic exists for.
+bool applyPickupChar(GameWorld* gw, Character* carrier, Character* carried) {
+    (void)gw; (void)carried;
+    CharLedger* l = rec(carrier);
+    if (l) ++l->applyPickup;
+    return false;
+}
+
 bool applyDrop(Character* carrier, bool ragdoll) {
     (void)ragdoll;
     CharLedger* l = rec(carrier);

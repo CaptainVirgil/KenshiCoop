@@ -1229,9 +1229,9 @@ void Replicator::applyTargets(GameWorld* gw) {
                     // resolves through the engine only - so without this the
                     // heal retried ok=0 every CARRY_HEAL_MS forever while the
                     // body stayed upright and fought (live 2026-08-10).
-                    unsigned int ch[5];
-                    const bool haveCh = localHandForStreamed(sh, ch);
-                    bool ok = haveCh && engine::applyPickup(gw, c, ch);
+                    Character* carried = localCharForStreamed(sh);
+                    const bool haveCh = (carried != 0);
+                    bool ok = haveCh && engine::applyPickupChar(gw, c, carried);
                     char b[160]; _snprintf(b, sizeof(b) - 1,
                         "[carry] HEAL PICKUP carrier=%u,%u carried=%u,%u ok=%d%s",
                         out.hIndex, out.hSerial, out.sIndex, out.sSerial,

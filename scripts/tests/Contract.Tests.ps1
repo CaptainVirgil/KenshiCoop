@@ -486,6 +486,59 @@ Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- summary ------------------------------------------------------------------
 Write-Host ""
+
+# A watchdog beat must never escape the guard of the call it names.
+#
+# 2026-08-10: the publish tick was sub-phased by prefixing each stage with
+# coop::mainThreadBeat("pub:<stage>"). Twelve of those stages were written as a
+# BRACELESS guarded statement -
+#     if (g_cfg.worldSync)
+#         g_repl.publishWorldItems(...);
+# - so the mechanical prefix produced
+#     if (g_cfg.worldSync)
+#         coop::mainThreadBeat("pub:worldItems"); g_repl.publishWorldItems(...);
+# which makes the beat the guarded statement and the PUBLISH UNCONDITIONAL.
+# Every config gate in the tick (worldSync, invSync, xferSync, speedSync,
+# timeSync, spawnSync, recruitSync, squadSync) was silently defeated. The
+# compiler caught exactly one of the twelve - the single stage that happened to
+# have an `else` - and the whole C++ gate passed on the other eleven, because
+# nothing in it exercises a disabled feature.
+#
+# This is a source-drift check, not a behaviour test: it asks that no control
+# statement be followed by a beat on the next line without an opening brace.
+Write-Host ""
+Write-Host "== watchdog beats stay inside their guard =="
+$pluginCpp = Join-Path $repoRoot "src/plugin/Plugin.cpp"
+if (-not (Test-Path $pluginCpp)) {
+    Check "src/plugin/Plugin.cpp exists" $false
+} else {
+    $pl = Get-Content -LiteralPath $pluginCpp
+    $escaped = @()
+    for ($i = 1; $i -lt $pl.Count; $i++) {
+        if ($pl[$i] -notmatch 'mainThreadBeat\(') { continue }
+        # nearest preceding non-blank line
+        $j = $i - 1
+        while ($j -ge 0 -and $pl[$j].Trim() -eq '') { $j-- }
+        if ($j -lt 0) { continue }
+        $prev = $pl[$j].Trim()
+        if ($prev -match '^(if|else if|else|for|while)\b' -and $prev -notmatch '\{\s*$') {
+            $escaped += ("line {0}: beat follows unbraced '{1}'" -f ($i + 1), $prev)
+        }
+    }
+    Check "no watchdog beat escapes an unbraced guard" ($escaped.Count -eq 0) `
+        ($escaped -join '; ')
+
+    # And every beat label must be unique - two stages sharing a name makes the
+    # stall report ambiguous, which is the entire thing sub-phasing bought.
+    $labels = @()
+    foreach ($line in $pl) {
+        if ($line -match 'mainThreadBeat\("([^"]+)"\)') { $labels += $Matches[1] }
+    }
+    $dupes = ($labels | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+    Check "watchdog beat labels are unique" ($dupes.Count -eq 0) ($dupes -join ', ')
+}
+
+
 Write-Host ("contract fixtures: {0}/{1} checks passed{2}" -f `
     $script:Pass, ($script:Pass + $script:Fail), $(if ($script:Fail) { " - FAIL" } else { " - PASS" }))
 exit $script:Fail

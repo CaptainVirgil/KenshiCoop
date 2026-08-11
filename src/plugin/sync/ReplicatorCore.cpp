@@ -73,7 +73,7 @@ Replicator::Replicator()
       speedLastApplied_(-1.0f), speedMyReq_(-1.0f), speedPeerReq_(-1.0f),
       speedCombatCap_(true),
       speedMyCombat_(false), speedPeerCombat_(false), speedLastSet_(-1.0f),
-      speedSeqOut_(1), speedSeqSeen_(0),
+      speedSeqOut_(1), speedSeqSeen_(0), speedIntentFloodMs_(0),
       speedLastSendMs_(0), speedCombatSampleMs_(0), speedCombatHoldMs_(0),
       spawnSync_(false), spawnPosLogMs_(0),
       spawnMintRadius_(0.0f), censusScanMs_(0),
@@ -101,6 +101,22 @@ Replicator::Replicator()
       lifeSweepMs_(0) {
     peerCam_[0] = peerCam_[1] = peerCam_[2] = 0.0f;
     weatherLastName_[0] = '\0';
+}
+
+Character* Replicator::localCharForStreamed(const unsigned int inHand[5]) {
+    if (!inHand) return 0;
+    Character* c = engine::resolveCharByHand(inHand[3], inHand[4], inHand[0],
+                                             inHand[1], inHand[2]);
+    if (c) return c;
+    Key k; k.t = inHand[0]; k.c = inHand[1]; k.cs = inHand[2];
+    k.i = inHand[3]; k.s = inHand[4];
+    std::map<Key, Character*>::iterator pit = proxyByKey_.find(k);
+    if (pit == proxyByKey_.end() || !pit->second) return 0;
+    // readHand doubles as the liveness proof, exactly as the drive's viaProxy
+    // path does before it dereferences a proxy pointer.
+    unsigned int lh[5];
+    if (!engine::readHand(pit->second, lh)) return 0;
+    return pit->second;
 }
 
 bool Replicator::localHandForStreamed(const unsigned int inHand[5],
@@ -385,6 +401,7 @@ void Replicator::resetSession() {
     speedPeerCombat_  = false;
     speedLastSet_     = -1.0f;
     speedSeqSeen_     = 0;
+    speedIntentFloodMs_ = 0;
     speedLastSendMs_  = 0;
     speedCombatSampleMs_ = 0;
     speedCombatHoldMs_ = 0;

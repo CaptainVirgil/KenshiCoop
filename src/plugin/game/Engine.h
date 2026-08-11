@@ -1395,6 +1395,14 @@ bool readCarry(Character* c, CarryRead* out);
 // attach, carry animation, transform-follow). Idempotent: already carrying
 // that body = success; carrying a different body = refused. SEH-guarded.
 bool applyPickup(GameWorld* gw, Character* carrier, const unsigned int carriedHand[5]);
+// Same, but the carried body is already resolved. A minted PROXY does not
+// round-trip through the engine's hand registry - readHand gives a hand that
+// resolveCharByHand then fails to find - so the hand form cannot reach exactly
+// the bodies the join proxies, which are most world NPCs and therefore most
+// carry subjects. Proven live 2026-08-10: after the carried hand was correctly
+// translated to the proxy's own, applyPickup still returned false 44 times in
+// one session. Callers that already hold the pointer must use this.
+bool applyPickupChar(GameWorld* gw, Character* carrier, Character* carried);
 // Release the carrier's carried body (dropCarriedObject; ragdoll = limp
 // ground drop). Idempotent: not carrying = success no-op. SEH-guarded.
 bool applyDrop(Character* carrier, bool ragdoll);

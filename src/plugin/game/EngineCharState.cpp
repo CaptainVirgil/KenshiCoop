@@ -180,18 +180,20 @@ bool readCarry(Character* c, CarryRead* out) {
     }
 }
 
-bool applyPickup(GameWorld* gw, Character* carrier, const unsigned int carriedHand[5]) {
+bool applyPickupChar(GameWorld* gw, Character* carrier, Character* who) {
     (void)gw;
-    if (!carrier || !g_pickupObjectFn) return false;
-    Character* who = resolveCharByHand(carriedHand[3], carriedHand[4], carriedHand[0],
-                                       carriedHand[1], carriedHand[2]);
-    if (!who) return false;
+    if (!carrier || !who || !g_pickupObjectFn) return false;
     __try {
         // Idempotent: already carrying exactly this body -> success no-op;
         // carrying something ELSE -> refuse (never stack / steal a carry).
+        // Compared by the carried body's OWN hand rather than the caller's,
+        // so a proxy (whose hand the caller may have translated) still
+        // matches itself.
         if (carrier->isCarryingSomething) {
             const hand& h = carrier->carryingObject;
-            return (h.index == carriedHand[3] && h.serial == carriedHand[4]);
+            unsigned int wh[5];
+            if (!readObjectHand(who, wh)) return false;
+            return (h.index == wh[3] && h.serial == wh[4]);
         }
         // The body is already on someone's shoulder locally (e.g. the real
         // carry raced the event on the owner side) - treat as done.
@@ -201,6 +203,14 @@ bool applyPickup(GameWorld* gw, Character* carrier, const unsigned int carriedHa
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+bool applyPickup(GameWorld* gw, Character* carrier, const unsigned int carriedHand[5]) {
+    if (!carrier) return false;
+    Character* who = resolveCharByHand(carriedHand[3], carriedHand[4], carriedHand[0],
+                                       carriedHand[1], carriedHand[2]);
+    if (!who) return false;
+    return applyPickupChar(gw, carrier, who);
 }
 
 bool applyDrop(Character* carrier, bool ragdoll) {

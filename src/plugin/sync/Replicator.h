@@ -2450,6 +2450,7 @@ private:
     float         speedLastSet_;       // host: last broadcast effective; join: last received
     u32           speedSeqOut_;        // per-sender monotonic seq for REQ/SET we send
     u32           speedSeqSeen_;       // newest seq accepted from the peer (stale guard)
+    unsigned long speedIntentFloodMs_; // last "intent drain hit its cap" log (rate limit)
     unsigned long speedLastSendMs_;    // last REQ (join) / SET (host) send, safety resend
     unsigned long speedCombatSampleMs_;// last own-combat sample time
     unsigned long speedCombatHoldMs_;  // last time own-squad combat read TRUE (cap hysteresis)
@@ -2502,6 +2503,11 @@ private:
     // proxy), not an error.
     bool localHandForStreamed(const unsigned int inHand[5],
                               unsigned int outHand[5]);
+    // The same translation, returning the BODY. Preferred wherever the caller
+    // hands the result to an engine call: a minted proxy's hand does not
+    // round-trip through the engine's registry, so a pointer survives where a
+    // hand does not (live 2026-08-10, the carry).
+    Character* localCharForStreamed(const unsigned int inHand[5]);
 
     float slewedEffective(float eff) const {
         if (eff <= 0.01f) return eff; // paused: never slewed
