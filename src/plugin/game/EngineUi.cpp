@@ -12,6 +12,7 @@
 // uses them for KENSHICOOP_DEBUG_MARKERS); only their definitions moved here.
 
 #include "EngineInternal.h"
+#include "../BuildStamp.h" // kcBuildStamp() - the panel title carries the version
 
 // In-game co-op session panel: the native DatapanelGUI window + its interactive
 // rows and Win32 key capture. EngineInternal.h already pulls Globals.h (::gui),
@@ -552,7 +553,22 @@ void coopPanelTick(const CoopPanelState* st, CoopConnectFn onConnect,
 
     // (Re)populate the rows when anything visible changed.
     if (g_panel.panel && (g_panel.needsRebuild || !g_panel.built)) {
-        std::string title    = "Co-op Session    -    F2 to close";
+        // Version in the title (2026-08-10): "which build are you on?" came up
+        // three times in one evening of live debugging, and the answer lived
+        // only in a log line at startup. kcBuildStamp() is the honest one -
+        // regenerated and recompiled every build (see BuildStamp.h) - and its
+        // git-describe half is exactly the release label a player can compare
+        // against the download page. Trailing "-dirty" on a dev build is
+        // information, not noise: it says this DLL is not any release.
+        std::string title    = "Co-op Session  -  ";
+        {
+            const char* st = kcBuildStamp();
+            // Stamp is "YYYY-MM-DD HH:MM:SS <describe>": show the describe half,
+            // which is the version; the timestamp belongs in the log, not a title.
+            const char* sp = st ? strrchr(st, ' ') : 0;
+            title += (sp && sp[1]) ? (sp + 1) : "unstamped";
+        }
+        title += "    -    F2 to close";
         std::string roleKey  = "role";
         std::string roleCap  = std::string("Role: ") + (g_panel.hostFlag ? "HOST" : "JOIN") + "    (switch)";
         std::string transKey = "trans";
