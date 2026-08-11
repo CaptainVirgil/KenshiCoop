@@ -96,10 +96,31 @@ Replicator::Replicator()
       storeSync_(false), contCensusMs_(0),
       timeSync_(true), timeSlew_(1.0f), timeSeqOut_(1), timeSeqSeen_(0),
       timeLastSendMs_(0), timeLastLogMs_(0), timeSlewApplied_(-1.0f),
+      timeSlewRampMs_(0),
       platoonT0_(0),
       lifeSweepMs_(0) {
     peerCam_[0] = peerCam_[1] = peerCam_[2] = 0.0f;
     weatherLastName_[0] = '\0';
+}
+
+bool Replicator::localHandForStreamed(const unsigned int inHand[5],
+                                      unsigned int outHand[5]) {
+    if (!inHand || !outHand) return false;
+    // The engine's own lookup first: for a body that exists here under the
+    // streamed identity, the streamed hand IS the local hand.
+    if (engine::resolveCharByHand(inHand[3], inHand[4], inHand[0],
+                                  inHand[1], inHand[2])) {
+        for (unsigned i = 0; i < 5; ++i) outHand[i] = inHand[i];
+        return true;
+    }
+    Key k; k.t = inHand[0]; k.c = inHand[1]; k.cs = inHand[2];
+    k.i = inHand[3]; k.s = inHand[4];
+    std::map<Key, Character*>::iterator pit = proxyByKey_.find(k);
+    if (pit == proxyByKey_.end() || !pit->second) return false;
+    // A proxy pointer can be reaped between the ~1 Hz liveness sweep and now,
+    // so readHand doubles as the liveness proof (the same guard the drive's
+    // viaProxy path uses before it dereferences).
+    return engine::readHand(pit->second, outHand);
 }
 
 // ---- Phase 3: unified entity lifecycle ---------------------------------------

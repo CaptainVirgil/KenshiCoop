@@ -2483,8 +2483,25 @@ private:
     // The engine speed the slewed value was derived from; lets the enforcement
     // distinguish "our slewed write" from a real user click.
     float         timeSlewApplied_;   // join: last effective*slew written (-1 = none)
+    unsigned long timeSlewRampMs_;     // join: last slew ramp step (rate limit)
     // The consensus effective with the clock slew folded in (what the quiet
     // writes actually drive; clamped to the engine's sane speed range).
+    // Translate a STREAMED hand into the LOCAL hand of whatever body represents
+    // it on this client: the engine's own object when the hand resolves, else
+    // our minted proxy (whose local hand never matches the streamed key).
+    //
+    // applyTargets has always done this at its resolve choke point; the carry
+    // calls did NOT, and passed the streamed hand straight to an engine lookup
+    // that cannot see proxies. Live 2026-08-10: the host knocked a body out and
+    // carried it, the join had that body as a proxy, every
+    // [carry] HEAL PICKUP returned ok=0 on a 1.5 s retry forever, and the body
+    // stayed upright and kept fighting - because Kenshi will not shoulder a
+    // conscious character and the KO never landed either. Returns false when
+    // the hand names nothing here, which is a legitimate "not yet" (unminted
+    // proxy), not an error.
+    bool localHandForStreamed(const unsigned int inHand[5],
+                              unsigned int outHand[5]);
+
     float slewedEffective(float eff) const {
         if (eff <= 0.01f) return eff; // paused: never slewed
         float s = eff * timeSlew_;

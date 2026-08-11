@@ -635,9 +635,18 @@ void Replicator::applyEvents(GameWorld* gw, Inbound& in) {
                 if (!carrySync_) break;
                 Character* carrier = engine::resolveCharByHand(
                     ev.aIndex, ev.aSerial, ev.aType, ev.aContainer, ev.aContainerSerial);
-                unsigned int ch[5] = { ev.sType, ev.sContainer, ev.sContainerSerial,
+                unsigned int sh[5] = { ev.sType, ev.sContainer, ev.sContainerSerial,
                                        ev.sIndex, ev.sSerial };
-                bool ok = carrier && engine::applyPickup(0, carrier, ch);
+                // Proxy-aware, same reason as the carry heal in the drive: a
+                // carried body this client MINTED has a local hand that never
+                // matches the streamed key, and applyPickup only asks the
+                // engine. Without it the reliable PICKUP event silently no-ops
+                // for exactly the bodies most likely to be carried (world NPCs
+                // the join proxies), and only the heal - equally blind - ever
+                // retried.
+                unsigned int ch[5];
+                bool ok = carrier && localHandForStreamed(sh, ch) &&
+                          engine::applyPickup(0, carrier, ch);
                 char cb[160]; _snprintf(cb, sizeof(cb) - 1,
                     "[carry] RECV PICKUP id=%u carrier=%u,%u carried=%u,%u ok=%d",
                     ev.eventId, ev.aIndex, ev.aSerial, ev.sIndex, ev.sSerial,

@@ -2661,8 +2661,41 @@ void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
     if (engage) {
         double d = off * GAIN;
         if (d >  1.0) d =  1.0;  // cap: 2x sim while far behind
-        if (d < -0.75) d = -0.75; // floor: 0.25x sim while ahead (never pause)
+        // Floor 0.5x, not 0.25x (2026-08-10). Running the sim at a QUARTER
+        // speed to shed a lead is the most player-visible thing this plugin
+        // does, and it is the wrong side to be aggressive on: being ahead is
+        // self-correcting (the host keeps advancing), while being behind is
+        // not. Halving still sheds a lead - it just takes twice as long to
+        // shed it, and nobody reports "the world felt slightly slow".
+        if (d < -0.5) d = -0.5;   // floor: 0.5x sim while ahead (never pause)
         newSlew = (float)(1.0 + d);
+    }
+    // RATE-LIMIT the slew (2026-08-10). Everything above computes a TARGET;
+    // applying it directly makes the player's game speed step. Measured live in
+    // one session: 18 changes over 0.5x, including 0.40 -> 1.66 in 0.1 s and
+    // 0.25 -> 2.00 in 4 s - an 8x perceived jump, reported as "sometimes it
+    // goes slow motion". The controller was written for a bounded session-start
+    // transient and is in fact engaged most of the session (slew==1.00 for only
+    // ~35% of samples), so its transient manners are its steady-state manners.
+    //
+    // A ramp is the whole fix: the same corrections still happen, at the same
+    // eventual magnitude, but the sim rate MOVES rather than jumps, which is
+    // the difference between "the world is slightly fast" and "the game
+    // stuttered into slow motion". 0.35/s crosses the full 0.5..2.0 range in
+    // ~4 s and is under the ~0.5/s where a speed change reads as a step.
+    const float SLEW_RATE_PER_S = 0.35f;
+    {
+        const unsigned long lastMs = timeSlewRampMs_;
+        timeSlewRampMs_ = now;
+        float dt = (lastMs == 0) ? 0.0f : (float)(now - lastMs) / 1000.0f;
+        if (dt > 1.0f) dt = 1.0f;   // a long gap must not authorise a jump
+        if (dt > 0.0f) {
+            const float step = SLEW_RATE_PER_S * dt;
+            if (newSlew > timeSlew_ + step)      newSlew = timeSlew_ + step;
+            else if (newSlew < timeSlew_ - step) newSlew = timeSlew_ - step;
+        } else {
+            newSlew = timeSlew_;    // first sample: hold, ramp from the next
+        }
     }
     bool slewChanged = fabs(newSlew - timeSlew_) > 0.01f;
     timeSlew_ = newSlew;

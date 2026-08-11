@@ -1221,14 +1221,22 @@ void Replicator::applyTargets(GameWorld* gw) {
                             tuning_.carryHealDebounceMs, d.interp) &&
                     (now - d.carryHealTick) >= CARRY_HEAL_MS) {
                     d.carryHealTick = now;
-                    unsigned int ch[5] = { out.sType, out.sContainer,
+                    unsigned int sh[5] = { out.sType, out.sContainer,
                                            out.sContainerSerial,
                                            out.sIndex, out.sSerial };
-                    bool ok = engine::applyPickup(gw, c, ch);
+                    // Proxy-aware: a carried body the join minted has a LOCAL
+                    // hand that never matches the streamed key, and applyPickup
+                    // resolves through the engine only - so without this the
+                    // heal retried ok=0 every CARRY_HEAL_MS forever while the
+                    // body stayed upright and fought (live 2026-08-10).
+                    unsigned int ch[5];
+                    const bool haveCh = localHandForStreamed(sh, ch);
+                    bool ok = haveCh && engine::applyPickup(gw, c, ch);
                     char b[160]; _snprintf(b, sizeof(b) - 1,
-                        "[carry] HEAL PICKUP carrier=%u,%u carried=%u,%u ok=%d",
+                        "[carry] HEAL PICKUP carrier=%u,%u carried=%u,%u ok=%d%s",
                         out.hIndex, out.hSerial, out.sIndex, out.sSerial,
-                        ok ? 1 : 0);
+                        ok ? 1 : 0,
+                        haveCh ? "" : " (carried hand names no local body yet)");
                     b[sizeof(b) - 1] = '\0'; coop::logLine(b);
                     // Refresh the read: a pickup that just landed must take the
                     // NPC early-continue below THIS tick, not after one more
