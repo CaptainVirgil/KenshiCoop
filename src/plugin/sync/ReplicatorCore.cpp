@@ -74,6 +74,7 @@ Replicator::Replicator()
       speedCombatCap_(true),
       speedMyCombat_(false), speedPeerCombat_(false), speedLastSet_(-1.0f),
       speedSeqOut_(1), speedSeqSeen_(0), speedIntentFloodMs_(0),
+      freezeActuated_(0), truncHoldCulls_(0),
       speedLastSendMs_(0), speedCombatSampleMs_(0), speedCombatHoldMs_(0),
       spawnSync_(false), spawnPosLogMs_(0),
       spawnMintRadius_(0.0f), censusScanMs_(0),

@@ -470,6 +470,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         // pinned at zero, restore branch below untouched (presence is still
         // evidence), so reconciliation stays additive until a complete list.
         if (!exists && (censusTrunc_ || wideTruncPrev_)) {
+            ++truncHoldCulls_;   // observability on the hold's cost - see [audit]
             ac.unstreamed = 0;
             continue;
         }
@@ -625,6 +626,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             // v58 truncation hold, same as the near pass. This is the branch
             // that was deleting real bodies against a capped list.
             if (!exists && (censusTrunc_ || wideTruncPrev_)) {
+                ++truncHoldCulls_;
                 ac.unstreamed = 0;
                 continue;
             }
@@ -1110,18 +1112,21 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         //                     within attnR of a player character (must be 0),
         //                     over the pcs squad members it was measured
         //                     against - pcs=0 makes the zero vacuous
-        char b[448]; _snprintf(b, sizeof(b) - 1,
+        // 512: this line gained truncHold= and every field on it is cumulative.
+        char b[512]; _snprintf(b, sizeof(b) - 1,
             "[audit] exist near=%u wide=%u drv=%u cen=%u hid=%u ghost=%u "
             "supp=%u census=%u fresh=%d parks=%lu "
             "nearCap=%d wideCap=%d peerTrunc=%d staleMs=%lu edges=%lu ghostMax=%.0f ghostEdge=%u "
-            "dorm=%u attnR=%.0f dormPc=%u pcs=%u mine=%u skip=%u cells=%u",
+            "dorm=%u attnR=%.0f dormPc=%u pcs=%u mine=%u skip=%u cells=%u "
+            "truncHold=%lu",
             n, wn, cDrv, cCen, cHid, cGhost,
             (unsigned)suppressed_.size(), (unsigned)censusHands_.size(),
             censusFresh ? 1 : 0, censusParks_,
             nearTrunc ? 1 : 0, wideTrunc ? 1 : 0, censusTrunc_ ? 1 : 0,
             censusStaleMs_, censusStaleEdges_, ghostMaxD, ghostEdge,
             cDorm, attentionRadius_, cDormPc, nPc,
-            cMine, authSkip, (unsigned)claimedCells_.size());
+            cMine, authSkip, (unsigned)claimedCells_.size(),
+            truncHoldCulls_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
 
@@ -1863,6 +1868,11 @@ void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift)
     // - this set was inserted into every frame and never cleared: unbounded
     // growth over a session, holding Character* for bodies that have since
     // despawned, buying nothing because nothing reads it.
+    // Counted HERE, at the actuation, not at the log line below. The log is
+    // throttled to ~4 lines/s, so 2,140 [census] FREEZE lines in the 2026-08-10
+    // session stood for an unknown and much larger number of actual freezes -
+    // and "unknown" is not a number you can judge a mitigation against.
+    ++freezeActuated_;
     if (aiSuspend_) engine::addAiSuspend(c);     // quiesce AI decisions this tick
     // A destination committed BEFORE the suspend keeps the body running (run
     // 014948: frozen slave re-pathed ~600 u between parks); kill it per tick.

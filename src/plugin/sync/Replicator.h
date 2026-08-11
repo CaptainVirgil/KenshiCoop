@@ -2451,6 +2451,8 @@ private:
     u32           speedSeqOut_;        // per-sender monotonic seq for REQ/SET we send
     u32           speedSeqSeen_;       // newest seq accepted from the peer (stale guard)
     unsigned long speedIntentFloodMs_; // last "intent drain hit its cap" log (rate limit)
+    unsigned long freezeActuated_;    // census-freeze ACTUATIONS (not log lines - see below)
+    unsigned long truncHoldCulls_;    // absence-culls suppressed because the census was truncated
     unsigned long speedLastSendMs_;    // last REQ (join) / SET (host) send, safety resend
     unsigned long speedCombatSampleMs_;// last own-combat sample time
     unsigned long speedCombatHoldMs_;  // last time own-squad combat read TRUE (cap hysteresis)

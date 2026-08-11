@@ -2143,11 +2143,13 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         // nearly bought a behaviour change to fix a bug that did not exist.
         _snprintf(b, sizeof(b),
                   "[ai] suspended=%u driven=%u targets=%u"
-                  " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu snapVeto=%lu",
+                  " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu snapVeto=%lu"
+                  " frzAct=%lu",
                   engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
                   (unsigned)targets_.size(),
                   midRestReleases_, relWalkDist_,
-                  relWalkMs_ / 1000, snapInCombat_, snapVetoCombat_);
+                  relWalkMs_ / 1000, snapInCombat_, snapVetoCombat_,
+                  freezeActuated_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).
