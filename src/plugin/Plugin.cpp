@@ -1245,6 +1245,15 @@ static void logTickBudget(unsigned long pubUs, unsigned long appUs) {
     coop::logLine(b);
     winMs = now; frames = 0; over = 0;
     pubSum = pubMax = appSum = appMax = 0;
+
+    // Inbound queue high-water marks, on the same 5 s window. The pair matters:
+    // [budget] says how long a tick took, [q] says how much it was handed. A
+    // stage that is slow because it is slow and a stage that is slow because
+    // 40,000 items arrived need opposite fixes, and nothing here could tell
+    // them apart before.
+    char q[220];
+    g_inbound.queueStats(q, sizeof(q));
+    coop::logLine(q);
 }
 
 void tickReplicatePublish(GameWorld* gw, bool worldLive) {

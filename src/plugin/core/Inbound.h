@@ -389,16 +389,33 @@ public:
     // overflow the OLDEST entry is dropped, which is exactly "newest wins" for
     // continuous state (Phase 4d bounded mailboxes).
     explicit WorldQ(std::vector<IClearableQueue*>& reg, size_t cap = 0)
-      : cap_(cap) { reg.push_back(this); }
+      : cap_(cap), peak_(0), dropped_(0) { reg.push_back(this); }
     void push_back(const T& v) {
-        if (cap_ && q_.size() >= cap_) q_.pop_front();
+        // Peak-at-PUSH, not depth-at-drain: the drain sees whatever survived, so
+        // only the push side knows the true high-water mark. Two integer writes
+        // on a path already inside the Inbound critical section - no new lock,
+        // no new allocation, and nothing that can change what is queued.
+        //
+        // This exists because "a stage got slow" and "a stage was handed 40,000
+        // items" are indistinguishable in every signal this project has, and
+        // the difference decides whether the fix is a throttle or a debounce.
+        // dropped_ matters just as much: a capped queue silently discarding the
+        // oldest entry is absence manufactured by us, and nothing counted it.
+        if (cap_ && q_.size() >= cap_) { q_.pop_front(); ++dropped_; }
         q_.push_back(v);
+        if (q_.size() > peak_) peak_ = (unsigned int)q_.size();
     }
     operator std::deque<T>&() { return q_; }
     virtual void clearQueue() { q_.clear(); }
+    unsigned int  peak() const     { return peak_; }
+    unsigned long dropped() const  { return dropped_; }
+    unsigned int  capacity() const { return (unsigned int)cap_; }
+    void          resetPeak()      { peak_ = 0; }
 private:
     std::deque<T> q_;
     size_t        cap_;
+    unsigned int  peak_;
+    unsigned long dropped_;
     WorldQ(const WorldQ&);
     WorldQ& operator=(const WorldQ&);
 };
@@ -867,6 +884,36 @@ public:
     // SessionQ queues (presence + the coordinated save/load handshake) never
     // register, so they survive by construction - a NACK/GO arriving mid-swap
     // must not be dropped.
+    // One line naming the queues that matter, under the same lock every push
+    // takes. Names live HERE, next to the members, rather than as a string per
+    // queue in the constructor - 46 hand-typed literals in an init list is
+    // exactly where a paste error hides, and a mislabelled queue is worse than
+    // an unnamed one.
+    //
+    // Peaks reset per window so each line describes its own window; `dropped`
+    // is CUMULATIVE and is only printed when non-zero, so the field's presence
+    // is itself the alarm. flushWorldState deliberately does not clear these -
+    // a reset that hides the depth which caused the reset is the wrong shape.
+    void queueStats(char* out, unsigned int n) {
+        if (!out || !n) return;
+        EnterCriticalSection(&cs_);
+        const unsigned long dropEnt = ent_.dropped();
+        const unsigned long dropSte = stealth_.dropped();
+        const unsigned long dropCam = camHint_.dropped();
+        int off = _snprintf(out, n - 1,
+            "[q] peak evt=%u ent=%u/%u inv=%u cen=%u stealth=%u cam=%u",
+            evt_.peak(), ent_.peak(), ent_.capacity(), inv_.peak(),
+            npcCensus_.peak(), stealth_.peak(), camHint_.peak());
+        if (off > 0 && (dropEnt || dropSte || dropCam) && (unsigned)off < n - 1) {
+            _snprintf(out + off, n - 1 - off, " DROPPED ent=%lu stealth=%lu cam=%lu",
+                      dropEnt, dropSte, dropCam);
+        }
+        out[n - 1] = '\0';
+        evt_.resetPeak(); ent_.resetPeak(); inv_.resetPeak();
+        npcCensus_.resetPeak(); stealth_.resetPeak(); camHint_.resetPeak();
+        LeaveCriticalSection(&cs_);
+    }
+
     void flushWorldState() {
         EnterCriticalSection(&cs_);
         for (size_t i = 0; i < worldReset_.size(); ++i)
