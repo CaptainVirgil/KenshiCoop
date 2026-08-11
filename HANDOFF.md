@@ -14,10 +14,10 @@ next session an hour. Durable things live in `CLAUDE.md` (doctrine, build) and
 
 ## Read this first
 
-**v0.62 is released, installed on this machine, and unplayed.** Protocol 58 —
-unchanged from v0.61 — so it is **not a hard cut**: a v0.61 client and a v0.62
-client still connect. Both should still update, because two of the fixes only
-work when both ends have them.
+**v0.63 is released, installed on this machine, and unplayed.** Protocol 58 —
+unchanged since v0.61 — so it is **not a hard cut**: any two of v0.61/62/63 will
+connect. Both players should still update, because several fixes only do
+anything when both ends have them, and because v0.62 carries a known regression.
 
 The brother needs to run his updater; he does not need a new updater script.
 
@@ -46,8 +46,9 @@ Earlier, released as v0.62:
 | `57db44d` | per-stage cost table, log line-rate counter, `addAiSuspend` guard, `resetSession`, config knobs |
 | `a4e3780` | `frzAct=` and `truncHold=` counters |
 
-Release: <https://github.com/CaptainVirgil/KenshiCoop/releases/tag/v0.62>
-(five assets, matching v0.61's set). Local install verified by the updater.
+Releases: <https://github.com/CaptainVirgil/KenshiCoop/releases/tag/v0.63>
+(current) and v0.62 (superseded). Five assets each. Local install is v0.63,
+verified by the updater.
 
 ---
 
@@ -107,8 +108,9 @@ fix that did land:
 What shipped is instrumentation to name it next time, plus caps on the two
 unbounded main-thread loops found on the way (neither proven to be the cause).
 
-**If it recurs, the log now names the stage.** 28 stages each stamp their own
-beat.
+**If it recurs, the log now names the stage.** 42 stages each stamp their own
+beat (28 publish + 14 apply), and `[q]` says how deep the queues were when it
+happened.
 
 ---
 
