@@ -283,8 +283,36 @@ private:
     // threadLoop, once per packet type - the same three lines, the same ownership
     // rule, and the same easy mistake available in each copy (an early return that
     // leaks the packet, or a missing destroy on the no-peer path).
+    // Per-packet-type traffic tally. NET THREAD ONLY (this funnel and the
+    // receive switch both run on it), so no synchronisation - the same
+    // reasoning the bandwidth counters beside it already use.
+    //
+    // Why: the [net] bandwidth line reports two totals and nothing else, so
+    // 86% of a measured session's traffic was unattributed. Nothing in this
+    // project has ever measured what a CHANNEL costs, which means every claim
+    // about one - including the arithmetic that closed the near-band change
+    // gate as not worth doing - is an estimate. That estimate (~65 KB/s for
+    // the near band alone) exceeds the entire measured outbound total, so one
+    // of the two numbers is wrong and only a per-type split can say which.
+    //
+    // It is also a standing alarm for the abe12a2 class of regression: an
+    // inventory resend interval zeroed by an uninitialised field flooded the
+    // reliable channel for a whole session undetected. PKT_INV_SNAPSHOT
+    // bytes/s would have shown that inside five seconds.
+    unsigned long txN_[64], txB_[64], rxN_[64], rxB_[64];
+    void tallyTx(const ENetPacket* pkt) {
+        if (!pkt || !pkt->dataLength) return;
+        const unsigned t = pkt->data[0] & 63u;
+        ++txN_[t]; txB_[t] += (unsigned long)pkt->dataLength;
+    }
+    void tallyRx(unsigned type, unsigned long bytes) {
+        const unsigned t = type & 63u;
+        ++rxN_[t]; rxB_[t] += bytes;
+    }
+    void emitPacketMix(double secs);   // NetLink.cpp - the [net] mix rollup
     void sendToPeer(ENetPacket* pkt, int channel) {
         if (!pkt) return;
+        tallyTx(pkt);   // BEFORE the send: ENet owns and may free pkt after it
         if (isHost_) {
             enet_host_broadcast(enetHost_, channel, pkt);
         } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {

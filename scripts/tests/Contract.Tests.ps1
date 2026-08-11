@@ -507,6 +507,29 @@ Write-Host ""
 # This is a source-drift check, not a behaviour test: it asks that no control
 # statement be followed by a beat on the next line without an opening brace.
 Write-Host ""
+Write-Host "== packet-mix name table covers every PKT_ =="
+# pktName() in NetLink.cpp is a hand-written list beside an enum - the same
+# shape as wireSanitize, which went stale five times before it got a check.
+# A packet type missing from the table prints as "t42" instead of its name,
+# which is survivable; the check exists so it is NOTICED rather than shipped.
+$wireH2   = Join-Path $repoRoot "src/netproto/Wire.h"
+$netLink2 = Join-Path $repoRoot "src/plugin/net/NetLink.cpp"
+if (-not (Test-Path $wireH2) -or -not (Test-Path $netLink2)) {
+    Check "Wire.h and NetLink.cpp exist" $false
+} else {
+    $enumNames = @(Select-String -Path $wireH2 -Pattern '^\s*(PKT_[A-Z_0-9]+)\s*=\s*\d+' |
+                   ForEach-Object { $_.Matches[0].Groups[1].Value })
+    $nl = Get-Content -LiteralPath $netLink2 -Raw
+    # Only the pktName switch matters; it is the only place with `case PKT_x: return`
+    $named = @([regex]::Matches($nl, 'case\s+(PKT_[A-Z_0-9]+)\s*:\s*return') |
+               ForEach-Object { $_.Groups[1].Value })
+    Check "Wire.h parsed: PKT_ enumerators found" ($enumNames.Count -gt 0)
+    $missing = @($enumNames | Where-Object { $named -notcontains $_ })
+    Check ("pktName names every PKT_ ({0} enumerators)" -f $enumNames.Count) `
+          ($missing.Count -eq 0) ($missing -join ', ')
+}
+
+Write-Host ""
 Write-Host "== watchdog beats stay inside their guard =="
 $pluginCpp = Join-Path $repoRoot "src/plugin/Plugin.cpp"
 if (-not (Test-Path $pluginCpp)) {
@@ -552,6 +575,20 @@ if (-not (Test-Path $pluginCpp)) {
     }
     $dupes = ($labels | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
     Check "watchdog beat labels are unique" ($dupes.Count -eq 0) ($dupes -join ', ')
+
+    # And the per-stage cost table must be able to hold them all. It drops
+    # silently past its cap (with a one-shot warning at runtime), and a cost
+    # table missing a stage reads as "that stage is cheap".
+    $distinct = ($labels | Sort-Object -Unique).Count
+    $capLine = Select-String -Path (Join-Path $repoRoot "src/plugin/CoopLog.cpp") `
+                             -Pattern 'STAGE_MAX\s*=\s*(\d+)' | Select-Object -First 1
+    if ($capLine) {
+        $cap = [int]$capLine.Matches[0].Groups[1].Value
+        Check ("stage table holds every beat label ({0} labels, cap {1})" -f $distinct, $cap) `
+              ($distinct -lt $cap)
+    } else {
+        Check "STAGE_MAX readable from CoopLog.cpp" $false
+    }
 }
 
 

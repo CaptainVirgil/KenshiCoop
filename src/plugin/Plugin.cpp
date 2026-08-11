@@ -1514,41 +1514,41 @@ void trackMove(GameWorld* gw);   // KENSHICOOP_TRACK_MOVE route recorder (below)
 
 void tickReplicateApply(GameWorld* gw, bool worldLive) {
     if (worldLive && coop::engine::gameplayLive(gw)) {
-        g_repl.applyTargets(gw);
+        coop::mainThreadBeat("app:targets"); g_repl.applyTargets(gw);
         // Phase W2: relocate our own copy of any DROPPED weapon to the ground BEFORE the
         // inventory reconcile runs, so the conservation move beats the (debounced) removal
         // reconcile that would otherwise DESTROY the weapon we cannot refabricate.
         if (g_cfg.worldSync) {
-            g_repl.applyWeaponDrops(gw, g_inbound);
+            coop::mainThreadBeat("app:weaponDrops"); g_repl.applyWeaponDrops(gw, g_inbound);
             // Phase W3: re-home tracked ground copies into the picking character's bag, also
             // before the inventory reconcile (which can't refabricate a weapon into the proxy).
-            g_repl.applyWeaponPickups(gw, g_inbound);
+            coop::mainThreadBeat("app:weaponPickups"); g_repl.applyWeaponPickups(gw, g_inbound);
         }
         // Protocol 37: relocate our copy of any cross-owner TRADED item between the
         // two containers BEFORE the inventory reconcile, so the conservation move
         // beats the stale-snapshot dupe/wipe (and traded gear survives - no
         // fabrication on this path).
         if (g_cfg.xferSync) {
-            g_repl.applyTransfers(gw, g_inbound, g_net, g_net.localId());
+            coop::mainThreadBeat("app:transfers"); g_repl.applyTransfers(gw, g_inbound, g_net, g_net.localId());
             // Protocol 50: settle our own outstanding intents on the receiver's
             // verdict. Before the reconcile, because a rejected transfer works
             // by DROPPING our latch and letting applyInventories restore the
             // owner's version - one tick later and the reconcile would run once
             // more while still defending a move that was refused.
-            g_repl.applyXferAcks(gw, g_inbound, g_net.localId());
+            coop::mainThreadBeat("app:xferAcks"); g_repl.applyXferAcks(gw, g_inbound, g_net.localId());
         }
         // Phase 4a: reconcile any peer-owned container we received a fresh snapshot
         // for (the join applies the host's container; the host skips its own).
-        g_repl.applyInventories(gw);
+        coop::mainThreadBeat("app:inventories"); g_repl.applyInventories(gw);
         // Phase W1 (bidirectional): BOTH clients spawn/update/cull local proxies for
         // the peer's streamed ground items, keyed (ownerId, netId) so the per-sender
         // netId spaces never collide.
         if (g_cfg.worldSync) {
-            g_repl.applyWorldItems(gw, g_inbound);
+            coop::mainThreadBeat("app:worldItems"); g_repl.applyWorldItems(gw, g_inbound);
             // Protocol 47: a peer consumed a proxy it held for one of OUR ground items,
             // so destroy our real copy. Runs AFTER applyWorldItems so a snapshot and the
             // claim that retires it in the same batch resolve in authored order.
-            g_repl.applyWorldClaims(gw, g_inbound, g_net.localId());
+            coop::mainThreadBeat("app:worldClaims"); g_repl.applyWorldClaims(gw, g_inbound, g_net.localId());
         }
         // Host-authoritative world: only the JOIN hides/freezes any local NPC the
         // host isn't streaming (so the join can't run a divergent copy). The host IS
@@ -1561,11 +1561,11 @@ void tickReplicateApply(GameWorld* gw, bool worldLive) {
         // other's. With cellAuth off the two conditions collapse to today's
         // exclusive split, which is what makes the fail-open A/B meaningful.
         if (!g_cfg.isHost || g_cfg.cellAuth) {
-            g_repl.applyNpcCensus(g_inbound);
-            g_repl.enforceHostAuthority(gw, g_net.localId());
+            coop::mainThreadBeat("app:npcCensus"); g_repl.applyNpcCensus(g_inbound);
+            coop::mainThreadBeat("app:authority"); g_repl.enforceHostAuthority(gw, g_net.localId());
         }
         if (g_cfg.isHost || g_cfg.cellAuth) {
-            g_repl.publishNpcCensus(gw, g_net, g_net.localId());
+            coop::mainThreadBeat("app:pubCensus"); g_repl.publishNpcCensus(gw, g_net, g_net.localId());
         }
         // Camera-anchored interest (protocol 43): both sides publish their
         // LOCAL camera to the engine's anchor store, ship its center to the
@@ -1573,9 +1573,9 @@ void tickReplicateApply(GameWorld* gw, bool worldLive) {
         // Runs even with CAM_INTEREST off (the engine-side knob makes
         // interestCenters ignore the anchors) so an A/B toggle needs no
         // session restart logic.
-        g_repl.syncCamHint(gw, g_inbound, g_net, g_net.localId());
-        g_repl.syncCellClaims(gw, g_inbound, g_net, g_net.localId());
-        trackMove(gw);
+        coop::mainThreadBeat("app:camHint"); g_repl.syncCamHint(gw, g_inbound, g_net, g_net.localId());
+        coop::mainThreadBeat("app:cellClaims"); g_repl.syncCellClaims(gw, g_inbound, g_net, g_net.localId());
+        coop::mainThreadBeat("app:trackMove"); trackMove(gw);
     }
 }
 

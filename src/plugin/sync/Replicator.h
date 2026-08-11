@@ -2453,6 +2453,8 @@ private:
     unsigned long speedIntentFloodMs_; // last "intent drain hit its cap" log (rate limit)
     unsigned long freezeActuated_;    // census-freeze ACTUATIONS (not log lines - see below)
     unsigned long truncHoldCulls_;    // absence-culls suppressed because the census was truncated
+    unsigned long wdOriginHolds_;     // weapon drops held because no usable position existed
+    unsigned long wdOriginLogMs_;     // last [wd] HOLD-origin line (rate limit)
     unsigned long speedLastSendMs_;    // last REQ (join) / SET (host) send, safety resend
     unsigned long speedCombatSampleMs_;// last own-combat sample time
     unsigned long speedCombatHoldMs_;  // last time own-squad combat read TRUE (cap hysteresis)

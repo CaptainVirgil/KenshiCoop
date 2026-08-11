@@ -23,19 +23,6 @@ DLL="$REPO/build/Release/KenshiCoop.dll"
 
 # BUILD, do not merely package. This script used to ship whatever DLL happened
 # to be sitting in build/Release and only complained if the file was ABSENT -
-# so a release carried the last build anyone had run, which may predate the
-# commits its own notes announce. v0.59 shipped that way (its build stamp read
-# one commit stale, which is how this was noticed); the failure mode it risks
-# is worse than a wrong stamp - a release advertising a fix whose code is not
-# in the binary. Building here makes the artifact a function of the tree.
-# KC_KIT_NO_BUILD=1 skips it for the rare case of packaging a DLL built
-# elsewhere (a Windows-built artifact for the parity comparison).
-if [ -z "${KC_KIT_NO_BUILD:-}" ]; then
-    echo "=== make_kit: building Release (the kit is a function of the tree) ==="
-    "$REPO/scripts/linux/build_plugin.sh" Release >/dev/null
-fi
-# BUILD, do not merely package. This script used to ship whatever DLL happened
-# to be sitting in build/Release and only complained if the file was ABSENT -
 # so a release carried the last build anyone had run, which can predate the
 # commits its own notes announce. v0.59 shipped that way (its build stamp read
 # one commit stale, which is how this was noticed). The risk is worse than a

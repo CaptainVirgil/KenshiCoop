@@ -121,6 +121,99 @@ void pushLocked(CRITICAL_SECTION& cs, std::vector<T>& q, const T& v) {
 }
 } // namespace
 
+// Packet-type names for the [net] mix line. A hand-written list beside an enum
+// is the wireSanitize shape - it goes stale silently - so Contract.Tests.ps1
+// fails when Wire.h grows a PKT_ this table does not name. Unknown ids fall
+// back to "t<N>" rather than reading off the end.
+namespace {
+const char* pktName(unsigned t) {
+    switch (t) {
+    case PKT_HELLO:             return "hello";
+    case PKT_WELCOME:           return "welcome";
+    case PKT_LEAVE:             return "leave";
+    case PKT_ENTITY_BATCH:      return "ent";
+    case PKT_EVENT:             return "evt";
+    case PKT_INV_SNAPSHOT:      return "inv";
+    case PKT_WORLD_ITEM:        return "wi";
+    case PKT_WORLD_ITEM_REMOVE: return "wiRm";
+    case PKT_WORLD_DROP:        return "wd";
+    case PKT_WORLD_PICKUP:      return "wp";
+    case PKT_TIME_PING:         return "tping";
+    case PKT_TIME_PONG:         return "tpong";
+    case PKT_MEDICAL:           return "med";
+    case PKT_TREATMENT:         return "treat";
+    case PKT_SPEED_REQ:         return "spdReq";
+    case PKT_SPEED_SET:         return "spdSet";
+    case PKT_STATS:             return "stats";
+    case PKT_STEALTH:           return "stealth";
+    case PKT_SPAWN_REQ:         return "spwnReq";
+    case PKT_SPAWN_INFO:        return "spwnInf";
+    case PKT_MONEY:             return "money";
+    case PKT_FACTION:           return "faction";
+    case PKT_TIME:              return "time";
+    case PKT_DOOR:              return "door";
+    case PKT_BUILD_PLACE:       return "bPlace";
+    case PKT_BUILD_STATE:       return "bState";
+    case PKT_BUILD_DOOR:        return "bDoor";
+    case PKT_BUILD_REMOVE:      return "bRm";
+    case PKT_SAVE_REQ:          return "svReq";
+    case PKT_SAVE_BEGIN:        return "svBeg";
+    case PKT_SAVE_FILE:         return "svFile";
+    case PKT_SAVE_DONE:         return "svDone";
+    case PKT_SAVE_ACK:          return "svAck";
+    case PKT_LOAD_GO:           return "ldGo";
+    case PKT_LOAD_REQ:          return "ldReq";
+    case PKT_LOAD_NACK:         return "ldNack";
+    case PKT_PROD:              return "prod";
+    case PKT_NPC_CENSUS:        return "census";
+    case PKT_INV_XFER:          return "xfer";
+    case PKT_RESEARCH:          return "research";
+    case PKT_CAM_HINT:          return "cam";
+    case PKT_COMBAT_HIT:        return "hit";
+    case PKT_WORLD_ITEM_CLAIM:  return "wiClaim";
+    case PKT_CELL_CLAIM:        return "cell";
+    case PKT_INV_XFER_ACK:      return "xferAck";
+    case PKT_MONEY_DELTA:       return "moneyD";
+    case PKT_DEED:              return "deed";
+    case PKT_WEATHER:           return "weather";
+    case PKT_DIALOGUE:          return "dlg";
+    default:                    return 0;
+    }
+}
+} // namespace
+
+void NetLink::emitPacketMix(double secs) {
+    if (secs <= 0.0) secs = 1.0;
+    for (int dir = 0; dir < 2; ++dir) {
+        const unsigned long* n = dir ? rxN_ : txN_;
+        const unsigned long* by = dir ? rxB_ : txB_;
+        int idx[64], m = 0;
+        for (int i = 0; i < 64; ++i) if (n[i]) idx[m++] = i;
+        if (!m) continue;
+        for (int i = 1; i < m; ++i) {          // insertion sort by bytes, m <= 64
+            const int k = idx[i]; int j = i;
+            while (j > 0 && by[idx[j - 1]] < by[k]) { idx[j] = idx[j - 1]; --j; }
+            idx[j] = k;
+        }
+        char b[240]; int off = 0;
+        off += _snprintf(b + off, sizeof(b) - 1 - off, "[net] mix %s",
+                         dir ? "in " : "out");
+        for (int i = 0; i < m && i < 6 && off < (int)sizeof(b) - 40; ++i) {
+            const int t = idx[i];
+            const char* nm = pktName((unsigned)t);
+            char fallback[8];
+            if (!nm) { _snprintf(fallback, sizeof(fallback) - 1, "t%d", t);
+                       fallback[sizeof(fallback) - 1] = '\0'; nm = fallback; }
+            off += _snprintf(b + off, sizeof(b) - 1 - off, " %s=%lu/%.1fKB",
+                             nm, n[t], (double)by[t] / 1024.0);
+        }
+        b[sizeof(b) - 1] = '\0';
+        netLog(b);
+    }
+    memset(txN_, 0, sizeof(txN_)); memset(txB_, 0, sizeof(txB_));
+    memset(rxN_, 0, sizeof(rxN_)); memset(rxB_, 0, sizeof(rxB_));
+}
+
 NetLink::NetLink()
     : isHost_(false), port_(0),
       enetHost_(0), serverPeer_(0), inbound_(0),
@@ -132,6 +225,12 @@ NetLink::NetLink()
       unknownPkts_(0), unknownLogMs_(0),
       simDelayMs_(0), simJitterMs_(0), simLossPct_(0) {
     memset(unknownTypeBits_, 0, sizeof(unknownTypeBits_));
+    // Zeroed here, not left to chance. An uninitialised member is this
+    // project's signature catastrophic defect (abe12a2: three SyncTuning
+    // cadence fields lifted into a struct and never initialised, so a resend
+    // interval of 0 flooded the reliable channel for a whole session).
+    memset(txN_, 0, sizeof(txN_)); memset(txB_, 0, sizeof(txB_));
+    memset(rxN_, 0, sizeof(rxN_)); memset(rxB_, 0, sizeof(rxB_));
     InitializeCriticalSection(&outCs_);
 }
 
@@ -550,6 +649,7 @@ void NetLink::threadLoop() {
                 }
                 case ENET_EVENT_TYPE_RECEIVE: {
                     const u8 type = packetType(ev.packet->data, (unsigned)ev.packet->dataLength);
+                    tallyRx(type, (unsigned long)ev.packet->dataLength);
                     // Nothing but the handshake is honoured before the handshake
                     // completes. Only HELLO and WELCOME used to consult connection
                     // state; every other branch parsed and queued regardless of
@@ -1807,6 +1907,13 @@ void NetLink::threadLoop() {
                 b[sizeof(b) - 1] = '\0';
                 netLog(b);
                 bwOut0 = outNow; bwIn0 = inNow; lastBwMs = nowBw;
+
+                // The mix behind those two totals. Top 6 by bytes per
+                // direction, so one line stays readable; everything else is
+                // folded into the total already printed above. Counters reset
+                // per window - a running total since startup stops moving and
+                // says nothing about now.
+                emitPacketMix(secs);
 
                 // Main-thread watchdog. THIS thread is the only witness a frozen
                 // main thread has: on 2026-08-10 a host log ended mid-session and

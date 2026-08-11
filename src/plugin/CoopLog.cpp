@@ -65,6 +65,38 @@ unsigned long wallClockMs() {
 
 void logSetFakeSkewMs(long skewMs) { g_fakeSkewMs = skewMs; }
 
+// Internal linkage on purpose: this is the WATCHDOG's clock, not a general one.
+// Its ~16.7 ms granularity is fine for a 5 s threshold and a 10 s cadence and
+// useless for anything finer - anyone wanting resolution wants monoUs() below,
+// and exposing this in the header would invite the swap that silently costs it.
+static unsigned long monoMs() {
+    // GetTickCount64, truncated to 32 bits. ~1 ns/call under Wine against
+    // GetLocalTime's ~100 (measured, Proton Experimental, the game's own
+    // prefix), because it is a load from the shared user-data page rather than
+    // a timezone conversion. Granularity is ~16.7 ms under Wine, which is
+    // irrelevant to its two consumers (a 5 s stall threshold and a 10 s dump
+    // cadence) and is why this must NOT be used for the per-stage costs -
+    // that is monoUs()'s job and stays QPC.
+    //
+    // MONOTONIC is the point, not the speed. The beat's timestamp used to come
+    // from wallClockMs(), a LOCAL wall clock that steps: it wraps at midnight,
+    // moves an hour on each DST transition, and follows any NTP step. Every one
+    // of those makes the freeze watchdog either blind (clock steps back ->
+    // now < beat) or a liar (clock steps forward -> a fabricated 3,600,000 ms
+    // "stall"). A monotonic counter has none of those, and the watchdog never
+    // wanted a calendar - only "how long since".
+    //
+    // The 32-bit truncation wraps at 2^32 ms = 49.7 days of machine uptime.
+    // That is harmless BECAUSE every consumer takes an unsigned DIFFERENCE:
+    // (now - beat) in unsigned 32-bit arithmetic is exact for any true elapsed
+    // interval under 49.7 days, wrap or no wrap. It is only correct if nobody
+    // reintroduces a `now > beat` ordering test - see mainThreadStalledMs.
+    //
+    // Never returns 0, so 0 stays available as the "never beaten" sentinel.
+    const unsigned long ms = (unsigned long)GetTickCount64();
+    return ms ? ms : 1ul;
+}
+
 unsigned long monoUs() {
     // QueryPerformanceCounter, reduced to microseconds against a first-call
     // origin so the value stays small and the 32-bit wrap is ~71 minutes of
@@ -315,7 +347,12 @@ struct StageCost {
     unsigned long totalUs;
     unsigned long n;
 };
-const int     STAGE_MAX  = 64;
+// 96: there are 47 distinct beat labels today (28 publish + 14 apply + the
+// frame-level ones). The cap is not a budget, it is a backstop - but a table
+// that silently stops recording is the project's own recurring defect shape
+// ("absence is not evidence"), so overflow is LOGGED rather than dropped
+// quietly. Contract.Tests.ps1 also fails if the label count reaches it.
+const int     STAGE_MAX  = 96;
 StageCost     g_stage[STAGE_MAX];
 int           g_stageN   = 0;
 const char*   g_prevPhase = 0;
@@ -331,7 +368,17 @@ void stageAccum(const char* name, unsigned long us) {
             return;
         }
     }
-    if (g_stageN >= STAGE_MAX) return;   // table full: drop rather than grow
+    if (g_stageN >= STAGE_MAX) {
+        // Say so once. A cost table quietly missing a stage would read as
+        // "that stage is cheap", which is worse than no table at all.
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            logLine("[stage] WARNING stage table full - some stages are NOT "
+                    "being costed; raise STAGE_MAX");
+        }
+        return;
+    }
     g_stage[g_stageN].name    = name;
     g_stage[g_stageN].maxUs   = us;
     g_stage[g_stageN].totalUs = us;
@@ -386,8 +433,10 @@ void mainThreadBeat(const char* phase) {
     if (phase) g_beatPhase = phase;
     ++g_beatCount;
     // Stamped LAST: a reader that sees a fresh timestamp has necessarily seen
-    // the phase and count that go with it.
-    g_beatMs = wallClockMs();
+    // the phase and count that go with it. MONOTONIC, not wall clock: this
+    // stamp only ever has differences taken from it, and a wall clock that
+    // steps (midnight, DST, NTP) silently disarms the watchdog reading it.
+    g_beatMs = monoMs();
 
     if (g_stageDumpMs == 0) g_stageDumpMs = g_beatMs;
     else if ((g_beatMs - g_stageDumpMs) >= 10000) {
@@ -399,8 +448,15 @@ void mainThreadBeat(const char* phase) {
 unsigned long mainThreadStalledMs() {
     const unsigned long beat = g_beatMs;
     if (beat == 0) return 0;              // never beaten - not a stall
-    const unsigned long now = wallClockMs();
-    return (now > beat) ? (now - beat) : 0;
+    // UNSIGNED DIFFERENCE, deliberately with no ordering test. monoMs() wraps
+    // every 49.7 days of uptime, and `now - beat` is exact across that wrap;
+    // a `now > beat` guard is what breaks it, returning 0 - "no stall" - for
+    // the whole interval after a wrap until the main thread beats again. That
+    // guard was here while the clock was wallClockMs(), where it fired every
+    // midnight and on every DST/NTP step backwards, blinding the watchdog
+    // exactly during the late-night sessions this project is played in.
+    const unsigned long now = monoMs();
+    return now - beat;
 }
 
 const char* mainThreadPhase() {

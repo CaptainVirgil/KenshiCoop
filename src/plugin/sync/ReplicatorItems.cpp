@@ -1143,25 +1143,21 @@ void Replicator::detectAndPublishWeaponDrops(GameWorld* gw, NetLink& net, u32 ow
                 // feet, so the peer relocating its own copy there reproduces the drop. (A rare
                 // intra-squad trade would be mirrored as a drop here; reconcile then corrects it.)
                 prevC.retries.erase(pe->first); prevC.retryArmMs.erase(pe->first);
-                // The ORIGIN sentinel applies to the owner-feet fallback too, and
-                // did not used to. The per-item read below is already guarded
-                // against (0,0,0) with a comment explaining that a town-dropped
-                // item reports its transform as origin the frame it grounds - but
-                // objectWorldPos on the OWNER can return true with zeros the same
-                // way, and that value went straight onto the wire as the mirror
-                // target. Live 2026-08-10: "[wd] DROP id=20 ... pos=0.00,0.00,0.00".
-                // The peer then relocates its copy to world origin, which reads to
-                // the player exactly as the reported symptom - one client can see a
-                // dropped item and the other cannot. Refusing the beat leaves the
-                // item unmirrored (visible to the dropper only) instead of moving it
-                // somewhere neither player will ever walk.
-                const bool ownerPosOk = engine::objectWorldPos(cHand, pos) &&
-                                        !(pos[0] == 0.0f && pos[1] == 0.0f && pos[2] == 0.0f);
-                if (!ownerPosOk) {
-                    if (dumpWd) { char b[160]; _snprintf(b, sizeof(b) - 1,
-                        "[wd] decrease-nopos hand=%u,%u,%u,%u,%u sid='%s' (owner pos unresolved; skip)",
-                        it->t, it->c, it->cs, it->i, it->s, pe->first.c_str());
-                        b[sizeof(b) - 1] = '\0'; coop::logLine(b); }
+                // NOTE the origin sentinel is NOT applied here. It belongs at the
+                // point of use below, because the per-item read there can supply a
+                // good position even when the owner-feet fallback reads (0,0,0) -
+                // rejecting the whole beat at this level throws that case away.
+                // (v0.62 did exactly that, and also routed the give-up through the
+                // dump-gated log below, which made it invisible in player builds.)
+                if (!engine::objectWorldPos(cHand, pos)) {
+                    // UNCONDITIONAL, like [wd] increase-untracked above and for the
+                    // same reason: this is a drop the peer will never be told about,
+                    // and a silent permanent failure is unfixable from a bug report.
+                    char b[200]; _snprintf(b, sizeof(b) - 1,
+                        "[wd] GIVEUP-nopos hand=%u,%u,%u,%u,%u sid='%s' delta=%d "
+                        "(owner position unresolved; drop not mirrored)",
+                        it->t, it->c, it->cs, it->i, it->s, pe->first.c_str(), delta);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
                     continue;
                 }
                 if (dumpWd) { char b[200]; _snprintf(b, sizeof(b) - 1,
@@ -1205,6 +1201,33 @@ void Replicator::detectAndPublishWeaponDrops(GameWorld* gw, NetLink& net, u32 ow
                 if (di) { float ip[3]; if (engine::itemWorldPos(di, ip) &&
                           !(ip[0] == 0.0f && ip[1] == 0.0f && ip[2] == 0.0f)) {
                     dpos[0] = ip[0]; dpos[1] = ip[1]; dpos[2] = ip[2]; } }
+                // Neither source gave a usable position: the item read origin (or
+                // there is no tracked Item*) AND the owner's own transform read
+                // origin. Publishing that puts the peer's copy at world origin,
+                // which is the reported "he can see items I can't" - measured at
+                // 2 of 21 drops in the 2026-08-10 session. Refuse the beat and
+                // HOLD the unpublished remainder so the intent is retried next
+                // tick rather than lost with the baseline (doctrine: a refusal is
+                // not a verdict).
+                if (dpos[0] == 0.0f && dpos[1] == 0.0f && dpos[2] == 0.0f) {
+                    ++wdOriginHolds_;
+                    if (wdOriginLogMs_ == 0 || (nowMs() - wdOriginLogMs_) > 5000) {
+                        wdOriginLogMs_ = nowMs();
+                        char b[200]; _snprintf(b, sizeof(b) - 1,
+                            "[wd] HOLD-origin sid='%s' hand=%u,%u,%u,%u,%u sent=%d/%d "
+                            "(no usable position from item or owner; retrying)",
+                            pe->first.c_str(), it->t, it->c, it->cs, it->i, it->s,
+                            d, delta);
+                        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                    }
+                    // Re-check next tick for what we did NOT publish. Charging the
+                    // published count keeps the already-sent drops from repeating.
+                    WCensusItem hold = pe->second;
+                    hold.count = pe->second.count - d;
+                    cur[pe->first]     = hold;
+                    curPtrs[pe->first] = prevC.ptrs[pe->first];
+                    break;
+                }
                 WorldDropPacket pkt; memset(&pkt, 0, sizeof(pkt));
                 pkt.type = (u8)PKT_WORLD_DROP; pkt.ownerId = ownerId; pkt.dropId = nextDropId_++;
                 pkt.oType = it->t; pkt.oContainer = it->c; pkt.oContainerSerial = it->cs;
