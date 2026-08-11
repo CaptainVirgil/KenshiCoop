@@ -1,99 +1,162 @@
-# Handoff — 2026-08-09 (early hours)
+# Handoff — 2026-08-11 (overnight, unattended)
 
-**Disposable.** Session state, half-built things, machine state outside the
-repo, and traps that would cost the next session an hour. Delete once the loose
-ends close. Durable things live in `CLAUDE.md` (doctrine, build, the new
-channels) and `docs/ROADMAP.md` (plan).
+**Disposable.** Session state, half-built things, and traps that would cost the
+next session an hour. Durable things live in `CLAUDE.md` (doctrine, build) and
+`docs/ROADMAP.md` (plan, and the audit's hold list).
 
 ---
 
 ## Read this first
 
-**The fork was played by two clients for the first time, and it found more in
-one hour than every automated signal this project has.** All of it is fixed,
-gated and pushed. The details with measured before/after are in
-`docs/ROADMAP.md` — that part is project state, not session state.
+**v0.62 is released, installed on this machine, and unplayed.** Protocol 58 —
+unchanged from v0.61 — so it is **not a hard cut**: a v0.61 client and a v0.62
+client still connect. Both should still update, because two of the fixes only
+work when both ends have them.
 
-**Nothing below has been seen in a running game.** The last build was gated
-(733 prototest / 17 tunneltest / 46 netlinktest / 33 contract) and installed,
-but the session ended before it was launched. Treat every item in "what to
-watch" as unverified.
+The brother needs to run his updater; he does not need a new updater script.
+
+Everything below came from the 2026-08-10 evening session logs and an audit run
+after the players went offline. **None of it has been seen in a running game.**
 
 ---
 
 ## Repo state
 
-- Branch `linux-build`, pushed and current.
-- **Protocol is now 56** (was 54 all session, unchanged since fork-1). Two wire
-  changes: weather (55) and dialogue (56). Both ride the same unreleased cut, so
-  the cost is one hard update, not two.
-- Gate green after every change: `733 / 17 / 46 / 33`, `RESULT: PASS`.
-- Both installed DLLs match `build/Release` — verified by sha256.
+Branch `linux-build`, pushed. Four commits tonight, gate green after each:
 
-## What to watch on the next launch
+| | |
+|---|---|
+| `bd2a0ea` | carry-via-pointer, publish sub-phasing, two loop bounds, origin-drop guard |
+| `3449fc0` | scenario telemetry out of Release builds |
+| `57db44d` | per-stage cost table, log line-rate counter, `addAiSuspend` guard, `resetSession`, config knobs |
+| `a4e3780` | `frzAct=` and `truncHold=` counters |
 
-Relaunch is `scripts/linux/launch_coop.sh hostdirect` then
-`KENSHICOOP_AUTOCONNECT=1 scripts/linux/launch_coop.sh join`.
+Release: <https://github.com/CaptainVirgil/KenshiCoop/releases/tag/v0.62>
+(five assets, matching v0.61's set). Local install verified by the updater.
 
-| Watch | Signal | Meaning |
-|---|---|---|
-| Town NPCs marching in place | `[interp] .. haltDrv=N` | The freeze-vs-drive collision. Climbing = being prevented; 0 = gone |
-| Where the frame goes | `[budget] pub .. apply ..` | First per-frame cost numbers this project has had. `pub` = publish (authoring client), `apply` = drive |
-| Weather | `[weather] SEND` then `[weather] APPLY` | SEND with no APPLY = the sid did not resolve, line deliberately dropped |
-| Dialogue | `[dlg] SEND` / `[dlg] RECV` | RECV with no visible caption = nothing within 40 u of the reported spot |
-| Damage numbers | floaters on suppressed hits | Guard now draws what the skipped hit path would have |
+---
 
-**The riskiest two, because they write engine state directly:**
+## The freeze — what is now known, and what is not
 
-- **Weather** writes `WeatherInstance` fields at hardcoded offsets plus
-  `requestUpdateEffects`. Whether the *renderer* follows is unproven — the
-  engine's own `setupWeather` is private and was not called.
-- **Dialogue** hooks two `DialogueSpeechBubble` methods. Whether they catch
-  *every* speech path (shouts, "important" lines) is unproven.
+The 23:14 freeze was **not** like the earlier three. The watchdog caught it in
+`phase='publish'` — our code, not Kenshi's tick — and the main thread **never
+recovered**: `beats=376716` identical across both watchdog reports and still
+frozen 25 s later, while the net thread kept logging and inbound held at
+47 KB/s undrained.
 
-**Off by default, needs deliberate testing:** the hand-hash authority split.
-`KENSHICOOP_SPLIT_AUTHORITY=1` on **BOTH** clients — each computes the partition
-independently, so a one-sided enable has both claiming the same bodies. The A/B
-worth running is one session off, one on, comparing the `[budget]` numbers and
-whether the host starts driving (`drv>0` in its audit line).
+**Localised, not solved.** The stall onset back-dates to 23:14:05.846, which is
+exactly the timestamp of the last main-thread line, `[wd] DROP id=21`. So the
+wedge is at or after `detectAndPublishWeaponDrops`.
 
-## Machine state outside the repo
+Two audit hypotheses were **killed by the log**, which is worth as much as the
+fix that did land:
 
-- Both installs sit on `"transport": "udp"` (`.bak-presolo` beside them).
-  **Flip to `steam` before a session with the brother.**
-- Seeded Proton prefixes at `~/.local/share/kenshicoop-{host,join}-prefix`.
-  Disposable — the sentinel check reseeds from the live prefix when
-  `mfc100u.dll` is missing.
-- `ydotoold` still running as root from 2026-08-08 (`/tmp/.ydotool_socket`,
-  dies with a reboot). Untouched — the whole session was env-var driven.
-- **fredj CT 203** unchanged: launch chain proven (SLR4 pressure-vessel +
-  `proton runinprefix` + `~/.steam/sdk64` link), stops at Kenshi's own "Steam
-  dll error" because `SteamAPI_Init` needs a running Steam client. `onboot: 0`.
+- *Event storm → unbounded `evt_` drained by `applyEvents`.* Ruled out:
+  `applyEvents` runs **before** the weapon-drop publish, and `[wd] DROP id=21`
+  was emitted, so that frame's `applyEvents` completed.
+- *Log-flush storm (44k lines ≈ 21.9 s under Wine).* Ruled out: the line rate
+  was flat at ~140/s for the 90 s before the wedge. No spike.
 
-## Traps found this session
+What shipped is instrumentation to name it next time, plus caps on the two
+unbounded main-thread loops found on the way (neither proven to be the cause).
 
-- **`pkill -f` self-matches its own shell.** Fired five times, twice after it
-  was written down, once killing two long gate builds. Bracket the pattern
-  (`pgrep -f "[k]enshi"`) or resolve PIDs first. Wine cmdlines use backslashes,
-  so forward-slash patterns silently miss.
-- **A relative exe path to `proton` exits silently** one line into wine init.
-  Absolute only.
-- **A second Proton session on the LIVE compatdata** exits the same silent way.
-  Seed a copy.
-- **The runner must match the seeding prefix** — an older Proton against an
-  11.0 prefix is the "invalid version" corruption trap.
-- **Backticks in a `git commit -m` heredoc get shell-substituted.** One commit
-  message lost a word that way and had to be amended.
+**If it recurs, the log now names the stage.** 28 stages each stamp their own
+beat.
 
-## Loose ends
+---
 
-- [ ] Launch and work through "what to watch" above
-- [x] Cut **`v0.50`** — done 2026-08-09, then **`v0.51`** the same night with
-      the two-machine session fixes. Item 28's census `truncated` flag did NOT
-      make either cut and no longer has a bump to ride: protocol stayed 56
-      through v0.51, so it now needs a bump of its own
-- [ ] Flip both configs back to `"transport": "steam"` for a brother session
-- [ ] Decide CT 203 (Steam client / GOG build / `pct destroy 203`)
-- [ ] Windows: run `build_plugin_direct.ps1` + `verify.ps1` once on a real
-      Windows machine — the ported DOA checks have never executed there
-- [ ] Delete this file when the above are closed
+## What to watch, in priority order
+
+1. **`[stage] lines=N/10s peak us: ...`** — new, every 10 s. First real numbers
+   on where the frame goes. Sorted by peak, not mean, because the once-a-minute
+   spike is the thing that becomes a freeze. Expect `pub:worldItems`,
+   `pub:inventories` and `pub:owned` near the top; if something else is, that is
+   news.
+2. **`snapVeto=` vs `snapCbt=` on `[ai]`.** This decides an open question. The
+   indoor-combat veto only fires within 20 u, but the sighting that motivated it
+   was gap=38–75. **If `snapVeto` stays near zero while `snapCbt` climbs, the
+   ceiling is wrong** — and the fix is to raise it, since `readCombat` is doing
+   the real discrimination. Do not raise it before seeing the numbers.
+3. **`[wd] DROP ... pos=`** — should no longer be `0.00,0.00,0.00`. Two of 21
+   were, last session. If the item desync persists *without* origin drops, it is
+   a different bug.
+4. **`frzAct=`** — the census freeze's real actuation count. 2,140 log lines
+   last session stood for an unknown, much larger number. If this is enormous,
+   the freeze/park loop is the next thing to attack.
+5. **`[wd] WARNING implausible drop delta=`** and **`[speed] WARNING intent
+   drain hit its cap`** — either one firing means a bound I added was actually
+   needed, which would also name the freeze.
+6. **`truncHold=`** — culls suppressed because the peer's census was capped.
+
+---
+
+## The escape hatch, if a session goes wrong mid-play
+
+`coop_config.json` in the mod folder now reaches two knobs that were
+environment-variable-only (and therefore unreachable under Steam):
+
+```json
+"censusPark": 0,
+"censusFreezeAi": "0"
+```
+
+`censusPark: 0` disables the divergence teleport **and** the census freeze at
+all four call sites. That is the single most likely thing to want to turn off if
+NPC behaviour degrades. It costs more visible divergence between the two
+worlds — that is the trade.
+
+---
+
+## Traps and loose ends
+
+- **`make_kit.sh` builds Release twice** (a duplicated block, lines ~33–50).
+  Harmless — the second is an incremental no-op — but it prints the banner
+  twice, which looks like a bug. Deliberately not touched on release night.
+  Delete one block.
+- **`dormPc=1 pcs=3`** in the last `[audit]` line. The glossary says `dormPc`
+  **must be 0**, and `pcs=3` makes it a valid measurement, so this is a real
+  violation nobody has chased: a dormant body inside the attention radius of a
+  player character.
+- **The freeze→park feedback loop is undiagnosed.** `[proxy] drift` shows the
+  local copy pinned at a fixed position while the host's walks away, drift
+  growing until a park teleports it. Freezing a body means it can never follow,
+  so divergence grows by construction. 3,545 freezes and 1,175 parks in 25 min.
+  Whether that is the design working or eating itself is an open question — do
+  not "fix" it without deciding which.
+- **Mods still differ.** Same 60 mods, different order: `2d49eaad` here vs
+  `4f1e54f1` there. The panel says `MODS DIFFER (both 60 - check ORDER)`. He
+  should send his `mods.cfg`.
+- **Task #34 (buy-probe) is still open** and needs one deliberate in-game
+  purchase on a Harness build. `scripts/linux/buyprobe.sh on|read|off`.
+
+---
+
+## The audit's hold list
+
+About a dozen further candidate fixes were found and **deliberately not
+shipped**. They are in `docs/ROADMAP.md` under "Held for daylight", each with
+the evidence it needs first.
+
+The rule that decided it, worth keeping: `drivetest` links `ReplicatorDrive`,
+`ReplicatorCore` and `Interp`, so a fix there is gate-testable.
+`ReplicatorAuthority`, `ReplicatorPublish`, `ReplicatorItems` and
+`ReplicatorChannels` are **linked by no test at all** — and all four regressions
+the players caught this week were in that second group. Extending the harness to
+one of those files is worth more than any single fix on the held list.
+
+---
+
+## One thing that nearly shipped broken
+
+Sub-phasing the watchdog meant prefixing `coop::mainThreadBeat("pub:x");` onto
+each stage. Twelve stages were **braceless guarded statements**, so the prefix
+made the *beat* the guarded statement and the publish unconditional — every
+config gate in the tick silently defeated. The compiler caught exactly one of
+the twelve (the only one with an `else`); the full C++ gate passed on the other
+eleven, because nothing in it exercises a disabled feature.
+
+Caught by scanning for the pattern rather than by any test. There is now a
+contract check for it, verified by re-injecting the regression in both forms.
+
+**The lesson is the one this project keeps re-learning: a green gate is not a
+launched game.**
