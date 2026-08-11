@@ -1,5 +1,11 @@
 # Handoff — 2026-08-11 (overnight, unattended)
 
+> **v0.63 supersedes v0.62. Take it.** v0.62 shipped a regression in its own
+> item fix (details below); v0.63 corrects it, and fixes a freeze watchdog that
+> stopped working at midnight. Protocol is 58 throughout, so v0.61/62/63 all
+> interoperate and a partial rollout is safe.
+
+
 **Disposable.** Session state, half-built things, and traps that would cost the
 next session an hour. Durable things live in `CLAUDE.md` (doctrine, build) and
 `docs/ROADMAP.md` (plan, and the audit's hold list).
@@ -22,7 +28,16 @@ after the players went offline. **None of it has been seen in a running game.**
 
 ## Repo state
 
-Branch `linux-build`, pushed. Four commits tonight, gate green after each:
+**Branch is `main`** (not `linux-build` - it changed earlier in the session, and
+one push went to the wrong branch before it was caught; the v0.62 tag initially
+pointed at v0.61's commit and was retargeted). Pushed. Gate green after each:
+
+| | |
+|---|---|
+| `b2e8768` | v0.62 origin-guard regression fixed; apply-tick sub-phased; `[net] mix`; monotonic watchdog clock |
+| `8cacf6c` | `[q]` inbound queue depth + drop counter |
+
+Earlier, released as v0.62:
 
 | | |
 |---|---|
@@ -33,6 +48,38 @@ Branch `linux-build`, pushed. Four commits tonight, gate green after each:
 
 Release: <https://github.com/CaptainVirgil/KenshiCoop/releases/tag/v0.62>
 (five assets, matching v0.61's set). Local install verified by the updater.
+
+---
+
+## Two defects found by auditing v0.62 itself
+
+**1. The origin guard threw away the good case.** v0.62 refused the whole drop
+beat when the owner's position read (0,0,0) - but the per-item read below
+already falls back to the item's own transform and is already guarded against
+the same sentinel. Worse, the refusal was permanent (it skipped the baseline
+hold, so the count committed and the intent was lost) and its give-up log was
+dump-gated, i.e. invisible in player builds - deleting the very evidence that
+made the bug findable. Fixed in v0.63: the test moved to the point of use, the
+remainder is held, and the give-up logs unconditionally.
+
+**2. The freeze watchdog was blind across midnight.** `mainThreadStalledMs`
+differenced two samples of `wallClockMs()`, which is `GetLocalTime` reduced
+modulo 24 h. Every backward step - midnight, DST, any NTP correction - made
+`(now > beat) ? (now - beat) : 0` return **0, "no stall"**. This game is played
+late; the 21.9 s freeze that motivated the whole instrumentation push happened
+at **23:14**. A forward step fabricates a 3,600,000 ms stall instead.
+
+Now a monotonic `GetTickCount64` truncated to 32 bits, read with a plain
+unsigned difference and **no ordering test** - which is what makes it exact
+across the 49.7-day wrap. The two halves cannot be landed separately: unsigned
+difference on the old clock yields 4,208,569,296 ms at midnight, and an ordering
+guard on the new clock re-blinds it at the wrap.
+
+**Process note worth keeping.** Sub-agents in that audit edited the shared
+working tree, and one of their changes (the clock fix) was swept into a commit
+whose message did not mention it. It was caught, reviewed and the message
+amended - but the lesson is that a read-only audit is not read-only unless the
+agent is told so, or given a worktree.
 
 ---
 
@@ -67,11 +114,19 @@ beat.
 
 ## What to watch, in priority order
 
-1. **`[stage] lines=N/10s peak us: ...`** — new, every 10 s. First real numbers
-   on where the frame goes. Sorted by peak, not mean, because the once-a-minute
-   spike is the thing that becomes a freeze. Expect `pub:worldItems`,
-   `pub:inventories` and `pub:owned` near the top; if something else is, that is
-   news.
+1. **`[stage] lines=N/10s peak us: ...`** — every 10 s, five most expensive
+   stages by PEAK. v0.63 covers the apply half too (42 stages total), which is
+   where the heavy work lives: `app:targets` (~1700 lines, no cadence gate),
+   `app:authority` (~800), and `app:pubCensus`, whose once-a-second O(n^2) sort
+   has never been visible. Expect those three plus `pub:worldItems` near the
+   top; anything else there is news.
+1b. **`[net] mix out=... in=...`** — per-packet-type traffic. 86% of the last
+   session's bytes were unattributed. Also the direct test of the held
+   event-storm theory: watch `evt=` on the AUTHORING client.
+1c. **`[q] peak ...`** — inbound queue high-water marks. A `DROPPED` field
+   appears only when something was discarded; its presence is the alarm.
+   Together with `[stage]` this answers the question last night could not:
+   was a stage slow, or was it handed forty thousand items?
 2. **`snapVeto=` vs `snapCbt=` on `[ai]`.** This decides an open question. The
    indoor-combat veto only fires within 20 u, but the sighting that motivated it
    was gap=38–75. **If `snapVeto` stays near zero while `snapCbt` climbs, the
