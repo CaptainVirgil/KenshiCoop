@@ -525,7 +525,27 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
     // proxy body's ACTUAL local position, in the SCENARIO series shape (hand
     // order i,s,t,c,cs like MEMBER/RECV lines) so the spawn_sync oracle can
     // time-pair it with the host's MEMBER series per hand.
-    if (!proxyByKey_.empty() && (now - spawnPosLogMs_) >= 500) {
+    // GATED. This series exists only so the scenario spawn_sync oracle can
+    // time-pair a proxy against the host's MEMBER series - the whole oracle
+    // tier is Harness-only (Release excludes test/Scenario*.cpp). In a PLAYER
+    // build it was 58% of the entire log: 46,108 of 79,507 lines in the
+    // 2026-08-10 join session, two engine calls and one synchronously-flushed
+    // write per proxy, twice a second, forever. Kenshi's own frame is the
+    // scarce resource on this project (bandwidth measured ~36 KB/s against a
+    // 900 KB/s link), and this was spending it on telemetry no player reads.
+    // Harness keeps it unconditionally so no scenario changes. A Release build
+    // can opt back in with KENSHICOOP_PROXY_TELEM=1 for a diagnosis session.
+#ifdef KENSHICOOP_HARNESS
+    const bool proxyTelem = true;
+#else
+    static int proxyTelemEnv = -1;
+    if (proxyTelemEnv < 0) {
+        const char* e = getenv("KENSHICOOP_PROXY_TELEM");
+        proxyTelemEnv = (e && e[0] == '1') ? 1 : 0;
+    }
+    const bool proxyTelem = (proxyTelemEnv == 1);
+#endif
+    if (proxyTelem && !proxyByKey_.empty() && (now - spawnPosLogMs_) >= 500) {
         spawnPosLogMs_ = now;
         for (std::map<Key, Character*>::iterator it = proxyByKey_.begin();
              it != proxyByKey_.end(); ++it) {
