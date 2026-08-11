@@ -953,6 +953,11 @@ private:
         bool          midHeld;
         unsigned long longSegMs;   // last arrival whose segment read > 250 ms
         unsigned long tierArrMs;   // newest arrival already inspected
+        // Release-fate telemetry (v0.59): where/when the mid-rest release
+        // handed this body to local AI, so the re-adopt can measure what
+        // local AI did with it (the night-door investigation's input).
+        unsigned long relMs;
+        float         relX, relZ;
         Driven() : fresh(false), haveActual(false), lx(0), ly(0), lz(0), parked(false),
                    haveDest(false), dx(0), dy(0), dz(0),
                    suppressed(false), lastSeenMs(0),
@@ -976,7 +981,8 @@ private:
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
                    zeroF(0), activeF(0), midSeenMs(0),
-                   midHeld(false), longSegMs(0), tierArrMs(0) {
+                   midHeld(false), longSegMs(0), tierArrMs(0),
+                   relMs(0), relX(0.0f), relZ(0.0f) {
             chainOwner[0] = chainOwner[1] = chainOwner[2] = chainOwner[3] = chainOwner[4] = 0;
         }
     };
@@ -1208,6 +1214,12 @@ private:
     unsigned long             freezeSkipDriven_;
     // Freeze/park actuations skipped because the body was in combat (v0.56).
     unsigned long             freezeSkipCombat_;
+    // v0.59 investigation counters (reported on the [ai] line):
+    unsigned long             midRestReleases_; // bodies handed to local AI
+    float                     relWalkDist_;     // u local AI walked them before re-adopt
+    unsigned long             relWalkMs_;       // ms they spent released
+    unsigned long             relWalkN_;        // re-adopts measured
+    unsigned long             snapInCombat_;    // hard snaps on in-LOCAL-combat bodies
     // Cells claimed by MORE THAN ONE client this rebuild. rebuildClaimedCells
     // resolves those to the host; the body split reads this to know where that
     // tie-break happened, because a cell only one client stands in has nothing

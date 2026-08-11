@@ -166,6 +166,10 @@ DWORD&       g_gameStartTick   = g_session.gameStartTick;
 bool&        g_autoLoadDone    = g_session.autoLoadDone;
 DWORD&       g_titleFirstTick  = g_session.titleFirstTick;
 bool&        g_peerPresent     = g_session.peerPresent;
+// Local mods fingerprint, computed once at the startup banner (file IO does
+// not belong in the per-frame panel drive). 0 = unreadable.
+unsigned int g_localModsHash  = 0;
+unsigned int g_localModsCount = 0;
 std::string& g_savePending     = g_session.savePending;
 coop::u32&   g_saveReqId       = g_session.saveReqId;
 bool&        g_bootstrapArmed  = g_session.bootstrapArmed;
@@ -814,9 +818,29 @@ void coopPanelDrive() {
         case coop::NetLink::TRANSPORT_STEAM_RELAY: via = " (Steam relay)"; break;
         default: break; // UNKNOWN: net thread mid-start, say nothing
         }
-        _snprintf(nb, sizeof(nb) - 1, "%s%s",
+        // Mods comparison, panel-visible (v0.59): the log line at handshake is
+        // authoritative, but nobody reads logs mid-session - a mismatch means
+        // you are playing two different worlds and should say so ON the panel.
+        // Unknown (either side 0) stays silent: absence is not evidence.
+        char modsSuffix[96]; modsSuffix[0] = '\0';
+        {
+            const unsigned int ph = (unsigned int)g_net.peerModsHash();
+            if (ph != 0 && g_localModsHash != 0) {
+                if (ph == g_localModsHash) {
+                    _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
+                              " - mods match (%u)", g_localModsCount);
+                } else {
+                    _snprintf(modsSuffix, sizeof(modsSuffix) - 1,
+                              " - MODS MISMATCH yours=%08x(%u) theirs=%08x(%u)",
+                              g_localModsHash, g_localModsCount,
+                              ph, (unsigned)g_net.peerModsCount());
+                }
+                modsSuffix[sizeof(modsSuffix) - 1] = '\0';
+            }
+        }
+        _snprintf(nb, sizeof(nb) - 1, "%s%s%s",
                   g_cfg.isHost ? "Connected - peer joined" : "Connected to host",
-                  via);
+                  via, modsSuffix);
         nb[sizeof(nb) - 1] = '\0';
         detail = nb;
         ostate = 2;
@@ -2301,6 +2325,7 @@ void logStartupBanner() {
     {
         unsigned int mc = 0;
         const unsigned int mh = coop::modsFingerprint(&mc);
+        g_localModsHash = mh; g_localModsCount = mc; // cached for the F2 panel
         char b[96];
         if (mh) _snprintf(b, sizeof(b) - 1,
                           "[mods] local fingerprint %08x (%u mods)", mh, mc);

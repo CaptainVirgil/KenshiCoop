@@ -126,7 +126,7 @@ NetLink::NetLink()
       enetHost_(0), serverPeer_(0), inbound_(0),
       outOwner_(0), outStampMs_(0), haveOut_(false),
       thread_(0), running_(0), stopFlag_(0), faultKind_(0), faultPeerVer_(0),
-      negotiated_(0), myId_(0),
+      negotiated_(0), peerModsHash_(0), peerModsCount_(0), myId_(0),
       sendEpoch_(0),
       steamPeer_(0),
       unknownPkts_(0), unknownLogMs_(0),
@@ -601,6 +601,8 @@ void NetLink::threadLoop() {
                                     break;
                                 }
                                 ev.peer->data = (void*)(size_t)id;
+                                InterlockedExchange(&peerModsHash_, (LONG)h.modsHash);
+                                InterlockedExchange(&peerModsCount_, (LONG)h.modsCount);
                                 checkModsFingerprint("peer", h.modsHash, h.modsCount);
                                 WelcomePacket w;
                                 w.type = (u8)PKT_WELCOME; w.version = PROTOCOL_VERSION; w.playerId = id;
@@ -623,8 +625,11 @@ void NetLink::threadLoop() {
                     } else if (!isHost_ && type == PKT_WELCOME) {
                         WelcomePacket w;
                         if (readPacket(ev.packet->data, (unsigned)ev.packet->dataLength, &w)) {
-                            if (w.version == PROTOCOL_VERSION)
+                            if (w.version == PROTOCOL_VERSION) {
+                                InterlockedExchange(&peerModsHash_, (LONG)w.modsHash);
+                                InterlockedExchange(&peerModsCount_, (LONG)w.modsCount);
                                 checkModsFingerprint("host", w.modsHash, w.modsCount);
+                            }
                             if (w.version != PROTOCOL_VERSION) {
                                 char b[128];
                                 _snprintf(b, sizeof(b) - 1,

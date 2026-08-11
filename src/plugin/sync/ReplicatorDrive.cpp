@@ -17,6 +17,18 @@ namespace coop {
 
 void Replicator::logHardSnap(Character* c, const EntityState& out, const char* kind,
                              float gap, float srcVel, float gate, bool hadDest) {
+    // Indoor-combat telemetry (v0.59): a hard snap on a body that is in LOCAL
+    // combat is two of our own reconcilers sharing one body - the combat
+    // convergence bands own fighting bodies, and a mid/near teleport landing
+    // mid-fight is the "glitching in buildings" report (2026-08-10: 'Hungry
+    // bandit' snapped at gap=38..75 with the owner stationary, indoors).
+    // Counted BEFORE the log throttle so the rate is true.
+    {
+        engine::CombatRead cr;
+        if (engine::readCombat(c, &cr) &&
+            (cr.inCombat || cr.modeActive || cr.underMelee))
+            ++snapInCombat_;
+    }
     // Throttle to ~4 lines/s so a snap storm (the thing under investigation)
     // stays legible; skipped lines are accounted for in the next one.
     static unsigned long tick = 0;      // main-thread only
@@ -1604,6 +1616,14 @@ void Replicator::applyTargets(GameWorld* gw) {
                 d.parked = false; d.haveDest = false;
                 d.taskApplied = false; d.issuedTask = TASK_NONE;
                 if (haveActual) { d.haveActual = true; d.lx = ax; d.ly = ay; d.lz = az; }
+                // Release-fate telemetry (v0.59, the night-door investigation):
+                // stamp WHERE and WHEN this body was handed to local AI. The
+                // re-adopt (or the next park) measures how far local AI walked
+                // it in the gap - the two-writer damage, per body, countable.
+                ++midRestReleases_;
+                d.relMs = now;
+                if (haveActual) { d.relX = ax; d.relZ = az; }
+                else            { d.relX = out.x; d.relZ = out.z; }
                 lifeSet(it->first, LIFE_PARKED, "mid-rest");
                 debugMark(c, 2, lifeName(LIFE_PARKED));
                 continue;
@@ -1623,8 +1643,20 @@ void Replicator::applyTargets(GameWorld* gw) {
             bool midish = midTier ||
                           (d.midSeenMs != 0 && (now - d.midSeenMs) < 10000);
             int st = (!isSquad && midish) ? LIFE_MID : LIFE_HI;
-            lifeSet(it->first, st, "drive");
+            int was = lifeSet(it->first, st, "drive");
             debugMark(c, st == LIFE_MID ? 3 : 0, lifeName(st));
+            // Release-fate: this body was released to local AI and is now
+            // re-adopted. How far did local AI take it? Accumulate distance
+            // and time; the rollup below turns it into the per-session
+            // "what does a released body actually do" number the night-door
+            // fix needs before it can be designed (two blind attempts failed).
+            if (was == LIFE_PARKED && d.relMs != 0 && haveActual) {
+                const float rdx = ax - d.relX, rdz = az - d.relZ;
+                relWalkDist_ += std::sqrt(rdx * rdx + rdz * rdz);
+                relWalkMs_   += (now - d.relMs);
+                ++relWalkN_;
+                d.relMs = 0;
+            }
         }
 
         // AI-suspend: for any body we DRIVE from the peer's stream, suspend its
@@ -2052,7 +2084,7 @@ void Replicator::pruneDriveGrace(unsigned long now) {
 void Replicator::logDriveTelemetry(unsigned long now) {
     if (aiSuspend_ && (now - aiLogTick_) > 3000) {
         aiLogTick_ = now;
-        char b[96];
+        char b[160];
         // `driven` must be drivenChars_ - the bodies we actually drove this tick
         // and therefore the only ones the AI suspend applies to. It reported
         // targets_ (every entity the peer streams us, driven or not), so the pair
@@ -2062,9 +2094,13 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         // Same lesson as the census's own "absence is not evidence": a number
         // labelled as something it is not is an active falsehood, and this one
         // nearly bought a behaviour change to fix a bug that did not exist.
-        _snprintf(b, sizeof(b), "[ai] suspended=%u driven=%u targets=%u",
+        _snprintf(b, sizeof(b),
+                  "[ai] suspended=%u driven=%u targets=%u"
+                  " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu",
                   engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
-                  (unsigned)targets_.size());
+                  (unsigned)targets_.size(),
+                  midRestReleases_, relWalkDist_,
+                  relWalkMs_ / 1000, snapInCombat_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).

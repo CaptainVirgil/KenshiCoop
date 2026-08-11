@@ -242,6 +242,11 @@ public:
         TRANSPORT_STEAM_RELAY  // Steam P2P tunnel via a Valve relay
     };
     int negotiatedTransport() const { return (int)negotiated_; }
+    // The peer's mods fingerprint from the handshake (v58 packets), for the
+    // panel: 0 = unknown/not yet received. Same write/read rules as the
+    // fault fields.
+    u32 peerModsHash()  const { return (u32)peerModsHash_; }
+    u16 peerModsCount() const { return (u16)peerModsCount_; }
     // host = 0; client = id from WELCOME. myId_ is written by the NET thread when
     // the WELCOME arrives and read here on the MAIN thread, so it is a volatile
     // LONG written via InterlockedExchange; an aligned 32-bit volatile read is
@@ -386,6 +391,8 @@ private:
     volatile LONG faultKind_;
     volatile LONG faultPeerVer_;
     volatile LONG negotiated_;  // Negotiated enum; same write/read rules
+    volatile LONG peerModsHash_;
+    volatile LONG peerModsCount_;
     // Written by the NET thread on WELCOME (InterlockedExchange) and read on the
     // MAIN thread via localId(); volatile LONG so the read is atomic + uncached.
     volatile LONG myId_;
