@@ -157,14 +157,43 @@ bool logRetag(const char* newPath, const char* newTag) {
 // the DLL sits at <Kenshi>\mods\KenshiCoop\, and walking two levels up from it
 // would break the moment the mod folder is nested differently. The exe is the
 // game root by definition.
-static std::string modsCfgPath() {
+static std::string modsCfgDir() {
     char buf[MAX_PATH];
     DWORD n = GetModuleFileNameA(0, buf, MAX_PATH); // 0 == the running exe
-    if (n == 0 || n >= MAX_PATH) return "data\\mods.cfg";
+    if (n == 0 || n >= MAX_PATH) return std::string();
     std::string p(buf, n);
     size_t slash = p.find_last_of("\\/");
-    p = (slash != std::string::npos) ? p.substr(0, slash + 1) : std::string();
-    return p + "data\\mods.cfg";
+    return (slash != std::string::npos) ? p.substr(0, slash + 1) : std::string();
+}
+
+// Candidate paths for <Kenshi>/data/mods.cfg, in order.
+//
+// RE_Kenshi RELOCATES THE EXE: it runs its own copy from
+// <Kenshi>\RE_Kenshi\kenshi_x64.exe, so resolving purely from the running
+// module lands one directory too deep and opens nothing. Proven on the first
+// live launch after the named-failure logging shipped:
+//   [mods] mods.cfg OPEN FAILED err=3 path='...\Kenshi\RE_Kenshi\data\mods.cfg'
+// which is also why the fingerprint read "unreadable" on BOTH machines at the
+// first handshake - both run RE_Kenshi, so both failed identically, and an
+// unreadable pair compares as "unknown" and stays silent. Try the exe's own
+// directory first (a vanilla launch, and the right answer if RE_Kenshi ever
+// stops relocating), then its parent.
+static unsigned modsCfgCandidates(std::string* out, unsigned cap) {
+    const std::string dir = modsCfgDir();
+    unsigned n = 0;
+    if (dir.empty()) {
+        if (n < cap) out[n++] = "data\\mods.cfg";
+        return n;
+    }
+    if (n < cap) out[n++] = dir + "data\\mods.cfg";
+    // Parent: strip the trailing separator, then the last component.
+    if (dir.size() > 1) {
+        std::string up = dir.substr(0, dir.size() - 1);
+        size_t slash = up.find_last_of("\\/");
+        if (slash != std::string::npos && n < cap)
+            out[n++] = up.substr(0, slash + 1) + "data\\mods.cfg";
+    }
+    return n;
 }
 
 unsigned int modsFingerprint(unsigned int* outCount) {
@@ -175,19 +204,27 @@ unsigned int modsFingerprint(unsigned int* outCount) {
     // silent-drop shape the weather channel had. The same resolve+open
     // sequence via CreateFileA was proven under Wine in isolation; failures
     // now log the path and GetLastError once per distinct error.
-    const std::string path = modsCfgPath();
-    HANDLE hf = CreateFileA(path.c_str(), GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    std::string cand[4];
+    const unsigned nc = modsCfgCandidates(cand, 4);
+    HANDLE hf = INVALID_HANDLE_VALUE;
+    std::string path;
+    DWORD lastOpenErr = 0;
+    for (unsigned ci = 0; ci < nc; ++ci) {
+        hf = CreateFileA(cand[ci].c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+        if (hf != INVALID_HANDLE_VALUE) { path = cand[ci]; break; }
+        lastOpenErr = GetLastError();
+    }
     if (hf == INVALID_HANDLE_VALUE) {
         static DWORD lastErr = 0xFFFFFFFF; // rate-limit: once per distinct error
-        const DWORD err = GetLastError();
-        if (err != lastErr) {
-            lastErr = err;
+        if (lastOpenErr != lastErr) {
+            lastErr = lastOpenErr;
             char b[380];
             _snprintf(b, sizeof(b) - 1,
-                      "[mods] mods.cfg OPEN FAILED err=%lu path='%s'",
-                      (unsigned long)err, path.c_str());
+                      "[mods] mods.cfg OPEN FAILED err=%lu tried=%u last='%s'",
+                      (unsigned long)lastOpenErr, nc,
+                      nc ? cand[nc - 1].c_str() : "");
             b[sizeof(b) - 1] = '\0';
             logLine(b); // no-op before logInit, by design
         }
