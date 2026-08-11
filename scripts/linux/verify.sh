@@ -69,6 +69,17 @@ if step "build netlinktest" ./scripts/linux/build_netlinktest.sh; then
 else
     printf '  SKIP  netlinktest (its build failed)\n'
 fi
+# drivetest builds AND runs in one script (it carries the same delete-first
+# stale-binary guard internally), so it is ONE step rather than the build/run
+# pair above. It is the first slice of the sync harness: the REAL
+# ReplicatorDrive.cpp + ReplicatorCore.cpp + Interp.cpp against a fake engine,
+# which is the only test in this gate that can see BEHAVIOUR - every other
+# suite checks wire layout, framing or source drift. It exists because two
+# receiver-drive regressions (the v0.51 mid-rest hold, the v0.57 tier
+# hysteresis) shipped green through this gate and were caught by players.
+# Costs ~20 s of real-time pacing; that is the price of the only net under
+# the sync layer.
+step "drivetest" ./scripts/linux/build_drivetest.sh
 
 PS_HOST="$(command -v pwsh || command -v powershell || true)"
 if [ -n "$PS_HOST" ]; then

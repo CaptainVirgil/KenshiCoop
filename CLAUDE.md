@@ -89,7 +89,16 @@ at all (`verify.ps1` says so itself: "Requires NO Kenshi launch and NO KenshiCoo
 That matters more than it sounds — the guard that refuses to emit a DLL whose main-loop
 hook is not an import lives *inside* the plugin build (and, since 2026-08-08, in
 `build_plugin_direct.ps1`'s post-link checks too), so a Windows `verify.ps1` PASS still
-says nothing about a DLL nobody built with the direct script. Both gates run `prototest`
+says nothing about a DLL nobody built with the direct script. `drivetest` (Linux gate, 2026-08-10) is the only suite that tests BEHAVIOUR
+rather than layout: it links the real `ReplicatorDrive.cpp`/`ReplicatorCore.cpp`
+against a fake engine and pins tier-classification monotonicity, the mid-rest
+release, and walker steady-state. It exists because two receiver-drive
+regressions shipped green through this gate and were caught by players
+(the v0.51 mid-rest hold, the v0.57 tier hysteresis). Its T2 pins deliberately
+document CURRENT behaviour including a known defect (a released body's AI is
+not suspended) - read the comments before "fixing" a failing pin.
+
+Both gates run `prototest`
 (exact packed sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`,
 the interp buffer, the save-transfer receiver, the drive's band/convergence arithmetic,
 the change-gate table, wire string termination, the targets_ age-out predicate),

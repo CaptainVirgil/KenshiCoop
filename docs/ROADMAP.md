@@ -111,7 +111,7 @@ Still open, in cost order:
 
 | # | Item |
 |---|---|
-| 27 | Stub-engine harness for `sync/`, then extract `applyTargets` (~1700 lines) behind it. The first step shipped 2026-08-09: `netlinktest` links the real `NetLink.cpp` over an in-memory socket-hook pipe and pins the receive-side bounds ladder (handshake gate, batch len/count, census cap, unknown-type survival), wired into both gates. Extend the same shape toward `sync/` |
+| 27 | Stub-engine harness for `sync/`, then extract `applyTargets` (~1700 lines) behind it. **Second slice shipped 2026-08-10: `drivetest`** links the REAL `ReplicatorDrive.cpp` + `ReplicatorCore.cpp` + `Interp.cpp` against a fake engine and asserts BEHAVIOUR (tier hysteresis monotonicity, mid-rest release/re-adopt, walker steady-state), feeding through the public surface only (`Inbound::pushEntity` → `ingest` → `applyTargets`) with a 3-member stub seam. In the gate. Remaining: a fake-clock seam (real-time pacing costs ~20 s and cannot fast-forward the minute-scale windows), a pathfinder-lag knob (the fake `walkTo` obeys instantly, so catch-up/snap dynamics are untested), then the extraction itself |
 
 The audit's first concrete target is closed: `hdr.count <= ENTITY_BATCH_MAX`
 is enforced at the batch receive arm (receive-side only, no wire change), and
