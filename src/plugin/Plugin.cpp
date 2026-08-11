@@ -2292,6 +2292,23 @@ void logStartupBanner() {
         b[sizeof(b) - 1] = '\0';
         coopLog(b);
     }
+    // Mods fingerprint self-test, main thread, once at load. The first live
+    // session read "unreadable" on both machines AT HANDSHAKE (net thread)
+    // with no further detail; this line plus the named open-failure inside
+    // modsFingerprint bisect that in one launch: value here + unreadable at
+    // handshake = thread-specific, failure here = the error line names it.
+    // Expected against docs/MODS-BASELINE.md.
+    {
+        unsigned int mc = 0;
+        const unsigned int mh = coop::modsFingerprint(&mc);
+        char b[96];
+        if (mh) _snprintf(b, sizeof(b) - 1,
+                          "[mods] local fingerprint %08x (%u mods)", mh, mc);
+        else    _snprintf(b, sizeof(b) - 1,
+                          "[mods] local fingerprint UNREADABLE (see [mods] error above)");
+        b[sizeof(b) - 1] = '\0';
+        coopLog(b);
+    }
     {
         char b[128];
         _snprintf(b, sizeof(b) - 1,

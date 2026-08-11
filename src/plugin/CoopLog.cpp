@@ -169,26 +169,57 @@ static std::string modsCfgPath() {
 
 unsigned int modsFingerprint(unsigned int* outCount) {
     if (outCount) *outCount = 0;
-    std::ifstream f(modsCfgPath().c_str(), std::ios::binary);
-    if (!f) return 0; // unknown, NOT a mismatch
+    // Win32 IO, not ifstream, and a failure that NAMES ITSELF. The first live
+    // session with this feature logged "unreadable" on BOTH machines and gave
+    // no way to tell path-wrong from open-failed from CRT quirk - the exact
+    // silent-drop shape the weather channel had. The same resolve+open
+    // sequence via CreateFileA was proven under Wine in isolation; failures
+    // now log the path and GetLastError once per distinct error.
+    const std::string path = modsCfgPath();
+    HANDLE hf = CreateFileA(path.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (hf == INVALID_HANDLE_VALUE) {
+        static DWORD lastErr = 0xFFFFFFFF; // rate-limit: once per distinct error
+        const DWORD err = GetLastError();
+        if (err != lastErr) {
+            lastErr = err;
+            char b[380];
+            _snprintf(b, sizeof(b) - 1,
+                      "[mods] mods.cfg OPEN FAILED err=%lu path='%s'",
+                      (unsigned long)err, path.c_str());
+            b[sizeof(b) - 1] = '\0';
+            logLine(b); // no-op before logInit, by design
+        }
+        return 0; // unknown, NOT a mismatch
+    }
+    // Whole-file read, bounded: 103 mods was ~2.5 KB; 256 KB is absurd margin.
+    static char data[262144]; // called from one thread at a time in practice;
+                              // worst case a torn read costs one wrong line
+    DWORD rd = 0;
+    const BOOL ok = ReadFile(hf, data, sizeof(data) - 1, &rd, 0);
+    CloseHandle(hf);
+    if (!ok) return 0;
+    data[rd] = '\0';
     unsigned int h = 2166136261u; // FNV-1a
     unsigned int n = 0;
-    std::string line;
-    while (std::getline(f, line)) {
-        // Normalise: drop CR, trim both ends, skip blanks and comments. The
-        // load ORDER is the meaningful content, so significant lines are folded
-        // in sequence and whitespace-only differences do not register.
-        while (!line.empty() &&
-               (line[line.size() - 1] == '\r' || line[line.size() - 1] == '\n' ||
-                line[line.size() - 1] == ' '  || line[line.size() - 1] == '\t'))
-            line.erase(line.size() - 1);
-        size_t b = line.find_first_not_of(" \t");
-        if (b == std::string::npos) continue;
-        if (line[b] == '#') continue;
-        for (size_t i = b; i < line.size(); ++i) {
-            // Case-fold: Windows paths are case-insensitive and the two players'
-            // launchers can differ in casing for the same mod.
-            char c = line[i];
+    unsigned int i = 0;
+    while (i < rd) {
+        // One line per iteration. Normalise: skip leading blanks, drop CR/
+        // trailing blanks, skip empties and # comments. Load ORDER is the
+        // content, so significant lines fold in sequence.
+        unsigned int e = i;
+        while (e < rd && data[e] != '\n') ++e;
+        unsigned int b = i, t = e;
+        while (b < t && (data[b] == ' ' || data[b] == '\t')) ++b;
+        while (t > b && (data[t - 1] == '\r' || data[t - 1] == ' ' ||
+                         data[t - 1] == '\t')) --t;
+        i = (e < rd) ? e + 1 : rd;
+        if (b >= t || data[b] == '#') continue;
+        for (unsigned int j = b; j < t; ++j) {
+            // Case-fold: Windows paths are case-insensitive and the two
+            // players' launchers can differ in casing for the same mod.
+            char c = data[j];
             if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
             h ^= (unsigned char)c;
             h *= 16777619u;

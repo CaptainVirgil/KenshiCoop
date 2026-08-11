@@ -1453,8 +1453,10 @@ void Replicator::applyTargets(GameWorld* gw) {
         // are tracked apart: the near-tier gates guard the validated 20 Hz
         // pipeline, the mid tier is judged by the anti-zombie oracle.
         //
-        // v0.57 DEMOTE HYSTERESIS (deep-dive 2026-08-10, adversarially
-        // verified). The raw `segMs > 250` read is bimodal for a mid body:
+        // DEMOTE HYSTERESIS v2 (deep-dive 2026-08-10; v1 corrected live the
+        // same night - see Driven::midHeld in Replicator.h for the v1
+        // failure: a consecutive-shorts exit rule oscillated against
+        // triple-send bursts at 6,000 pairs/min). The raw `segMs > 250` read is bimodal for a mid body:
         // the publisher's scan overlap re-sends a mover ~50 ms after its
         // rotation slot whenever a skipped body precedes it in the window, so
         // lastSegMs reads 50 on one arrival and ~C on the next. Classified
@@ -1467,24 +1469,20 @@ void Replicator::applyTargets(GameWorld* gw) {
         // term was this classifier, not the walk-hold.
         //
         // Entry to mid stays instant (the EMA already cushions run 105155);
-        // LEAVING mid requires the short cadence sustained over two
-        // CONSECUTIVE arrivals. A genuine near body streams at 20 Hz and
-        // clears that in ~100 ms; a lone overlap artifact is always followed
-        // by a >250 gap segment and never demotes.
+        // LEAVING mid requires MID_EXIT_QUIET_MS with no >250 segment - a
+        // rule that is MONOTONE against any burst pattern, which the v1
+        // streak rule was not.
         {
             const unsigned long tnewest = d.interp.newestMs();
             if (tnewest != 0 && tnewest != d.tierArrMs) {
                 d.tierArrMs = tnewest;
                 const unsigned long tseg = d.interp.lastSegMs();
-                if (tseg != 0 && tseg <= 250) {
-                    if (d.shortSegs < 200) ++d.shortSegs;
-                } else {
-                    d.shortSegs = 0;
-                }
+                if (tseg > 250) d.longSegMs = now;
             }
             if (!d.midHeld) {
-                if (segMs > 250) d.midHeld = true;
-            } else if (d.shortSegs >= 2) {
+                if (segMs > 250) { d.midHeld = true; d.longSegMs = now; }
+            } else if (d.longSegMs != 0 &&
+                       (now - d.longSegMs) >= MID_EXIT_QUIET_MS) {
                 d.midHeld = false;
             }
         }

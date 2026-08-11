@@ -935,19 +935,24 @@ private:
         // accrued under sparse mid coverage - classed to the mid ledger
         // (like young-ring coverage snaps), not steady-state near tracking.
         unsigned long midSeenMs;
-        // v0.57 tier hysteresis (deep-dive 2026-08-10). midHeld is the STICKY
-        // mid classification: entry instant on a sparse segment, exit only
-        // after `shortSegs` >= 2 CONSECUTIVE sub-250 ms arrivals. The raw
-        // per-tick `segMs > 250` read is bimodal for a mid body - the
-        // publisher's scan overlap re-sends a mover ~50 ms after its rotation
-        // slot - and classifying raw flapped near<->mid at up to 500
-        // cycles/min, each mid re-entry running clearGoals+endAction+halt+
-        // teleport+release (the measured 4,592 PARKED->MID ledger pairs = the
-        // town-wide shuffle). A genuine near body streams at 20 Hz and clears
-        // the 2-arrival bar in ~100 ms.
+        // Tier hysteresis, v2 (deep-dive 2026-08-10, corrected live the same
+        // night). midHeld is the STICKY mid classification: entry instant on
+        // a sparse segment; exit only when NO >250 ms segment has arrived for
+        // MID_EXIT_QUIET_MS. The raw per-tick `segMs > 250` read is bimodal
+        // for a mid body (publisher scan-overlap re-sends), and classifying
+        // raw flapped near<->mid at ~90 pairs/min. v1 of this hysteresis
+        // (exit after 2 CONSECUTIVE short arrivals) was WORSE against
+        // triple-send bursts - short,short,long repeats made it oscillate
+        // once per rotation, measured live at 6,000 pairs/min - because a
+        // streak rule is not monotone against burst patterns. Time-since-
+        // last-long-segment is: a mid body's rotation (~500 ms) mints a long
+        // segment every cycle and can never exit; a genuine near body at
+        // 20 Hz mints none and exits 1.5 s after its last one. Promotion
+        // delayed by that 1.5 s is safe - a moving body is walk-driven
+        // identically in both tiers, and a still one is census-covered.
         bool          midHeld;
-        unsigned char shortSegs;
-        unsigned long tierArrMs;   // newest arrival already counted for the streak
+        unsigned long longSegMs;   // last arrival whose segment read > 250 ms
+        unsigned long tierArrMs;   // newest arrival already inspected
         Driven() : fresh(false), haveActual(false), lx(0), ly(0), lz(0), parked(false),
                    haveDest(false), dx(0), dy(0), dz(0),
                    suppressed(false), lastSeenMs(0),
@@ -971,7 +976,7 @@ private:
                    velPeak(0.0f), moveSeenMs(0), wasMoving(false),
                    restEnterMs(0), stillPoseMs(0), walkBranchPrev(false),
                    zeroF(0), activeF(0), midSeenMs(0),
-                   midHeld(false), shortSegs(0), tierArrMs(0) {
+                   midHeld(false), longSegMs(0), tierArrMs(0) {
             chainOwner[0] = chainOwner[1] = chainOwner[2] = chainOwner[3] = chainOwner[4] = 0;
         }
     };

@@ -103,6 +103,11 @@ const unsigned long MID_STILL_HOLD_MS = 5000;
 // cadence while killing the scan-overlap double-sends whose 50 ms segments
 // flapped the receiver's tier classifier (deep-dive 2026-08-10).
 const unsigned long MID_RESEND_MIN_MS = 350;
+// Tier-exit quiet window (hysteresis v2): a body leaves the sticky mid
+// classification only after this long with no >250 ms segment. Three times
+// the ~500 ms rotation, well under the 20-arrival second a genuine near body
+// produces at 20 Hz.
+const unsigned long MID_EXIT_QUIET_MS = 1500;
 // A body this close to one of our own characters is never AI-frozen: the freeze
 // targets divergent wanderers (measured 500-900 u), and suspending the AI of an
 // NPC you are standing next to breaks interaction with it - talking to a frozen
