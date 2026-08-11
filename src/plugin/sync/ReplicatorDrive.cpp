@@ -2131,7 +2131,7 @@ void Replicator::pruneDriveGrace(unsigned long now) {
 void Replicator::logDriveTelemetry(unsigned long now) {
     if (aiSuspend_ && (now - aiLogTick_) > 3000) {
         aiLogTick_ = now;
-        char b[160];
+        char b[256];   // headroom, not an observed truncation (measured max 92)
         // `driven` must be drivenChars_ - the bodies we actually drove this tick
         // and therefore the only ones the AI suspend applies to. It reported
         // targets_ (every entity the peer streams us, driven or not), so the pair
@@ -2170,7 +2170,13 @@ void Replicator::logDriveTelemetry(unsigned long now) {
             if (it->second.interp.jitter() > maxJit)
                 maxJit = it->second.interp.jitter();
         }
-        char b[288];
+        // 384, not 288: headroom, NOT a fix for observed truncation. Measured
+        // against the 2026-08-10 session this line's longest instance was 219
+        // chars, so 288 was not being hit. But every field is a cumulative
+        // counter, the tail fields (haltDrv/haltCbt) are what a diagnosis reads,
+        // and truncation here is silent - _snprintf just stops. Cheap insurance
+        // on a line whose only job is to be read after something went wrong.
+        char b[384];
         _snprintf(b, sizeof(b) - 1,
             "[interp] lerp=%lu extrap=%lu clamp=%lu seg=%lu single=%lu "
             "snapSq=%lu snapNpc=%lu reissueSq=%lu reissueNpc=%lu restFlip=%lu "

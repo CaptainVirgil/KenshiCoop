@@ -21,9 +21,16 @@ bool             g_init = false;
 char             g_tag[16] = { 0 };
 char             g_curPath[512] = { 0 };  // what logRetag renames FROM
 volatile long    g_fakeSkewMs = 0;
+// Every line is a synchronous fflush through Wine on a lock the net thread also
+// takes, so the LINE RATE is a first-class performance number, not a curiosity:
+// an unthrottled emitter that latches on can wedge the main thread by itself,
+// and no signal existed to tell that apart from a slow stage. Counted here,
+// where every line necessarily passes, and reported by the stage rollup.
+volatile unsigned long g_lineCount = 0;
 
 void writeLine(const char* level, const char* msg) {
     if (!g_init) return;
+    ++g_lineCount;
     EnterCriticalSection(&g_cs);
     if (g_fp) {
         // Derive the stamp from wallClockMs() (real clock + injected skew) so
@@ -286,12 +293,107 @@ volatile unsigned long g_beatCount = 0;
 const char* volatile   g_beatPhase = "pre-hook";
 }
 
+// ---- Per-stage cost, measured from a HEALTHY session ------------------------
+//
+// The watchdog names the stage the main thread died in, but only AFTER a freeze,
+// and a freeze costs a play session. Since every stage already stamps a beat,
+// the interval between two beats IS that stage's duration - so the same
+// instrumentation that reports a stall can report the cost distribution for
+// free, every 10 s, from a session that never froze.
+//
+// MAX, not average: a stage that is 0.2 ms typically and 400 ms once per minute
+// is invisible in a mean and is exactly the shape that becomes a freeze. The
+// existing whole-publish avg/max in logTickBudget could not say WHICH stage.
+//
+// Main-thread only: mainThreadBeat is called from the frame hook and nowhere
+// else, so the table needs no synchronisation. Phases are string LITERALS by
+// the contract above, so they are keyed by POINTER - no strcmp on the hot path.
+namespace {
+struct StageCost {
+    const char*   name;
+    unsigned long maxUs;
+    unsigned long totalUs;
+    unsigned long n;
+};
+const int     STAGE_MAX  = 64;
+StageCost     g_stage[STAGE_MAX];
+int           g_stageN   = 0;
+const char*   g_prevPhase = 0;
+unsigned long g_prevUs    = 0;
+unsigned long g_stageDumpMs = 0;
+unsigned long g_lineMark = 0;
+
+void stageAccum(const char* name, unsigned long us) {
+    for (int i = 0; i < g_stageN; ++i) {
+        if (g_stage[i].name == name) {
+            if (us > g_stage[i].maxUs) g_stage[i].maxUs = us;
+            g_stage[i].totalUs += us; ++g_stage[i].n;
+            return;
+        }
+    }
+    if (g_stageN >= STAGE_MAX) return;   // table full: drop rather than grow
+    g_stage[g_stageN].name    = name;
+    g_stage[g_stageN].maxUs   = us;
+    g_stage[g_stageN].totalUs = us;
+    g_stage[g_stageN].n       = 1;
+    ++g_stageN;
+}
+
+// One line per 10 s naming the five most expensive stages by peak. Sorted by
+// max because that is the number that turns into a stall.
+void stageDump() {
+    int idx[STAGE_MAX];
+    int n = g_stageN;
+    for (int i = 0; i < n; ++i) idx[i] = i;
+    for (int i = 1; i < n; ++i) {          // insertion sort, n <= 64, once per 10 s
+        int k = idx[i], j = i;
+        while (j > 0 && g_stage[idx[j - 1]].maxUs < g_stage[k].maxUs) {
+            idx[j] = idx[j - 1]; --j;
+        }
+        idx[j] = k;
+    }
+    const unsigned long lines = g_lineCount;
+    const unsigned long dLines = lines - g_lineMark;
+    g_lineMark = lines;
+    char b[240]; int off = 0;
+    off += _snprintf(b + off, sizeof(b) - 1 - off, "[stage] lines=%lu/10s peak us:",
+                     dLines);
+    for (int i = 0; i < n && i < 5 && off < (int)sizeof(b) - 40; ++i) {
+        const StageCost& sc = g_stage[idx[i]];
+        off += _snprintf(b + off, sizeof(b) - 1 - off, " %s=%lu/%lu",
+                         sc.name ? sc.name : "?", sc.maxUs,
+                         sc.n ? (sc.totalUs / sc.n) : 0);
+    }
+    b[sizeof(b) - 1] = '\0';
+    logLine(b);
+    // Reset so each line describes ITS OWN window - a running max since startup
+    // stops moving after the first hitch and says nothing about now.
+    for (int i = 0; i < g_stageN; ++i) {
+        g_stage[i].maxUs = 0; g_stage[i].totalUs = 0; g_stage[i].n = 0;
+    }
+}
+} // namespace
+
 void mainThreadBeat(const char* phase) {
+    const unsigned long nowUs = monoUs();
+    // Close out the stage that was in force BEFORE this beat: the gap between
+    // two beats is the work between them.
+    if (g_prevPhase != 0 && g_prevUs != 0 && nowUs >= g_prevUs)
+        stageAccum(g_prevPhase, nowUs - g_prevUs);
+    g_prevPhase = phase;
+    g_prevUs    = nowUs;
+
     if (phase) g_beatPhase = phase;
     ++g_beatCount;
     // Stamped LAST: a reader that sees a fresh timestamp has necessarily seen
     // the phase and count that go with it.
     g_beatMs = wallClockMs();
+
+    if (g_stageDumpMs == 0) g_stageDumpMs = g_beatMs;
+    else if ((g_beatMs - g_stageDumpMs) >= 10000) {
+        g_stageDumpMs = g_beatMs;
+        stageDump();
+    }
 }
 
 unsigned long mainThreadStalledMs() {

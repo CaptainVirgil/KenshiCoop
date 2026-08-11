@@ -1854,7 +1854,16 @@ void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift)
     } else {
         return;                                 // never diverged: leave local AI alone
     }
-    engine::addAiSuspend(c);                     // quiesce AI decisions this tick
+    // Guarded on aiSuspend_, like the drive's three sites (ReplicatorDrive.cpp
+    // :166, :613, :1702) and unlike the comment above, which claims this call is
+    // "a no-op if the AI-suspend detour is not installed". It is not: the engine
+    // side is an unconditional g_aiSuspended.insert(c), while the matching
+    // clearAiSuspend() at ReplicatorDrive.cpp:71 IS guarded. So with AI-suspend
+    // off - by config, or by a failed hook install, which Plugin.cpp only reports
+    // - this set was inserted into every frame and never cleared: unbounded
+    // growth over a session, holding Character* for bodies that have since
+    // despawned, buying nothing because nothing reads it.
+    if (aiSuspend_) engine::addAiSuspend(c);     // quiesce AI decisions this tick
     // A destination committed BEFORE the suspend keeps the body running (run
     // 014948: frozen slave re-pathed ~600 u between parks); kill it per tick.
     engine::haltMovement(c);

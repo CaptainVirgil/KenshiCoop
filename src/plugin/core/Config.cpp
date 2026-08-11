@@ -125,6 +125,10 @@ void loadConfig(Config& c) {
     // coop_config.json (next to the DLL) supplies the interactive-install
     // defaults; env vars still override every one of them (test harness).
     std::map<std::string, std::string> f = readConfigFile();
+    // An unshadowed alias. Further down, a `double f` shadows the map inside the
+    // tuning block, so a fileOr() written there silently resolves to the double
+    // and fails to compile - which is how two knobs ended up env-only.
+    const std::map<std::string, std::string>& cfgFile = f;
 
     std::string mode = envOr("KENSHICOOP_MODE", fileOr(f, "role", "host").c_str());
     c.isHost      = (mode != "join");
@@ -377,7 +381,15 @@ void loadConfig(Config& c) {
         // bar NPC seated at a different stool per sim - run 185524 showed
         // parking those fights the seat AI every frame); a genuinely
         // divergent wanderer (the pack-hidden class) measures 500-900 u.
-        std::string cp = envOr("KENSHICOOP_CENSUS_PARK", "");
+        // fileOr too, not env only. The game is launched from Steam, so an
+        // env-only knob means editing Steam launch options mid-session - the
+        // project's own rule for a new tunable ("a coop_config.json key, not
+        // just an env var"), which these two missed. They matter more than most:
+        // between them they disable the divergence PARK and the census FREEZE,
+        // which are the two mechanisms most likely to need turning off from
+        // inside a session that has started going wrong. Empty still means 120.
+        std::string cp = envOr("KENSHICOOP_CENSUS_PARK",
+                               fileOr(cfgFile, "censusPark", "").c_str());
         c.censusParkDist = cp.empty() ? 120.0f : (float)std::atof(cp.c_str());
         if (c.censusParkDist < 0.0f) c.censusParkDist = 0.0f;
         // Attention gate: "0" (explicit) disables - every body counts as
@@ -400,7 +412,8 @@ void loadConfig(Config& c) {
         // Census-band AI freeze: quiesce a diverging census-band body's local
         // AI so it can't flee/aggro the join's guards. DEFAULT ON; the A/B
         // escape hatch restores the position-park-only behavior.
-        c.censusFreezeAi = envOr("KENSHICOOP_CENSUS_FREEZE_AI", "1") != "0";
+        c.censusFreezeAi = envOr("KENSHICOOP_CENSUS_FREEZE_AI",
+                                 fileOr(cfgFile, "censusFreezeAi", "1").c_str()) != "0";
         // Camera-anchored interest (protocol 43): fold the local camera +
         // peer camera hint into the interest anchors. DEFAULT ON; the A/B
         // escape hatch restores tab-leader-only anchors.

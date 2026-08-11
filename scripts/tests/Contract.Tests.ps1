@@ -514,11 +514,27 @@ if (-not (Test-Path $pluginCpp)) {
 } else {
     $pl = Get-Content -LiteralPath $pluginCpp
     $escaped = @()
-    for ($i = 1; $i -lt $pl.Count; $i++) {
+    for ($i = 0; $i -lt $pl.Count; $i++) {
         if ($pl[$i] -notmatch 'mainThreadBeat\(') { continue }
-        # nearest preceding non-blank line
+
+        # Form 1, same line: `if (cond) coop::mainThreadBeat("x"); g_repl.f();`
+        # The bare `beat(); call();` pair on one line is the file's normal style
+        # and is fine - what is not is a CONTROL statement followed by a beat with
+        # no brace, because then the beat is the guarded statement.
+        if ($pl[$i] -match '^\s*(if|else if|else|for|while)\b[^{]*\)\s*coop::mainThreadBeat') {
+            $escaped += ("line {0}: unbraced guard and beat on one line" -f ($i + 1))
+            continue
+        }
+        if ($i -eq 0) { continue }
+
+        # Form 2, next line. Skip blank lines AND comment lines on the way back:
+        # a comment between the `if` and the beat would otherwise become $prev,
+        # fail the control-statement match, and hide the defect silently.
         $j = $i - 1
-        while ($j -ge 0 -and $pl[$j].Trim() -eq '') { $j-- }
+        while ($j -ge 0 -and ($pl[$j].Trim() -eq '' -or
+                              $pl[$j].Trim().StartsWith('//') -or
+                              $pl[$j].Trim().StartsWith('*') -or
+                              $pl[$j].Trim().StartsWith('/*'))) { $j-- }
         if ($j -lt 0) { continue }
         $prev = $pl[$j].Trim()
         if ($prev -match '^(if|else if|else|for|while)\b' -and $prev -notmatch '\{\s*$') {

@@ -305,6 +305,15 @@ void Replicator::resetSession() {
     parkMs_.clear();
     censusRecvMs_ = 0;
     censusSendMs_ = 0;
+    // Protocol 58: the truncation flags describe whether the OLD world's census
+    // was complete. Carried across a world swap they suppress absence
+    // reconciliation in the NEW world until the peer's next beat contradicts
+    // them - the same class of omission as the five clears above, which is why
+    // they belong here rather than being left to self-correct.
+    censusTrunc_      = false;
+    censusPubTrunc_   = false;
+    wideTruncPrev_    = false;
+    censusTruncLogMs_ = 0;
     // Protocol 43: the camera hint describes the OLD world's coordinates.
     camHintSendMs_ = 0;
     peerCamMs_ = 0;

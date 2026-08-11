@@ -178,6 +178,45 @@ check and forces the decision to be made deliberately.
 
 ---
 
+## Held for daylight (2026-08-10 audit, after v0.62)
+
+An audit ran while the players were offline: three parallel auditors over
+tonight's diffs, the publish-phase freeze and the census/authority machinery,
+then a ship-safety pass ranking every proposed fix by blast radius. What
+shipped in v0.62 is below; **this list is what was deliberately NOT shipped
+unattended**, with the evidence each one needs first. It is a decision record —
+do not re-derive these, and do not implement one without its listed evidence.
+
+The rule the ranking used: `drivetest` links `ReplicatorDrive.cpp`,
+`ReplicatorCore.cpp` and `Interp.cpp`, so a fix there is gate-testable.
+`ReplicatorAuthority.cpp`, `ReplicatorPublish.cpp`, `ReplicatorItems.cpp` and
+`ReplicatorChannels.cpp` are **linked by no test at all** — a fix there ships on
+reasoning alone. All four regressions live players caught this week were in that
+second group.
+
+| Held | Where | Needs first |
+|---|---|---|
+| Event-storm debounce | `ReplicatorPublish.cpp:517-558`, `:577-612`, `:636-680` — unthrottled per-frame edge detectors authored for every streamed NPC (`carryAuthor` at `:572`), feeding an uncapped `evt_` (`Inbound.h:428-443`) | Queue-depth-at-drain telemetry. It is the only signal separating "a stage got slow" from "a stage was handed 40,000 items" |
+| Log burst suppressor | `CoopLog.cpp:25-42` | Nothing — **rejected**. Per-line flush is what makes a crash keep its tail. Fix the storm, never hide it. v0.62 ships the line-rate COUNTER only |
+| `MID_RESEND_MIN_MS` vs small bands | `ReplicatorUtil.h:105`, `ReplicatorPublish.cpp:407`. `quota=(sz+9)/10`, so for `sz<10` the rotation is 50-450 ms and a 350 ms suppression demotes near-tier movers into the whole mid-tier machinery | A publish-side harness. This changes what the publisher sends, which feeds the interpolator, the tier classifier and the census park at once — the exact triple that produced v0.51 and v0.57 |
+| First-sighting `stillQuota` | `ReplicatorPublish.cpp:379-387` | Same harness. Changes send composition right after a save load, when the join is most fragile |
+| Truncation-hold ceiling | `ReplicatorAuthority.cpp:472`, `:627` | One session's `truncHold=` numbers. A ceiling re-arms the unbounded over-cull — "absence is not evidence" |
+| Time-slew ramp hoist | `ReplicatorChannels.cpp` — the ramp sits after `if (!newest) return;`, so it steps 0.35 once per second rather than ramping | A channel test or an attended A/B. A 0.35 step is survivable; an oscillating game clock in a live session is not |
+| Census freeze latch semantics | `ReplicatorAuthority.cpp` — the hold-expiry branch is unreachable behind the combat early-return, and a >30 s fight loses an armed latch to the `PRUNE_MS` sweep | An authority harness. `endAction` drops an in-progress attack; this is latch-lifetime surgery in an 800-line uncovered function |
+| Raise `combatSnapDist_` | `ReplicatorDrive.cpp` — the veto only fires within `COMBAT_SNAP_DIST=20`, but the motivating sighting was gap=38-75 | One session where `snapVeto=` is non-trivial. **If `snapVeto` stays near zero while `snapCbt=` climbs, the 20 u ceiling is the bug** and `readCombat` is doing the discrimination |
+| `cellAt` memoization, `authCount_` prune | `ReplicatorAuthority.cpp` | These change who owns which body. Authority harness |
+| `publishWorldItems` / `publishInventories` cadence gates | `ReplicatorItems.cpp:417`, `:98` — neither has any entry throttle; three spatial queries per frame | The new `[stage]` peak-µs line proving they are the cost |
+| ~20 unbounded maps | `combatCapMs_`, `invPub_`, `weaponCensus_`, `parkMs_`, `censusPos_`, … no erase site | Batch behind a harness. Low confidence as a freeze cause; real as a leak |
+| `modsFingerprint` static buffer race | `CoopLog.cpp` — `static char data[262144]` shared main/net thread | Nothing but daylight. It edits the handshake — the code deciding whether two players can connect at all |
+
+**The one recurring shape, again.** Every item above is the same defect class
+this project keeps meeting: *two different facts treated identically*. A
+truncated census as absence, a stale latch as a live one, a body with no rcon
+as an unreachable one. It is worth reading that list before writing the next
+fix, because the next one will be in it too.
+
+---
+
 ## Deferred with findings recorded (2026-08-10, v0.56 planning)
 
 - **House furniture strip on purchase.** Buying a house makes Kenshi empty its
