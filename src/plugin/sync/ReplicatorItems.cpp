@@ -489,6 +489,14 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
     // (the real shared-save object is relocated bag<->ground on each client), so the
     // W1 template-proxy stream skips it in BOTH discovery sources below.
 
+    // Unresolved-hand drop edges (see DROP-CAP-SKIP below): the one legitimate
+    // case where the spatial scan must STREAM a discovery instead of
+    // baselining it. Main-thread only, like every static in this TU.
+    struct UnresolvedEdge { unsigned long ms; float x, z; char sid[64]; };
+    static UnresolvedEdge unresolvedEdges[8]; // zero-init: ms==0 = empty slot
+    static unsigned int   unresolvedHead = 0;
+    static unsigned long  scanBaselined = 0, scanStreamed = 0;
+
     // ---- Discovery 1: query-free drop-hook edges (town reliable) -----------
     {
         engine::ItemDropEdge de[64];
@@ -506,6 +514,18 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
                     "hand; spatial scan is the only remaining chance)",
                     de[i].stringID, de[i].quantity, de[i].x, de[i].y, de[i].z);
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                // Remember the edge so the scan can recognise this drop when it
+                // finds it (v0.59: scan discoveries otherwise baseline - see
+                // Discovery 2). Ring of 8: unresolved hands are rare by the
+                // comment above, and a stale entry only costs one item treated
+                // as ours that was not, for one scan.
+                unresolvedEdges[unresolvedHead % 8].ms = now;
+                unresolvedEdges[unresolvedHead % 8].x = de[i].x;
+                unresolvedEdges[unresolvedHead % 8].z = de[i].z;
+                strncpy(unresolvedEdges[unresolvedHead % 8].sid, de[i].stringID,
+                        sizeof(unresolvedEdges[0].sid) - 1);
+                unresolvedEdges[unresolvedHead % 8].sid[sizeof(unresolvedEdges[0].sid) - 1] = '\0';
+                ++unresolvedHead;
                 continue;
             }
             // A drop from a PEER-owned squad copy is the peer's to author (it streams
@@ -548,6 +568,35 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
                 strncpy(t.stringID, raw[i].stringID, sizeof(t.stringID) - 1);
                 t.stringID[sizeof(t.stringID) - 1] = '\0';
                 t.itemType = raw[i].itemType; t.quantity = raw[i].quantity; t.quality = raw[i].quality;
+                // v0.59: a SCAN discovery is BASELINE (never streamed) unless it
+                // matches a recent unresolved-hand drop edge. The scan cannot
+                // tell a save-native item from a runtime spawn, and the one-time
+                // 60 u load baseline left the whole town's natives eligible for
+                // "discovery": walk near one, stream it, and the peer mints a
+                // proxy ON TOP of its own identical native - the live 2026-08-10
+                // "he can see items I can't" report, where the doubles on one
+                // screen read as missing items on the other, and a reload (which
+                // clears all tracks and proxies) resynced. Streaming is for
+                // items WE authored: the drop hook captures those reliably, and
+                // the sole hook-miss case (unresolved hand) is recognised here
+                // by sid+position+time. The cost - a host runtime ground spawn
+                // no hook saw stays host-side - is the lesser error by this
+                // project's own history: item DUPLICATION is the fought enemy
+                // ("rejoin/reload duplicated all items").
+                t.baseline = true;
+                for (unsigned int ue = 0; ue < 8; ++ue) {
+                    if (unresolvedEdges[ue].ms == 0) continue;
+                    if ((now - unresolvedEdges[ue].ms) > 10000) continue;
+                    const float ex = raw[i].x - unresolvedEdges[ue].x;
+                    const float ez = raw[i].z - unresolvedEdges[ue].z;
+                    if (ex * ex + ez * ez > 100.0f) continue; // 10 u
+                    if (strncmp(unresolvedEdges[ue].sid, raw[i].stringID,
+                                sizeof(unresolvedEdges[ue].sid)) != 0) continue;
+                    t.baseline = false;              // our hook-missed drop
+                    unresolvedEdges[ue].ms = 0;      // consume the edge
+                    break;
+                }
+                if (t.baseline) ++scanBaselined; else ++scanStreamed;
                 worldTrack_[k] = t;
             } else {
                 // Refresh the description (a re-stack can change qty/quality).
@@ -556,6 +605,21 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
                 tr.stringID[sizeof(tr.stringID) - 1] = '\0';
                 tr.itemType = raw[i].itemType; tr.quantity = raw[i].quantity; tr.quality = raw[i].quality;
             }
+        }
+    }
+
+    // Scan-classification rollup (v0.59): how many scan discoveries were
+    // baselined vs streamed-as-ours. "Nothing happened" is an answer too -
+    // the door-channel lesson.
+    {
+        static unsigned long wiRollMs = 0;
+        if (wiRollMs == 0) wiRollMs = now;
+        if ((now - wiRollMs) >= 60000) {
+            char b[128]; _snprintf(b, sizeof(b) - 1,
+                "[wi] scan rollup baselined=%lu streamed=%lu over %lus",
+                scanBaselined, scanStreamed, (now - wiRollMs) / 1000);
+            b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+            scanBaselined = scanStreamed = 0; wiRollMs = now;
         }
     }
 
