@@ -8,7 +8,9 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`v0.66` is the current public release (protocol 58), installed and unplayed.**
+**`v0.67` is the current public release — protocol 59, a HARD CUT, carrying the
+full authority redesign (docs/AUTHORITY-DESIGN.md, all seven steps). Installed
+and unplayed; the live gate and its rollback lever are in HANDOFF.md.**
 Eleven releases across two evenings, every one shaped by what two humans hit
 while actually playing. v0.62 was the first cut with no player at the keyboard:
 it came from the session logs plus an audit run after they went offline, and its
@@ -17,7 +19,7 @@ hold list (below) is as much of the output as its fixes.
 | | |
 |---|---|
 | Protocol | **58** — census truncation bit (2026-08-10), after 57 (mod fingerprint) and 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
-| Public release | `v0.66` (protocol 58) — five assets. Protocol unchanged since v0.61, so v0.61–v0.66 interoperate |
+| Public release | `v0.67` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect to it |
 | Local build | protocol 58; the banner's build stamp is now the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log again |
 | Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |
 | Interop | any release before the current protocol will NOT connect — the handshake compares `PROTOCOL_VERSION`, not the label |

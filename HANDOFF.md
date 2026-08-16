@@ -1,4 +1,33 @@
-# Handoff — 2026-08-16 (night session, two players live)
+# Handoff — 2026-08-16 (authority overhaul day)
+
+> **v0.67 IS RELEASED — PROTOCOL 59, A HARD CUT. Both players must update
+> before they can connect at all.** Installed and verified on this machine;
+> the brother runs his existing updater.
+>
+> It ships the FULL authority redesign (docs/AUTHORITY-DESIGN.md, all seven
+> steps): host-ASSERTED per-body ownership replacing the derived spatial
+> verdict wherever an assertion exists. authAssert defaults ON; rollback is
+> `"authAssert": "off"` (v0.66 byte-for-byte) or `"shadow"` (counts what ON
+> would change) in coop_config.json — config, never a re-release.
+>
+> **The live gate is still open.** Next session, read in order:
+> 1. `[auth] map n= host= join= veto=` — the split existing at all is step 1.
+>    join= should be roughly half the shared-identity population.
+> 2. Join-side `snapSq` and `delay=` on `[interp]` — the flicker's numbers.
+>    delay should fall from ~740-887 toward the 50-200 band.
+> 3. **The HOST's same numbers must not degrade** — the risk register's
+>    sharpest entry is the flicker migrating, not shrinking.
+> 4. `[auth] LIVENESS revoke` rate and `refuse=` — revoke churn or witness
+>    churn means the policy needs tuning, not that the mechanism is wrong.
+> 5. `[auth] map` join= over an hour — decay toward zero would mean the
+>    proxy-reassignment leg (step 7) is not landing.
+>
+> The authoritytest harness (46 pins, in the gate) found four real bugs while
+> being built — including two shipped v0.65 defects and the design's own
+> predicted census-dual-semantic trap. Extend it before touching Items or
+> Channels; the pattern is proven twice now.
+
+# Previous handoff — 2026-08-16 (night session, two players live)
 
 > **v0.66 IS RELEASED AND INSTALLED HERE.** Protocol 58 throughout, so v0.61-v0.66
 > interoperate. The brother still needs to run his updater.
