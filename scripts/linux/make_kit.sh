@@ -31,6 +31,33 @@ DLL="$REPO/build/Release/KenshiCoop.dll"
 #
 # KC_KIT_NO_BUILD=1 skips it for the one legitimate case - packaging a DLL
 # built somewhere else (a Windows-built artifact for the parity comparison).
+# TAG BEFORE BUILDING. The in-game panel and banner show `git describe`, which
+# is computed by build_plugin.sh at compile time - so a kit built before its own
+# tag exists is stamped with the PREVIOUS release's name. v0.63 shipped reading
+# "V0.61-7-G8CACF6C": correct commit, wrong label, and a player mid-session read
+# it as "the update did not take". The commit hash was the only honest field.
+#
+# `gh release create` makes the tag on the REMOTE only, which is why this kept
+# happening - the local repo never had it. Create it locally first, then build,
+# then let `gh release create` reuse the tag we pushed.
+#
+# Skipped when the label is not a release (the default "dev"), and never
+# clobbers an existing tag - a re-run against a cut release must not silently
+# retarget it.
+if [ "$LABEL" != "dev" ]; then
+    git -C "$REPO" fetch --tags --force -q origin 2>/dev/null || true
+    if ! git -C "$REPO" rev-parse -q --verify "refs/tags/$LABEL" >/dev/null; then
+        echo "=== make_kit: tagging $LABEL locally so the build stamp names it ==="
+        git -C "$REPO" tag "$LABEL"
+    fi
+    HAVE="$(git -C "$REPO" describe --tags --always 2>/dev/null || echo unknown)"
+    case "$HAVE" in
+        "$LABEL") : ;;   # exactly on the tag: the stamp will read $LABEL
+        *) echo "make_kit: WARNING build stamp will read '$HAVE', not '$LABEL'" >&2
+           echo "  (HEAD is not the tagged commit - commit first, then cut)" >&2 ;;
+    esac
+fi
+
 if [ -z "${KC_KIT_NO_BUILD:-}" ]; then
     echo "=== make_kit: building Release (the kit is a function of the tree) ==="
     "$REPO/scripts/linux/build_plugin.sh" Release >/dev/null
