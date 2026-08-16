@@ -2311,8 +2311,14 @@ void Replicator::sweepCarries(GameWorld* gw) {
          it != targets_.end(); ++it) {
         const Key& k = it->first;
         if (ownHands_.find(k) != ownHands_.end()) continue;
-        Character* c = engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs);
-        if (!c) continue;
+        // Proxy-aware, the last of the family fixed in v0.64. Subjects here are
+        // DRIVEN copies by construction (ownHands_ is skipped above), and a
+        // driven copy is frequently a minted proxy - so resolveCharByHand alone
+        // silently skipped exactly the bodies this sweep exists to release. A
+        // proxy left mid-carry or stuck in furniture had no other way out.
+        unsigned int lh[5] = { k.t, k.c, k.cs, k.i, k.s };
+        Character* c = localCharForStreamed(lh);
+        if (!c) { ++proxyBlindSkips_; continue; }
         if (carrySync_) {
             engine::CarryRead cr;
             if (engine::readCarry(c, &cr) && cr.carrying) {

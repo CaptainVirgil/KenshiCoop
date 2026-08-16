@@ -195,17 +195,36 @@ void NetLink::emitPacketMix(double secs) {
             while (j > 0 && by[idx[j - 1]] < by[k]) { idx[j] = idx[j - 1]; --j; }
             idx[j] = k;
         }
-        char b[240]; int off = 0;
+        char b[320]; int off = 0;
         off += _snprintf(b + off, sizeof(b) - 1 - off, "[net] mix %s",
                          dir ? "in " : "out");
-        for (int i = 0; i < m && i < 6 && off < (int)sizeof(b) - 40; ++i) {
-            const int t = idx[i];
+        int shown = 0;
+        for (; shown < m && shown < 6 && off < (int)sizeof(b) - 60; ++shown) {
+            const int t = idx[shown];
             const char* nm = pktName((unsigned)t);
             char fallback[8];
             if (!nm) { _snprintf(fallback, sizeof(fallback) - 1, "t%d", t);
                        fallback[sizeof(fallback) - 1] = '\0'; nm = fallback; }
             off += _snprintf(b + off, sizeof(b) - 1 - off, " %s=%lu/%.1fKB",
                              nm, n[t], (double)by[t] / 1024.0);
+        }
+        // The tail, by COUNT only. Sorting by bytes buries every small channel:
+        // a door row is ~30 B and never outranks ent/census/med, so on
+        // 2026-08-15 this line could not answer "did the door channel deliver"
+        // during an investigation into exactly that. A channel that is active
+        // but cheap is precisely what a desync hunt needs to see, so the rest
+        // are named here without their (negligible) byte totals.
+        if (shown < m) {
+            off += _snprintf(b + off, sizeof(b) - 1 - off, " +");
+            for (int i = shown; i < m && off < (int)sizeof(b) - 16; ++i) {
+                const int t = idx[i];
+                const char* nm = pktName((unsigned)t);
+                char fb[8];
+                if (!nm) { _snprintf(fb, sizeof(fb) - 1, "t%d", t);
+                           fb[sizeof(fb) - 1] = '\0'; nm = fb; }
+                off += _snprintf(b + off, sizeof(b) - 1 - off, "%s%s=%lu",
+                                 (i > shown) ? "," : "", nm, n[t]);
+            }
         }
         b[sizeof(b) - 1] = '\0';
         netLog(b);

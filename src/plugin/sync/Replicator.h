@@ -2456,6 +2456,8 @@ private:
     unsigned long wdOriginHolds_;     // weapon drops held because no usable position existed
     unsigned long wdOriginLogMs_;     // last [wd] HOLD-origin line (rate limit)
     unsigned long proxyBlindSkips_;   // apply-path rows dropped: no local body for a streamed hand
+    unsigned long xferFoldLoss_;      // unpaired item LOSSES folded away (items that left and arrived nowhere)
+    unsigned long xferFoldLogMs_;     // last [xfer] FOLD-LOSS line (rate limit)
     unsigned long speedLastSendMs_;    // last REQ (join) / SET (host) send, safety resend
     unsigned long speedCombatSampleMs_;// last own-combat sample time
     unsigned long speedCombatHoldMs_;  // last time own-squad combat read TRUE (cap hysteresis)

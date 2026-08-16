@@ -1849,7 +1849,26 @@ void Replicator::detectAndPublishTransfers(GameWorld* gw, NetLink& net, u32 owne
             } else if (now - pe->second.sinceMs >= XFER_PEND_MS) {
                 // Never paired: fold into the baseline and stop watching.
                 if (cv != ci->second.end()) base[*ky] = cv->second; else base.erase(*ky);
-                if (dumpX) { char b[200]; _snprintf(b, sizeof(b) - 1,
+                // UNCONDITIONAL for a LOSS. A negative unpaired delta means items
+                // left this container and arrived in no container we watch - which
+                // is exactly the shape of the 2026-08-16 report, "move items from
+                // one unit to another and if they're too far it'll just despawn".
+                // Folding it into the baseline is the correct local action (we do
+                // not fabricate a destination), but doing so SILENTLY is what makes
+                // the report unfixable: there is no other record that the item was
+                // ever seen leaving. A gain can stay dump-gated; a loss cannot.
+                // Rate-limited, because a legitimate bulk move folds many keys.
+                if (delta < 0) {
+                    ++xferFoldLoss_;
+                    if (xferFoldLogMs_ == 0 || (now - xferFoldLogMs_) > 5000) {
+                        xferFoldLogMs_ = now;
+                        char b[220]; _snprintf(b, sizeof(b) - 1,
+                            "[xfer] FOLD-LOSS hand=%u,%u,%u,%u,%u sid='%s' delta=%d "
+                            "(left this container, arrived nowhere we watch)",
+                            k.t, k.c, k.cs, k.i, k.s, ky->first.c_str(), delta);
+                        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                    }
+                } else if (dumpX) { char b[200]; _snprintf(b, sizeof(b) - 1,
                     "[xfer] fold hand=%u,%u,%u,%u,%u sid='%s' delta=%d (unpaired)",
                     k.t, k.c, k.cs, k.i, k.s, ky->first.c_str(), delta);
                     b[sizeof(b) - 1] = '\0'; coop::logLine(b); }

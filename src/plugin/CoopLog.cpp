@@ -163,8 +163,21 @@ bool logRetag(const char* newPath, const char* newTag) {
         {
             std::string oldPrev(g_curPath); oldPrev += ".prev";
             std::string newPrev(newPath);   newPrev += ".prev";
-            std::remove(newPrev.c_str());
-            std::rename(oldPrev.c_str(), newPrev.c_str()); // harmless if absent
+            // Only clear the destination once the SOURCE is known to exist.
+            // The old order removed newPrev unconditionally and then relied on
+            // the rename failing "harmlessly if absent" - but by then the good
+            // file was already gone. This client starts under the CONFIGURED
+            // role (host) and renames to the negotiated one (join) on every
+            // single run, so each launch destroyed the previous join session's
+            // .prev and replaced it with nothing. Cost a 264k-line log on
+            // 2026-08-15, which is exactly the file the "keep one previous run"
+            // rule exists to protect.
+            FILE* probe = std::fopen(oldPrev.c_str(), "rb");
+            if (probe) {
+                std::fclose(probe);
+                std::remove(newPrev.c_str());
+                std::rename(oldPrev.c_str(), newPrev.c_str());
+            }
         }
         std::remove(newPath);                       // rename() will not overwrite
         moved = (std::rename(g_curPath, newPath) == 0);

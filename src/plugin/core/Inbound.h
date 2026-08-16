@@ -389,7 +389,7 @@ public:
     // overflow the OLDEST entry is dropped, which is exactly "newest wins" for
     // continuous state (Phase 4d bounded mailboxes).
     explicit WorldQ(std::vector<IClearableQueue*>& reg, size_t cap = 0)
-      : cap_(cap), peak_(0), dropped_(0) { reg.push_back(this); }
+      : cap_(cap), peak_(0), dropped_(0), droppedWin_(0) { reg.push_back(this); }
     void push_back(const T& v) {
         // Peak-at-PUSH, not depth-at-drain: the drain sees whatever survived, so
         // only the push side knows the true high-water mark. Two integer writes
@@ -401,7 +401,7 @@ public:
         // the difference decides whether the fix is a throttle or a debounce.
         // dropped_ matters just as much: a capped queue silently discarding the
         // oldest entry is absence manufactured by us, and nothing counted it.
-        if (cap_ && q_.size() >= cap_) { q_.pop_front(); ++dropped_; }
+        if (cap_ && q_.size() >= cap_) { q_.pop_front(); ++dropped_; ++droppedWin_; }
         q_.push_back(v);
         if (q_.size() > peak_) peak_ = (unsigned int)q_.size();
     }
@@ -411,11 +411,20 @@ public:
     unsigned long dropped() const  { return dropped_; }
     unsigned int  capacity() const { return (unsigned int)cap_; }
     void          resetPeak()      { peak_ = 0; }
+    // Per-WINDOW drops. The cumulative total is kept too, but the [q] line
+    // reports this one: a cumulative counter that never resets stays on every
+    // line forever after a single burst, so the field stops meaning "something
+    // is wrong NOW" and starts meaning "something went wrong once". Measured
+    // 2026-08-15: one load-time burst printed DROPPED ent=16071 on all 716
+    // subsequent lines, which reads as an ongoing emergency and is not one.
+    unsigned long droppedWin() const { return droppedWin_; }
+    void          resetDropWin()     { droppedWin_ = 0; }
 private:
     std::deque<T> q_;
     size_t        cap_;
     unsigned int  peak_;
     unsigned long dropped_;
+    unsigned long droppedWin_;
     WorldQ(const WorldQ&);
     WorldQ& operator=(const WorldQ&);
 };
@@ -897,20 +906,31 @@ public:
     void queueStats(char* out, unsigned int n) {
         if (!out || !n) return;
         EnterCriticalSection(&cs_);
-        const unsigned long dropEnt = ent_.dropped();
-        const unsigned long dropSte = stealth_.dropped();
-        const unsigned long dropCam = camHint_.dropped();
+        // Per-window, plus the cumulative total in parentheses. The window
+        // number answers "is this happening NOW"; the total answers "has it
+        // ever". Reporting only the total made one load-time burst look like a
+        // permanent emergency on all 716 subsequent lines.
+        const unsigned long dropEnt = ent_.droppedWin();
+        const unsigned long dropSte = stealth_.droppedWin();
+        const unsigned long dropCam = camHint_.droppedWin();
+        const unsigned long dropEntAll = ent_.dropped();
         int off = _snprintf(out, n - 1,
             "[q] peak evt=%u ent=%u/%u inv=%u cen=%u stealth=%u cam=%u",
             evt_.peak(), ent_.peak(), ent_.capacity(), inv_.peak(),
             npcCensus_.peak(), stealth_.peak(), camHint_.peak());
         if (off > 0 && (dropEnt || dropSte || dropCam) && (unsigned)off < n - 1) {
-            _snprintf(out + off, n - 1 - off, " DROPPED ent=%lu stealth=%lu cam=%lu",
-                      dropEnt, dropSte, dropCam);
+            _snprintf(out + off, n - 1 - off,
+                      " DROPPING ent=%lu stealth=%lu cam=%lu (total ent=%lu)",
+                      dropEnt, dropSte, dropCam, dropEntAll);
+        } else if (off > 0 && dropEntAll && (unsigned)off < n - 1) {
+            // Quiet now, but it happened: name it once per line without the
+            // alarm word, so a load-time burst stays visible and stops shouting.
+            _snprintf(out + off, n - 1 - off, " (dropped ent=%lu earlier)", dropEntAll);
         }
         out[n - 1] = '\0';
         evt_.resetPeak(); ent_.resetPeak(); inv_.resetPeak();
         npcCensus_.resetPeak(); stealth_.resetPeak(); camHint_.resetPeak();
+        ent_.resetDropWin(); stealth_.resetDropWin(); camHint_.resetDropWin();
         LeaveCriticalSection(&cs_);
     }
 
