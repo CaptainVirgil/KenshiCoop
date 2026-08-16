@@ -31,7 +31,7 @@ typedef double         f64;
 // this header stays a definition file. When you bump PROTOCOL_VERSION, add the
 // matching entry at the bottom of that doc. The version is checked at handshake
 // and a mismatch is rejected (no back-compat).
-const u16 PROTOCOL_VERSION = 58;
+const u16 PROTOCOL_VERSION = 59;
 
 // Packet type tags (first byte of every packet).
 enum PacketType {
@@ -83,7 +83,8 @@ enum PacketType {
     PKT_MONEY_DELTA      = 46,// RELIABLE join money-pool delta (join -> host, protocol 52); MoneyDeltaPacket
     PKT_DEED             = 47,// RELIABLE property-ownership row (protocol 54); DeedPacket
     PKT_WEATHER          = 48,// RELIABLE host-authoritative weather state (protocol 55); WeatherPacket
-    PKT_DIALOGUE         = 49 // RELIABLE spoken line + where it was said (protocol 56); DialoguePacket
+    PKT_DIALOGUE         = 49,// RELIABLE spoken line + where it was said (protocol 56); DialoguePacket
+    PKT_AUTH_ASSIGN      = 50 // RELIABLE host-asserted body-authority row (protocol 59); AuthAssignPacket
 };
 
 // One-shot transition events carried on the RELIABLE channel. Continuous state
@@ -1555,6 +1556,14 @@ struct NpcCensusHeader {
     // the packet is dropped, the census goes STALE and wide culling disables
     // - fail-safe (see docs/PROTOCOL_HISTORY.md, 58).
     u16 count;
+    // Protocol 59 appends TWO tail blocks after the positions - [u8 author *
+    // count][u32 mapGen] - carrying the host's asserted per-row owner and the
+    // assign-map generation that ordering-fences them against AuthAssign rows.
+    // Appended rather than inlined per-row for the same reason the v58 flag
+    // rode bit 15: the receive path computes `need` WITHOUT the tail and reads
+    // arrays at fixed offsets, so an old receiver ignores the extra bytes and
+    // a new receiver of an old packet sees len < need+tail and simply stores
+    // no authors. Absence of the tail means "no assertion", never "owner 0".
 };
 
 // Hard cap on hands per census packet (512 * 20 B = ~10 KB, fragmented fine).
@@ -1587,6 +1596,31 @@ struct CamHintPacket {
 //
 // Reliable because a dropped claim silently reverts a cell to host authority,
 // which is a duplicate-authorship window rather than a missed frame.
+// Host-ASSERTED per-body authority (protocol 59, docs/AUTHORITY-DESIGN.md).
+// The host is the arbiter: only it sends these, and a receiver drops the
+// packet from any other sender. Semantics are revocation-and-grant in one
+// event - the KO/revive inversion applied to ownership: the event designates
+// the new owner, the census author tail is the ~1 Hz self-healing periodic
+// leg, and the receiver treats a row it cannot honour (witness mismatch) as
+// refuse-and-wait, never as licence to guess.
+//
+// assignSeq is monotonic PER KEY from one arbiter, so the ordinary
+// gateSeqAccept idiom drops stale/duplicate rows. sidWitness is the same
+// template-sid hash the suppression map keeps (suppressWitness): hands get
+// recycled by the engine, and an ownership record must not follow a hand onto
+// a different body.
+struct AuthAssignPacket {
+    u8  type;       // = PKT_AUTH_ASSIGN
+    u8  newOwner;   // network player id gaining authorship
+    u8  prevOwner;  // network player id losing it (informational; 0xFF = none)
+    u8  flags;      // reserved, 0
+    u32 ownerId;    // SENDER id - must be the host (0); others are dropped
+    u32 assignSeq;  // per-key monotonic accept guard
+    u32 mapGen;     // assign-map generation this row belongs to
+    u32 hand[5];    // canonical 5-field hand (t, c, cs, i, s - census order)
+    u32 sidWitness; // template-sid hash; 0 = sender could not read one
+};
+
 struct CellClaimPacket {
     u8  type;     // = PKT_CELL_CLAIM
     u32 ownerId;  // network player id of the claimant (host = 0)

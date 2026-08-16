@@ -515,3 +515,37 @@ near world listed, so the residual lives in the far band.
 | Field | Old meaning | New meaning (v58) |
 |---|---|---|
 | `NpcCensusHeader.count` bit 15 | part of the count (values > 512 impossible in practice, dropped by the receiver cap) | `NPC_CENSUS_TRUNC` — enumeration truncated; mask with `0x7FFF` before any use as a count |
+
+## 59 — host-asserted body authority (2026-08-16)
+
+**What changed on the wire.** New reliable packet `PKT_AUTH_ASSIGN` (50):
+canonical 5-field hand, per-key monotonic `assignSeq`, `newOwner`/`prevOwner`,
+`mapGen`, and a template-sid witness. `NpcCensusHeader` packets gain two
+APPENDED tail blocks after the positions: `[u8 author * count][u32 mapGen]`.
+The tail is the cheap-append kind - the receive path computes `need` without
+it, so its absence stores "no assertion", never "owner 0".
+
+**Why.** Authority was split by SPACE (cells), and two players in one cell
+degenerate to host-authors-everything / join-drives-112-bodies - measured
+render delay 740-887 ms against a 50-200 ms band, reported as "AI flickering".
+Every shipped authority bug was two machines deriving one predicate from
+diverged copies; an ASSERTED owner is the same answer on both by construction
+(docs/AUTHORITY-DESIGN.md carries the full panel decision, the killed
+alternatives, and the numbers).
+
+**Semantics under `authAssert: on` (the v0.67 default).** A census row means
+"I ENUMERATE this body" and its author byte says who writes it; the old
+row-means-I-author gate stays byte-for-byte under `off`/`shadow`. Only the
+host may send ASSIGN rows - a non-host sender is dropped and counted. The
+receive side stores behind the seq guard and refuses a witness mismatch
+outright (hands get recycled; the MIGRATE REFUSED discipline applied to
+ownership). Policy v1: `hContainer` parity (measured 77/76 and squad-coherent),
+eligibility veto pins fighting/bleeding bodies to the incumbent, answered
+spawns grant to the join (it authors through its proxy under the canonical
+key), and a ~10 s liveness revoke with a 60 s backoff reclaims any grant whose
+owner stops writing.
+
+**Rollback** is config, not a re-release: `"authAssert": "off"` in
+coop_config.json restores the cell-only verdict; `"shadow"` keeps counting the
+divergence. Old-version interop: none - the handshake hard-rejects across the
+bump, as every bump does.

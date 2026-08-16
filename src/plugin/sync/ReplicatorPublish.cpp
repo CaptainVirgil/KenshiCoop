@@ -241,10 +241,43 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             float peerAnch[12];
             unsigned int nPeerAnch = peerAnchors(gw, peerAnch);
             unsigned long cNow = nowMs();
+            // Step 7: a minted proxy is authored under its CANONICAL key - the
+            // hand the body it stands for is known by everywhere - or not at
+            // all. Local-hand -> canonical map from proxyByKey_ via readHand,
+            // the same translation the census build has always done; without
+            // the row rewrite below, a proxy row would carry a hand the peer
+            // cannot resolve and the liveness revoke would reclaim the body
+            // in ten seconds flat.
+            std::map<Key, Key> canonOfLocal;
+            if (authAssertMode_ >= 2) {
+                for (std::map<Key, Character*>::const_iterator pi =
+                         proxyByKey_.begin(); pi != proxyByKey_.end(); ++pi) {
+                    if (!pi->second) continue;
+                    unsigned int lh[5];
+                    if (!engine::readHand(pi->second, lh)) continue;
+                    Key lk; // readHand order is {i, s, t, c, cs}
+                    lk.i = lh[0]; lk.s = lh[1]; lk.t = lh[2];
+                    lk.c = lh[3]; lk.cs = lh[4];
+                    canonOfLocal[lk] = pi->first;
+                }
+            }
             unsigned int kept = 0;
             for (unsigned int i = 0; i < got; ++i) {
+                Key sk = keyOf(buf[n + i]);
+                std::map<Key, Key>::const_iterator ci = canonOfLocal.find(sk);
+                if (ci != canonOfLocal.end()) {
+                    sk = ci->second;
+                    // Rewrite the ROW to the canonical identity before any
+                    // gate sees it: the peer resolves its own real body from
+                    // these fields, and nearSent_ keys on them.
+                    buf[n + i].hType = sk.t;
+                    buf[n + i].hContainer = sk.c;
+                    buf[n + i].hContainerSerial = sk.cs;
+                    buf[n + i].hIndex = sk.i;
+                    buf[n + i].hSerial = sk.s;
+                }
                 if (!weAuthorBody(gw, ownerId, buf[n + i].x, buf[n + i].z,
-                                  keyOf(buf[n + i]))) continue;
+                                  sk)) continue;
                 // The peer's census is the other half of incumbent-holds. weAuthor
                 // asks a question about OUR copy's position, and two copies of one
                 // fighting NPC drift apart far enough to answer it differently on
@@ -273,6 +306,14 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         }
         n += got;
     }
+    // The near band ends HERE, whether or not a mid slice follows. v0.65 set
+    // this only inside the mid block, so an EMPTY mid band (early session, or
+    // a join near its host) left midStart == npcStart and the near-band change
+    // gate below never ran at all - full 20 Hz for every stationary near NPC,
+    // exactly the cost the gate exists to cut. Found by authoritytest pin A4
+    // on the harness's first run; no live session had shown it because a live
+    // host always carries a populated mid band.
+    midStart = n;
     // Phase 2 mid-band tier (host): append a rotating slice of the census-walk
     // NPCs beyond the stream bubble (midBand_, nearest-first, rebuilt at 1 Hz
     // by publishNpcCensus). Quota = |midBand|/10 puts each mid NPC in ~1 of
@@ -427,7 +468,6 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // Emit the cached slice every frame: setOwnedEntities overwrites the
         // published snapshot each time, and the net thread samples whichever
         // frame it lands on.
-        midStart = n;   // mid rows are already rotation-limited; never gate them
         for (unsigned int r = 0; r < (unsigned int)midRows_.size() && n < MAX_PUBLISH; ++r)
             buf[n++] = midRows_[r];
         // The map is keyed by hand and the band is rebuilt every census, so
@@ -951,6 +991,10 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     // the cheap capture is the whole requirement here too.
     unsigned int n = engine::listNpcsWide(gw, censusRadius_ * 1.25f, chars, states,
                                           NPC_CENSUS_MAX, &trunc, auditRows_);
+    // Auth step 2: recompute the SHADOW assign map over this same enumeration.
+    // Log-only policy output (docs/AUTHORITY-DESIGN.md); the census beat is its
+    // natural cadence and this list is its natural input.
+    computeAssignMap(gw, chars, states, n);
     // A truncated census is an ACTIVE falsehood, not just a thin one: every NPC
     // past the cap is broadcast as "does not exist on the host", and the join
     // culls its real local copy against that. The fill is per-anchor, so a dense
@@ -971,6 +1015,8 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     }
     static u32   hands[NPC_CENSUS_MAX * 5];
     static float poss[NPC_CENSUS_MAX * 3];
+    static u8    authors[NPC_CENSUS_MAX];   // protocol 59 author tail
+    static Character* rowChar[NPC_CENSUS_MAX]; // source body per ROW (witnesses)
     // A census row is read on the far side as "this exists", and the ABSENCE of a
     // row as "this does not". That makes this list an existence claim, and the
     // only thing entitled to narrow it is whether the body is OURS to speak for -
@@ -1066,7 +1112,19 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         // census is the existence claim behind the peer's culling, so if we
         // stop STREAMING a body we must also stop CLAIMING it - otherwise the
         // peer's suppression stands down on a body nobody is writing.
-        if (cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z, k)) {
+        // Census semantics under the assertion overlay (authAssert on): a row
+        // means "I ENUMERATE this body", and the author byte says who writes
+        // it. Under the old regime a row meant "I author this", so the gate
+        // below dropped peer-assigned bodies - and with it their assertions,
+        // since the ASSIGN emit walks these rows. authoritytest pin F caught
+        // the collision on its first run: the host asserted only its own half,
+        // the join stored nothing for its bodies, and the one-writer partition
+        // failed. This is the design's risk register #1 ("the census's dual
+        // semantic"), resolved the way it prescribed - rewritten deliberately,
+        // under the mode flag, never implicitly. SHADOW keeps the old census
+        // byte-for-byte, which is what makes it a true no-op.
+        if (authAssertMode_ < 2 &&
+            cellAuth_ && !weAuthorBody(gw, ownerId, states[i].x, states[i].z, k)) {
             ++nNotMine;
             continue;
         }
@@ -1081,12 +1139,49 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         poss[m * 3 + 0]  = states[i].x;
         poss[m * 3 + 1]  = states[i].y;
         poss[m * 3 + 2]  = states[i].z;
+        // Protocol 59: the asserted owner rides every census row - the ~1 Hz
+        // self-healing periodic leg of the assertion overlay. A key the map
+        // does not carry (raced a recompute) asserts the host, the incumbent.
+        // rowChar keeps the SOURCE body per ROW: the ASSIGN emit below indexes
+        // rows, not the enumeration, and the two drift apart the moment any
+        // row is skipped - chars[i] there was a misaligned witness waiting to
+        // happen.
+        {
+            std::map<Key, unsigned char>::const_iterator ai = assignMap_.find(k);
+            authors[m] = (ai != assignMap_.end()) ? ai->second : 0;
+            rowChar[m] = chars[i];
+        }
         ++m;
     }
     pruneAttention(censusKeys);
     // trunc, not censusPubTrunc_: the member only updates on log edges; the
     // wire must carry THIS beat's truth.
-    net.queueNpcCensus(ownerId, hands, poss, m, trunc);
+    net.queueNpcCensus(ownerId, hands, poss, m, trunc, authors, assignGen_);
+    // Protocol 59: assert CHANGED ownerships as reliable rows. The census tail
+    // above self-heals a lost row within a second; the event is what makes a
+    // change prompt. Emitted only by the arbiter - the join never computes a
+    // map (computeAssignMap runs under streamNpcs_, the host role), so this
+    // loop is host-only by construction.
+    for (unsigned int i = 0; i < m; ++i) {
+        Key k;
+        k.t = hands[i * 5 + 0]; k.c = hands[i * 5 + 1];
+        k.cs = hands[i * 5 + 2]; k.i = hands[i * 5 + 3];
+        k.s = hands[i * 5 + 4];
+        std::map<Key, unsigned char>::iterator prev = assignSent_.find(k);
+        if (prev != assignSent_.end() && prev->second == authors[i]) continue;
+        AuthAssignPacket ap;
+        memset(&ap, 0, sizeof(ap));
+        ap.type = (u8)PKT_AUTH_ASSIGN;
+        ap.newOwner = authors[i];
+        ap.prevOwner = (prev != assignSent_.end()) ? prev->second : 0xFF;
+        ap.ownerId = ownerId;
+        ap.assignSeq = assignSeqOut_++;
+        ap.mapGen = assignGen_;
+        for (int j = 0; j < 5; ++j) ap.hand[j] = hands[i * 5 + j];
+        ap.sidWitness = (rowChar[i] != 0) ? sidWitness(rowChar[i]) : 0;
+        net.queueAuthAssign(ap);
+        assignSent_[k] = authors[i];
+    }
 
     // Phase 2 mid-band tier: rebuild the round-robin list from this census
     // walk. Everything beyond the stream bubble's KEEP band belongs to the

@@ -24,6 +24,7 @@ Set-StrictMode -Version Latest
 # and so Contract.Tests can assert the manifest never introduces an unknown key.
 $script:CoopDiagEnvKeys = @(
     # --- channel A/B knobs (Config.cpp reads these; DiagEnv carries the deltas) ---
+    'KENSHICOOP_AUTH_ASSERT'
     'KENSHICOOP_INV_SYNC'
     'KENSHICOOP_XFER_SYNC'
     'KENSHICOOP_BLOCK_XFER'

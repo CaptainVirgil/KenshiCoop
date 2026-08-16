@@ -27,6 +27,8 @@ namespace faketest {
 
 CharLedger::CharLedger()
     : x(0), y(0), z(0), heading(0), isSquad(false),
+      suppress(0), restore(0), halt(0), suppressed(false),
+      blood(100.0f), bleedRate(0.0f),
       motMoving(false), motSpeed(0.0f),
       walkTo(0), park(0), endAction(0), clearGoals(0), applyRaw(0),
       applyMotion(0), applyPhysMotion(0), applyTaskOrder(0),
@@ -86,6 +88,14 @@ CharLedger& led(Character* c) { return g_led[c]; }
 
 unsigned int suspendCount() { return (unsigned int)g_suspend.size(); }
 
+unsigned int allChars(Character** out, unsigned int cap) {
+    unsigned int n = 0;
+    for (std::map<Character*, CharLedger>::iterator it = g_led.begin();
+         it != g_led.end() && n < cap; ++it)
+        out[n++] = it->first;
+    return n;
+}
+
 } // namespace faketest
 
 namespace engine {
@@ -126,7 +136,19 @@ Character* resolveCharByHand(unsigned int idx, unsigned int ser,
 bool readHand(Character* c, unsigned int out[5]) {
     CharLedger* l = rec(c);
     if (!l) return false;
-    for (int i = 0; i < 5; ++i) out[i] = l->hand[i];
+    // REAL readHand order is {index, serial, type, container, containerSerial}
+    // (EngineEntity.cpp:461's own comment), NOT the registration order. The
+    // fake used to return {t,c,cs,i,s}, and authoritytest's restore pin caught
+    // it: the suppressed-entry prune does readHand -> resolveCharByHand as a
+    // liveness round-trip, the scrambled order failed to resolve, and every
+    // suppressed body was pruned as "despawned" one sweep after being hidden -
+    // in the FAKE only. Order fidelity in a fake is load-bearing precisely
+    // because the real code round-trips through it.
+    out[0] = l->hand[3]; // index
+    out[1] = l->hand[4]; // serial
+    out[2] = l->hand[0]; // type
+    out[3] = l->hand[1]; // container
+    out[4] = l->hand[2]; // containerSerial
     return true;
 }
 
@@ -152,8 +174,32 @@ bool isLocalPlayerChar(GameWorld* gw, Character* c) {
 // is skipped - the oracles still run, they just don't distance-filter.
 unsigned int captureSquad(GameWorld* gw, bool leaderOnly,
                           EntityState* out, unsigned int maxOut) {
-    (void)gw; (void)leaderOnly; (void)out; (void)maxOut;
-    return 0;
+    // Upgraded for authoritytest: enumerate the registered SQUAD bodies (the
+    // publish path streams these unconditionally, and pin A counts them).
+    // drivetest never calls this - its tests drive received state, not
+    // publishing - so the upgrade is invisible there.
+    (void)gw; (void)leaderOnly;
+    static Character* all[2048];
+    unsigned int total = faketest::allChars(all, 2048);
+    unsigned int n = 0;
+    for (unsigned int i = 0; i < total && n < maxOut; ++i) {
+        CharLedger& l = faketest::led(all[i]);
+        if (!l.isSquad) continue;
+        if (out) {
+            std::memset(&out[n], 0, sizeof(out[n]));
+            out[n].hType = l.hand[0]; out[n].hContainer = l.hand[1];
+            out[n].hContainerSerial = l.hand[2];
+            out[n].hIndex = l.hand[3]; out[n].hSerial = l.hand[4];
+            out[n].x = l.x; out[n].y = l.y; out[n].z = l.z;
+            out[n].heading = l.heading;
+            out[n].cSpeed = l.motSpeed;
+            out[n].cMoving = l.motMoving ? 1 : 0;
+            out[n].task = 0xFFFFu;    // TASK_NONE
+            out[n].rawTask = 0xFFFFu;
+        }
+        ++n;
+    }
+    return n;
 }
 
 // reportCombat_ is off in every test, so this is never reached; 0 keeps the
@@ -480,8 +526,15 @@ bool removeWorldItemProxy(GameWorld* gw, RootObject* proxy) {
 }
 
 bool restoreNpc(GameWorld* gw, Character* c) {
-    (void)gw; (void)c;
-    return false;
+    (void)gw;
+    // Obedient, like suppressNpc in EngineFakesAuth.cpp: the authority sweep
+    // books a restore only when the engine call LANDS, so a fake that always
+    // failed would leave the restore pin asserting against an infinite retry.
+    CharLedger* l = rec(c);
+    if (!l) return false;
+    ++l->restore;
+    l->suppressed = false;
+    return true;
 }
 
 } // namespace engine

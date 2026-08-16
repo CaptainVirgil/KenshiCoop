@@ -20,18 +20,7 @@ namespace coop {
 // same CHARACTER - the engine can despawn one body and allocate another at that
 // address. The template sid is the cheapest thing that tells those apart, and 0
 // means "unknown", which callers must treat as "do not vouch for this".
-static u32 suppressWitness(Character* c) {
-    if (!c) return 0;
-    char sid[48]; char fac[48];
-    float x, y, z, hd, age; bool dead;
-    if (!engine::describeCharacter(c, sid, sizeof(sid), fac, sizeof(fac),
-                                   &x, &y, &z, &hd, &dead, &age))
-        return 0;
-    if (!sid[0]) return 0;
-    u32 h = 2166136261u;
-    for (const char* p = sid; *p; ++p) { h ^= (unsigned char)*p; h *= 16777619u; }
-    return h ? h : 1u;
-}
+static u32 suppressWitness(Character* c) { return sidWitness(c); }
 
 void Replicator::debugMark(Character* c, int colorId, const char* tag) {
     static int en = -1;
@@ -104,6 +93,8 @@ void Replicator::applyNpcCensus(Inbound& in) {
     censusOwner_ = nc.ownerId;
     censusHands_.clear();
     censusPos_.clear();
+    censusAuthor_.clear();
+    if (nc.mapGen != 0) censusMapGen_ = nc.mapGen;
     unsigned int n = (unsigned int)(nc.hands.size() / 5);
     bool havePos = nc.pos.size() >= (size_t)n * 3;
     for (unsigned int i = 0; i < n; ++i) {
@@ -114,6 +105,9 @@ void Replicator::applyNpcCensus(Inbound& in) {
         k.i  = nc.hands[i * 5 + 3];
         k.s  = nc.hands[i * 5 + 4];
         censusHands_.insert(k);
+        // Protocol 59: store the asserted author per row, when the tail rode
+        // along. EMPTY tail = no assertion carried = unknown - never owner 0.
+        if (nc.authors.size() > i) censusAuthor_[k] = nc.authors[i];
         if (havePos) {
             CensusPos cp;
             cp.x = nc.pos[i * 3 + 0];
@@ -1276,6 +1270,35 @@ u32 Replicator::authorityFor(GameWorld* gw, float x, float z) const {
 u32 Replicator::authorityForBody(GameWorld* gw, float x, float z,
                                  const Key& k) const {
     const u32 cellOwner = authorityFor(gw, x, z);
+    // ---- Auth step 4: the ASSERTION overlay (docs/AUTHORITY-DESIGN.md) -----
+    // A published fact beats a derived one. Every shipped authority bug was
+    // two machines deriving one predicate from diverged copies; an asserted
+    // owner is the same answer on both by construction. Order of truth: the
+    // arbiter's own map (only the streaming host carries one), then the
+    // reliable ASSIGN store, then the census author tail. A body no assertion
+    // names falls through to the cell verdict - absence of an assertion is
+    // unknown, never "owner 0".
+    if (authAssertMode_ != 0) {
+        unsigned char asserted = 0;
+        bool have = false;
+        std::map<Key, unsigned char>::const_iterator mi = assignMap_.find(k);
+        if (mi != assignMap_.end()) { asserted = mi->second; have = true; }
+        if (!have) {
+            std::map<Key, AssignRec>::const_iterator ri = assignRecv_.find(k);
+            if (ri != assignRecv_.end()) { asserted = ri->second.owner; have = true; }
+        }
+        if (!have) {
+            std::map<Key, unsigned char>::const_iterator ci = censusAuthor_.find(k);
+            if (ci != censusAuthor_.end()) { asserted = ci->second; have = true; }
+        }
+        if (have) {
+            ++assertConsulted_;
+            if (authAssertMode_ >= 2) return (u32)asserted;
+            // SHADOW: the cell verdict still rules; divergence is the number
+            // the flip decision reads.
+            if ((u32)asserted != cellOwner) ++assertDiverge_;
+        }
+    }
     if (!splitAuthority_ || !cellAuth_) return cellOwner;
     if (contestedCells_.empty()) return cellOwner;
     int cx = 0, cz = 0;
@@ -1303,7 +1326,11 @@ u32 Replicator::authorityForBody(GameWorld* gw, float x, float z,
 
 bool Replicator::authorHoldsBody(GameWorld* gw, u32 localId, const Key& k,
                                  Character* c, float x, float z) {
-    if (!cellAuth_) return false;
+    // Auth step 5: an ASSERTED body is held by its assertion whatever the cell
+    // machinery thinks - authorityForBody carries the overlay, so all this
+    // early-out may do is stop the overlay from being consulted when both
+    // systems are off.
+    if (!cellAuth_ && authAssertMode_ < 2) return false;
     // Body-aware: inside a contested cell this can hand the body to whichever
     // client the hash picked, which is exactly what LICENSES the suppression
     // machinery below to run on the half we gave away. Splitting the publish
@@ -1925,5 +1952,241 @@ void Replicator::pruneDebugMarkers(const std::set<Character*>& live) {
     }
 }
 
+
+
+// ---- Auth step 2: the SHADOW assign map (docs/AUTHORITY-DESIGN.md) ----------
+//
+// Pure host-side POLICY. Nothing consults this for behaviour yet and nothing
+// about it is on the wire - it exists so a live session can measure the split
+// the assertion overlay WOULD make, before any client obeys it.
+//
+// Policy v1, from the design synthesis:
+//   - hContainer parity. Measured on the 2026-08-16 shared-identity set:
+//     77/76 and squad-coherent (hContainer is the squad group; splitting on
+//     hSerial parity measured 153/0 - serials are pointer-derived and share
+//     alignment - and hIndex parity split squads down the middle).
+//   - The ELIGIBILITY VETO pins a body to the incumbent (the host) while it is
+//     fighting, bleeding, or critically low on blood. These are exactly the
+//     bodies where the census-freeze subsystem bled three exemptions, where a
+//     KO latch cannot survive an owner flip, and where the engagement-cluster
+//     rule forbids splitting a fight across authors.
+
+void Replicator::computeAssignMap(GameWorld* gw, Character* const* chars,
+                                  const EntityState* states, unsigned int n) {
+    (void)gw;
+    assignMap_.clear();
+    unsigned int nHost = 0, nJoin = 0, vetoNow = 0;
+    for (unsigned int i = 0; i < n; ++i) {
+        Key k;
+        k.t = states[i].hType; k.c = states[i].hContainer;
+        k.cs = states[i].hContainerSerial;
+        k.i = states[i].hIndex; k.s = states[i].hSerial;
+        unsigned char owner = (states[i].hContainer & 1u) ? 1 : 0;
+        // Step 7 policy: a body the peer requested a spawn for is authored by
+        // the peer - it holds a minted proxy and can write it under the
+        // canonical key, and handing it over is what stops the parity split's
+        // payoff decaying as the session's population turns over to
+        // host-origin spawns. Optimistic by design: if the join cannot in
+        // fact author it, the liveness revoke takes it back, and the backoff
+        // below keeps a revoked grant from flapping at the liveness cadence.
+        if (spawnAnsweredKeys_.find(k) != spawnAnsweredKeys_.end()) owner = 1;
+        {
+            std::map<Key, unsigned long>::iterator bi =
+                assignRevokeBackoffMs_.find(k);
+            if (bi != assignRevokeBackoffMs_.end()) {
+                if (nowMs() - bi->second < 60000) owner = 0;
+                else assignRevokeBackoffMs_.erase(bi);
+            }
+        }
+        if (chars && chars[i]) {
+            engine::CombatRead cr;
+            bool fighting = engine::readCombat(chars[i], &cr) &&
+                            (cr.inCombat || cr.modeActive || cr.underMelee);
+            engine::MedicalRead mr;
+            bool hurt = engine::readMedical(chars[i], &mr) && mr.valid &&
+                        (mr.bleedRate > 0.0f || mr.blood <= 25.0f);
+            if (fighting || hurt) {
+                owner = 0;              // incumbent keeps an engaged/dying body
+                ++vetoNow;
+                ++assignVetoed_;
+            }
+        }
+        // Step 5 liveness: a join-side body whose stream has been silent past
+        // the horizon reverts to the host. targets_ is the join's stream as we
+        // see it; no entry (or a stale ring) past authLivenessMs_ after the
+        // grant means the owner is not writing - and one writer who is not
+        // writing is zero writers. The revoke is a normal map change: the
+        // census tail heals it within a beat and the ASSIGN emit makes it
+        // prompt.
+        if (owner == 1) {
+            unsigned long nowL = nowMs();
+            std::map<Key, unsigned long>::iterator si = assignJoinSinceMs_.find(k);
+            if (si == assignJoinSinceMs_.end()) {
+                assignJoinSinceMs_[k] = nowL;
+            } else if (nowL - si->second >= authLivenessMs_) {
+                bool alive = false;
+                std::map<Key, Driven>::const_iterator ti = targets_.find(k);
+                if (ti != targets_.end()) {
+                    unsigned long newest = ti->second.interp.newestMs();
+                    alive = newest != 0 && (nowL - newest) < authLivenessMs_;
+                }
+                if (!alive) {
+                    owner = 0;
+                    ++authLivenessRevoked_;
+                    char b[160]; _snprintf(b, sizeof(b) - 1,
+                        "[auth] LIVENESS revoke hand=%u,%u (join silent %lums; "
+                        "total %lu)",
+                        k.i, k.s, nowL - si->second, authLivenessRevoked_);
+                    b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+                    assignJoinSinceMs_.erase(si);
+                    assignRevokeBackoffMs_[k] = nowL;
+                }
+            }
+        } else {
+            assignJoinSinceMs_.erase(k);
+        }
+        assignMap_[k] = owner;
+        if (owner == 0) ++nHost; else ++nJoin;
+    }
+    ++assignGen_;
+    unsigned long now = nowMs();
+    if (assignLogMs_ == 0 || (now - assignLogMs_) >= 5000) {
+        assignLogMs_ = now;
+        char b[240]; _snprintf(b, sizeof(b) - 1,
+            "[auth] map n=%u host=%u join=%u veto=%u vetoTotal=%lu gen=%lu"
+            " div=%lu consult=%lu recv=%lu stale=%lu refuse=%lu",
+            n, nHost, nJoin, vetoNow, assignVetoed_, assignGen_,
+            assertDiverge_, assertConsulted_, assignRecvN_, assignStaleN_,
+            assignWitnessRefused_);
+        b[sizeof(b) - 1] = '\0'; coop::logLine(b);
+    }
+}
+
+unsigned long Replicator::debugAssignCounts(unsigned int* outHost,
+                                            unsigned int* outJoin,
+                                            unsigned long* outVeto) const {
+    unsigned int h = 0, j = 0;
+    for (std::map<Key, unsigned char>::const_iterator it = assignMap_.begin();
+         it != assignMap_.end(); ++it) {
+        if (it->second == 0) ++h; else ++j;
+    }
+    if (outHost) *outHost = h;
+    if (outJoin) *outJoin = j;
+    if (outVeto) *outVeto = assignVetoed_;
+    return assignGen_;
+}
+
+
+// ---- Auth step 3: receive-and-STORE the arbiter's word ----------------------
+
+void Replicator::applyAuthAssigns(Inbound& in, u32 localId) {
+    std::deque<InboundAuthAssign> got;
+    in.drainAuthAssigns(got);
+    for (std::deque<InboundAuthAssign>::iterator it = got.begin();
+         it != got.end(); ++it) {
+        const AuthAssignPacket& p = it->pkt;
+        Key k;
+        k.t = p.hand[0]; k.c = p.hand[1]; k.cs = p.hand[2];
+        k.i = p.hand[3]; k.s = p.hand[4];
+        AssignRec& rec = assignRecv_[k];
+        // Per-key monotonic accept, the gateSeqAccept idiom: reliable-ordered
+        // transport makes stale rows theoretical, and theoretical is exactly
+        // what a guard is for.
+        if (rec.seq != 0 && !sync::gateSeqAccept(rec.seq, p.assignSeq)) {
+            ++assignStaleN_;
+            continue;
+        }
+        // WITNESS at the store, where the local body can be resolved once
+        // (never per read - authorityForBody runs per body per tick). A row
+        // whose witness names a different template than the body this hand
+        // resolves to here is REFUSED, not adapted: hands get recycled, and
+        // following one onto a different NPC is the MIGRATE REFUSED lesson.
+        // The census tail re-asserts within a second, so refusal is a retry,
+        // not a loss.
+        if (p.sidWitness != 0) {
+            unsigned int lh[5] = { k.t, k.c, k.cs, k.i, k.s };
+            Character* c = localCharForStreamed(lh);
+            if (c) {
+                u32 wit = sidWitness(c);
+                if (wit != 0 && wit != p.sidWitness) {
+                    ++assignWitnessRefused_;
+                    continue;
+                }
+            }
+        }
+        const unsigned char before =
+            (rec.seq != 0) ? rec.owner : (unsigned char)0xFF;
+        rec.owner = p.newOwner;
+        rec.seq = p.assignSeq;
+        rec.gen = p.mapGen;
+        rec.witness = p.sidWitness;
+        ++assignRecvN_;
+        // Step 5, the losing side: the publish gate closes by itself on the
+        // next weAuthorBody read, but the near-gate memory must not survive -
+        // a re-gain would inherit a stale lastSend and hold the first row.
+        if (p.newOwner != (unsigned char)localId &&
+            before == (unsigned char)localId) {
+            nearSent_.erase(k);
+        }
+        // A_mine eviction (step 4, the Holy Sentinel lesson made mechanical):
+        // on GAINING authorship, the drive state for this body dies in the
+        // same breath - the interp ring re-serving the old owner's last
+        // snapshot for even a second is the two-writers-both-ours bug. Seed
+        // the publish KO baseline from the CURRENT local body so takeover
+        // does not emit a spurious KO/REVIVE edge.
+        if (authAssertMode_ >= 2 && p.newOwner == (unsigned char)localId &&
+            before != (unsigned char)localId) {
+            std::map<Key, Driven>::iterator ti = targets_.find(k);
+            if (ti != targets_.end()) {
+                unsigned int lh2[5] = { k.t, k.c, k.cs, k.i, k.s };
+                Character* c2 = localCharForStreamed(lh2);
+                if (c2) drivenChars_.erase(c2);
+                targets_.erase(ti);
+            }
+            unsigned int lh3[5] = { k.t, k.c, k.cs, k.i, k.s };
+            Character* c3 = localCharForStreamed(lh3);
+            if (c3) {
+                HostBody& hb = hostBody_[k];
+                hb.bs = engine::readBodyState(c3);
+                hb.seenMs = nowMs();
+            }
+        }
+    }
+}
+
+bool Replicator::debugAssignRecv(const unsigned int hand[5],
+                                 unsigned char* outOwner, u32* outSeq) const {
+    Key k;
+    k.t = hand[0]; k.c = hand[1]; k.cs = hand[2];
+    k.i = hand[3]; k.s = hand[4];
+    std::map<Key, AssignRec>::const_iterator it = assignRecv_.find(k);
+    if (it == assignRecv_.end()) return false;
+    if (outOwner) *outOwner = it->second.owner;
+    if (outSeq) *outSeq = it->second.seq;
+    return true;
+}
+
+
+// ---- Auth step 7 seams ------------------------------------------------------
+
+void Replicator::noteSpawnAnswered(const unsigned int hand[5]) {
+    if (!hand) return;
+    Key k;
+    k.t = hand[0]; k.c = hand[1]; k.cs = hand[2];
+    k.i = hand[3]; k.s = hand[4];
+    spawnAnsweredKeys_.insert(k);
+    // Bounded: a long session answers a few hundred spawns at most, but a map
+    // with no ceiling is how this project leaks. Cheapest sane cap.
+    if (spawnAnsweredKeys_.size() > 2048)
+        spawnAnsweredKeys_.erase(spawnAnsweredKeys_.begin());
+}
+
+void Replicator::debugBindProxy(const unsigned int canonHand[5], Character* c) {
+    if (!canonHand || !c) return;
+    Key k;
+    k.t = canonHand[0]; k.c = canonHand[1]; k.cs = canonHand[2];
+    k.i = canonHand[3]; k.s = canonHand[4];
+    proxyByKey_[k] = c;
+}
 
 } // namespace coop

@@ -128,6 +128,7 @@ struct Config {
     // and aggro the join's guards while the host has it working. Divergence-
     // gated; well-tracking census NPCs keep their local AI. A/B escape hatch.
     bool         censusFreezeAi;     // KENSHICOOP_CENSUS_FREEZE_AI     (on)
+    int          authAssert;         // KENSHICOOP_AUTH_ASSERT: 0 off, 1 shadow, 2 on (shadow)
 
     // Camera-anchored interest (KENSHICOOP_CAM_INTEREST, DEFAULT ON,
     // protocol 43): interestCenters grows from the two squad-tab-leader

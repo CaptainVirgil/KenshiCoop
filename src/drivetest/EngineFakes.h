@@ -32,6 +32,13 @@ struct CharLedger {
     bool  motMoving;           // what readMotion serves back
     float motSpeed;
 
+    // Authority-surface additions (authoritytest): suppression/restore/halt
+    // call counts, a live suppressed flag, and settable medical vitals served
+    // by the readMedical fake. Defaults are "healthy and visible".
+    unsigned long suppress, restore, halt;
+    bool          suppressed;
+    float         blood, bleedRate;
+
     unsigned long walkTo, park, endAction, clearGoals, applyRaw;
     unsigned long applyMotion, applyPhysMotion, applyTaskOrder;
     unsigned long knockDown, holdDown, aiSuspendAdd, dmgGuardAdd;
@@ -57,6 +64,10 @@ CharLedger& led(Character* c);
 
 // Size of the fake AI-suspend set right now (mirrors engine::aiSuspendCount).
 unsigned int suspendCount();
+
+// Enumerate every registered body (authoritytest: the census/near-band
+// enumerator fakes iterate the world through this). Returns the count written.
+unsigned int allChars(Character** out, unsigned int cap);
 
 } // namespace faketest
 } // namespace coop

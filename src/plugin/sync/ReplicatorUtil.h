@@ -161,6 +161,26 @@ const float TRANSLATE_EPS = 0.02f; // per-frame actual movement counted as "tran
 // its owner stood still, indoors) with margin, sits above the measured median,
 // and stays well under p90 so a body that has genuinely LEFT still snaps. The
 // readCombat test is what discriminates; this is only the sanity ceiling.
+// The identity witness for any per-body record that must survive hand
+// recycling (suppression, and from protocol 59 the authority assertions): an
+// address that round-trips through its own hand proves the POINTER is live,
+// not that it is the same CHARACTER. The template sid is the cheapest thing
+// that tells those apart; 0 means "unknown" and callers must treat it as "do
+// not vouch". Hoisted from ReplicatorAuthority.cpp when the assign path
+// needed the same hash - one funnel, not two copies drifting.
+inline u32 sidWitness(Character* c) {
+    if (!c) return 0;
+    char sid[48]; char fac[48];
+    float x, y, z, hd, age; bool dead;
+    if (!engine::describeCharacter(c, sid, sizeof(sid), fac, sizeof(fac),
+                                   &x, &y, &z, &hd, &dead, &age))
+        return 0;
+    if (!sid[0]) return 0;
+    u32 h = 2166136261u;
+    for (const char* p = sid; *p; ++p) { h ^= (unsigned char)*p; h *= 16777619u; }
+    return h ? h : 1u;
+}
+
 const float COMBAT_VETO_MAX_DIST = 120.0f;
 const float COMBAT_SOFT_DIST = 6.0f;       // walk-converge combat drift beyond this
 const float COMBAT_SNAP_DIST = 20.0f;      // churn ceiling: a correctly-engaged fight owns its

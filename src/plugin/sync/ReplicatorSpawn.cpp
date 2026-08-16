@@ -123,6 +123,14 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
             pkt.dead  = dead ? 1 : 0;
             pkt.age   = age; // animals scale body size by age (protocol 39)
             net.queueSpawnInfo(pkt);
+            // Auth step 7: a found=1 answer means the peer is about to hold a
+            // proxy of this body - which makes it grantable by the assignment
+            // policy (the peer authors it through the canonical key; the
+            // liveness revoke covers the case where the mint never lands).
+            if (found && !dead) {
+                unsigned int ah[5] = { k.t, k.c, k.cs, k.i, k.s };
+                noteSpawnAnswered(ah);
+            }
             char b[224]; _snprintf(b, sizeof(b) - 1,
                 "[spawn] INFO send hand=%u,%u,%u,%u,%u found=%d dead=%d age=%.2f sid='%s' fac='%s'",
                 k.t, k.c, k.cs, k.i, k.s, pkt.found, pkt.dead, pkt.age,

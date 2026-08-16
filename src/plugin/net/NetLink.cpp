@@ -177,6 +177,7 @@ const char* pktName(unsigned t) {
     case PKT_DEED:              return "deed";
     case PKT_WEATHER:           return "weather";
     case PKT_DIALOGUE:          return "dlg";
+    case PKT_AUTH_ASSIGN:       return "assign";
     default:                    return 0;
     }
 }
@@ -229,6 +230,7 @@ void NetLink::emitPacketMix(double secs) {
         b[sizeof(b) - 1] = '\0';
         netLog(b);
     }
+    authAssignDropped_ = 0;
     memset(txN_, 0, sizeof(txN_)); memset(txB_, 0, sizeof(txB_));
     memset(rxN_, 0, sizeof(rxN_)); memset(rxB_, 0, sizeof(rxB_));
 }
@@ -313,6 +315,10 @@ void NetLink::setOwnedEntities(u32 ownerId, const EntityState* arr, unsigned int
 
 void NetLink::queueEvent(const EventPacket& ev) { pushLocked(outCs_, outEvents_, ev); }
 
+void NetLink::queueAuthAssign(const AuthAssignPacket& p) {
+    pushLocked(outCs_, outAuthAssigns_, p);
+}
+
 void NetLink::queueInvSnapshot(u32 ownerId, u8 keyKind, const u32 cKey[5],
                                const InvItemEntry* items, unsigned int count, u8 flags) {
     OutInv oi;
@@ -353,13 +359,16 @@ void NetLink::queueWorldClaim(u32 ownerId, u32 authorId, const u32* netIds,
 }
 
 void NetLink::queueNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                             unsigned int count, bool truncated) {
+                             unsigned int count, bool truncated,
+                             const u8* authors, u32 mapGen) {
     OutNpcCensus oc;
     oc.ownerId = ownerId;
     oc.truncated = truncated;
     if (count > NPC_CENSUS_MAX) count = NPC_CENSUS_MAX;
     if (hands && count > 0) oc.hands.assign(hands, hands + count * 5);
     if (pos && count > 0) oc.pos.assign(pos, pos + count * 3);
+    if (authors && count > 0) oc.authors.assign(authors, authors + count);
+    oc.mapGen = mapGen;
     pushLocked(outCs_, outNpcCensus_, oc);
 }
 
@@ -908,8 +917,52 @@ void NetLink::threadLoop() {
                                     ? reinterpret_cast<const float*>(
                                           p + count * 5 * sizeof(u32))
                                     : 0;
+                                // Protocol 59 tail, if present. Absence of
+                                // the tail means "no assertion carried", and
+                                // the store side treats that as unknown - not
+                                // owner 0 (absence is not evidence, applied to
+                                // ownership).
+                                const u8* authors = 0;
+                                u32 mapGen = 0;
+                                if (len >= need + count + sizeof(u32) &&
+                                    count > 0) {
+                                    authors = ev.packet->data + need;
+                                    std::memcpy(&mapGen,
+                                                ev.packet->data + need + count,
+                                                sizeof(u32));
+                                }
                                 inbound_->pushNpcCensus(hdr.ownerId, hands, pos,
-                                                        count, truncated);
+                                                        count, truncated,
+                                                        authors, mapGen);
+                            }
+                        }
+                    } else if (type == PKT_AUTH_ASSIGN) {
+                        // Protocol 59 authority assertion. ONLY the host may
+                        // assert: a row from any other sender is a protocol
+                        // violation and is dropped, counted, and rate-logged -
+                        // accepting it would let a compromised or buggy join
+                        // reassign bodies to itself, and the arbiter design's
+                        // whole point is that clients obey rather than compute.
+                        AuthAssignPacket ap;
+                        if (readPacket(ev.packet->data,
+                                       (unsigned)ev.packet->dataLength, &ap)
+                            && inbound_) {
+                            if (ap.ownerId != 0) {
+                                static unsigned long dropLogMs = 0;
+                                ++authAssignDropped_;
+                                const unsigned long nowD = GetTickCount();
+                                if (dropLogMs == 0 || nowD - dropLogMs > 10000) {
+                                    dropLogMs = nowD;
+                                    char b[128];
+                                    _snprintf(b, sizeof(b) - 1,
+                                        "[auth] ASSIGN from non-host owner=%u "
+                                        "DROPPED (total %lu)",
+                                        ap.ownerId, authAssignDropped_);
+                                    b[sizeof(b) - 1] = '\0';
+                                    netErr(b);
+                                }
+                            } else {
+                                inbound_->pushAuthAssign(ap);
                             }
                         }
                     } else if (type == PKT_WORLD_DROP) {
@@ -1483,8 +1536,13 @@ void NetLink::threadLoop() {
             // v38 layout: hands block then positions block. A queue call that
             // somehow lacked positions still sends a well-formed packet
             // (zeroed positions), never a short one.
+            // Protocol 59 tail: [u8 author * count][u32 mapGen], appended only
+            // when the publisher supplied authors. Old fixtures (and any queue
+            // call without an assign map) emit the pre-59 bytes exactly.
+            const bool tail = censuses[i].authors.size() >= count && count > 0;
             unsigned bytes = sizeof(NpcCensusHeader) + count * 5 * sizeof(u32)
-                           + count * 3 * sizeof(float);
+                           + count * 3 * sizeof(float)
+                           + (tail ? count + (unsigned)sizeof(u32) : 0);
             ENetPacket* out = enet_packet_create(0, bytes, ENET_PACKET_FLAG_RELIABLE);
             NpcCensusHeader hdr;
             hdr.type    = (u8)PKT_NPC_CENSUS;
@@ -1501,8 +1559,27 @@ void NetLink::threadLoop() {
                 std::memset(pp, 0, count * 3 * sizeof(float));
                 if (censuses[i].pos.size() >= count * 3)
                     std::memcpy(pp, &censuses[i].pos[0], count * 3 * sizeof(float));
+                if (tail) {
+                    enet_uint8* ap = pp + count * 3 * sizeof(float);
+                    std::memcpy(ap, &censuses[i].authors[0], count);
+                    std::memcpy(ap + count, &censuses[i].mapGen, sizeof(u32));
+                }
             }
             sendToPeer(out, CH_RELIABLE);
+        }
+
+        // Drain + send queued authority assertions on CH_RELIABLE (protocol
+        // 59). Fixed-size PODs; host-only by construction (only the arbiter
+        // queues them) and the receive arm enforces it besides.
+        std::vector<AuthAssignPacket> assigns;
+        EnterCriticalSection(&outCs_);
+        assigns.swap(outAuthAssigns_);
+        LeaveCriticalSection(&outCs_);
+        for (size_t i = 0; i < assigns.size(); ++i) {
+            ENetPacket* out = enet_packet_create(&assigns[i],
+                                                 sizeof(AuthAssignPacket),
+                                                 ENET_PACKET_FLAG_RELIABLE);
+            if (out) sendToPeer(out, CH_RELIABLE);
         }
 
         // Drain + send any queued cross-owner TRANSFER intents on CH_RELIABLE

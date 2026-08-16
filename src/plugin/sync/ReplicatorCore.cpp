@@ -78,6 +78,11 @@ Replicator::Replicator()
       wdOriginHolds_(0), wdOriginLogMs_(0), proxyBlindSkips_(0),
       xferFoldLoss_(0), xferFoldLogMs_(0), nearStillSup_(0), proxyUnaddressable_(0), timeSlewTarget_(-1.0f),
       freezeSkipHurt_(0),
+      assignGen_(0), assignLogMs_(0), assignVetoed_(0),
+      censusMapGen_(0), assignSeqOut_(1), assignRecvN_(0), assignStaleN_(0),
+      authAssertMode_(1), assertDiverge_(0), assertConsulted_(0),
+      authLivenessMs_(10000), authLivenessRevoked_(0),
+      assignWitnessRefused_(0),
       speedLastSendMs_(0), speedCombatSampleMs_(0), speedCombatHoldMs_(0),
       spawnSync_(false), spawnPosLogMs_(0),
       spawnMintRadius_(0.0f), censusScanMs_(0),
@@ -323,6 +328,15 @@ void Replicator::resetSession() {
     // reconciliation in the NEW world until the peer's next beat contradicts
     // them - the same class of omission as the five clears above, which is why
     // they belong here rather than being left to self-correct.
+    // The assign map describes the OLD world's bodies (auth step 2).
+    assignMap_.clear();
+    assignGen_ = 0;
+    assignRecv_.clear();
+    censusAuthor_.clear();
+    censusMapGen_ = 0;
+    assignSent_.clear();
+    assignJoinSinceMs_.clear();
+    assignRevokeBackoffMs_.clear();
     censusTrunc_      = false;
     censusPubTrunc_   = false;
     wideTruncPrev_    = false;
@@ -445,6 +459,18 @@ void Replicator::resetSession() {
 }
 
 void Replicator::clearPeerReplicationState(GameWorld* gw) {
+    // Auth step 5, LEAVE revert: every assertion involving the departed peer
+    // dies with the session, locally and deterministically. The host's next
+    // census beat recomputes a solo map (everything host-side); a rejoining
+    // peer gets a fresh assert stream because assignSent_ forgets what was
+    // ever claimed. Leaving these maps populated would leave bodies asserted
+    // to a client that no longer exists - the permanent zero-writer.
+    assignRecv_.clear();
+    censusAuthor_.clear();
+    censusMapGen_ = 0;
+    assignSent_.clear();
+    assignJoinSinceMs_.clear();
+    assignRevokeBackoffMs_.clear();
     // Destroy every minted proxy body before resetSession() drops the map that
     // owns the pointers. The engine owns the bodies; a proxy left standing after
     // the peer that authored it is gone is a permanent ghost, and any map still

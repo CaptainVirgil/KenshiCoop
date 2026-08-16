@@ -81,6 +81,15 @@ fi
 # the sync layer.
 step "drivetest" ./scripts/linux/build_drivetest.sh
 
+# authoritytest (auth step 1, task #43): the REAL ReplicatorAuthority.cpp +
+# ReplicatorPublish.cpp against the same fake engine, plus a recording NetLink
+# substitute. Pins the publish gates (squad unconditional, near-band change
+# gate + keepalive), the census truncation bit, and the suppression dwell /
+# trunc hold / restore lifecycle. On its FIRST run it found an empty-mid-band
+# hole in the shipped v0.65 near gate and an order-fidelity bug in the fake
+# readHand - which is the argument for it being in this gate.
+step "authoritytest" ./scripts/linux/build_authtest.sh
+
 PS_HOST="$(command -v pwsh || command -v powershell || true)"
 if [ -n "$PS_HOST" ]; then
     step "Contract.Tests.ps1" "$PS_HOST" -NoProfile -File "$REPO/scripts/tests/Contract.Tests.ps1"

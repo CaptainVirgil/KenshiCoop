@@ -1570,7 +1570,8 @@ void tickReplicateApply(GameWorld* gw, bool worldLive) {
         // other's. With cellAuth off the two conditions collapse to today's
         // exclusive split, which is what makes the fail-open A/B meaningful.
         if (!g_cfg.isHost || g_cfg.cellAuth) {
-            coop::mainThreadBeat("app:npcCensus"); g_repl.applyNpcCensus(g_inbound);
+            coop::mainThreadBeat("app:authAssign"); g_repl.applyAuthAssigns(g_inbound, g_net.localId());
+        coop::mainThreadBeat("app:npcCensus"); g_repl.applyNpcCensus(g_inbound);
             coop::mainThreadBeat("app:authority"); g_repl.enforceHostAuthority(gw, g_net.localId());
         }
         if (g_cfg.isHost || g_cfg.cellAuth) {
@@ -2534,6 +2535,7 @@ void configureReplicator() {
         g_repl.setSpawnMintRadius(g_cfg.spawnMintRadius);
         g_repl.setCensusParkDist(g_cfg.censusParkDist);
         g_repl.setCensusFreezeAi(g_cfg.censusFreezeAi);
+        g_repl.setAuthAssertMode(g_cfg.authAssert);
         g_repl.setAttentionRadius(g_cfg.attentionRadius);
         g_repl.setCellAuth(g_cfg.cellAuth);
         g_repl.setSpeedCombatCap(g_cfg.speedCombatCap);

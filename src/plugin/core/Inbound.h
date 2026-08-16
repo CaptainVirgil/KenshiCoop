@@ -81,6 +81,15 @@ struct InboundNpcCensus {
     std::vector<float> pos;   // count*3, host position per row (v38 parking)
     bool               truncated; // v58: sender's enumeration hit its cap -
                                   // absent hands are UNKNOWN, not gone
+    std::vector<u8>    authors;   // v59 tail: asserted owner per row; EMPTY =
+                                  // no assertion carried (unknown, not owner 0)
+    u32                mapGen;    // v59 tail: assign-map generation, 0 = none
+};
+
+// One received host authority assertion (protocol 59). Stored whole; the
+// replicator's store pass owns the seq/witness discipline.
+struct InboundAuthAssign {
+    AuthAssignPacket pkt;
 };
 
 // One received conservation DROP intent (Phase W2): the owning character + item identity +
@@ -453,7 +462,7 @@ public:
         // are ~1 Hz refreshes. Every other queue is reliable and stays unbounded.
         ent_(worldReset_, 4096),  evt_(worldReset_),        inv_(worldReset_),
         wi_(worldReset_),         wir_(worldReset_),        wic_(worldReset_),
-        npcCensus_(worldReset_),
+        npcCensus_(worldReset_), authAssign_(worldReset_),
         wd_(worldReset_),         invXfer_(worldReset_),    invXferAck_(worldReset_),
         wp_(worldReset_),
         med_(worldReset_),        treat_(worldReset_),      combatHit_(worldReset_),
@@ -554,13 +563,21 @@ public:
     }
     // NET thread: one received NPC existence census (protocol 36), owner-tagged.
     void pushNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                       unsigned int count, bool truncated) {
+                       unsigned int count, bool truncated,
+                       const u8* authors = 0, u32 mapGen = 0) {
         InboundNpcCensus nc;
         nc.ownerId = ownerId;
         nc.truncated = truncated;
+        nc.mapGen = mapGen;
         if (hands && count > 0) nc.hands.assign(hands, hands + count * 5);
         if (pos && count > 0) nc.pos.assign(pos, pos + count * 3);
+        if (authors && count > 0) nc.authors.assign(authors, authors + count);
         EnterCriticalSection(&cs_); npcCensus_.push_back(nc); LeaveCriticalSection(&cs_);
+    }
+    // NET thread: one received host authority assertion (protocol 59).
+    void pushAuthAssign(const AuthAssignPacket& pkt) {
+        InboundAuthAssign aa; aa.pkt = pkt;
+        EnterCriticalSection(&cs_); authAssign_.push_back(aa); LeaveCriticalSection(&cs_);
     }
     // NET thread: one received conservation DROP intent, owner-tagged.
     void pushWorldDrop(u32 ownerId, const WorldDropPacket& pkt) {
@@ -773,6 +790,9 @@ public:
     void drainNpcCensus(std::deque<InboundNpcCensus>& out) {
         EnterCriticalSection(&cs_); out.swap(npcCensus_); LeaveCriticalSection(&cs_);
     }
+    void drainAuthAssigns(std::deque<InboundAuthAssign>& out) {
+        EnterCriticalSection(&cs_); out.swap(authAssign_); LeaveCriticalSection(&cs_);
+    }
     void drainWorldDrops(std::deque<InboundWorldDrop>& out) {
         EnterCriticalSection(&cs_); out.swap(wd_); LeaveCriticalSection(&cs_);
     }
@@ -968,6 +988,7 @@ private:
     WorldQ<InboundWorldRemove>     wir_;
     WorldQ<InboundWorldClaim>      wic_;
     WorldQ<InboundNpcCensus>       npcCensus_;
+    WorldQ<InboundAuthAssign>      authAssign_;   // protocol 59, reliable, host-only
     WorldQ<InboundWorldDrop>       wd_;
     WorldQ<InboundInvXfer>         invXfer_;
     WorldQ<InboundInvXferAck>      invXferAck_;

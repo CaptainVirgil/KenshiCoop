@@ -78,8 +78,17 @@ public:
     // [NpcCensusHeader][u32 hand[5] * count][f32 pos[3] * count].
     // truncated: the sender's enumeration hit its cap (v58) - carried as bit
     // 15 of the wire count so the header size never moves.
+    // Protocol 59: authors (one u8 per row, the host's asserted owner) and
+    // mapGen ride as appended tail blocks. authors = 0 emits the pre-59 shape
+    // exactly (no tail), which is also what every old test fixture produces.
     void queueNpcCensus(u32 ownerId, const u32* hands, const float* pos,
-                        unsigned int count, bool truncated);
+                        unsigned int count, bool truncated,
+                        const u8* authors = 0, u32 mapGen = 0);
+
+    // MAIN thread (HOST only): queue a reliable per-body authority assertion
+    // (protocol 59). The join never calls this; the receive path drops the
+    // packet from any non-host sender.
+    void queueAuthAssign(const AuthAssignPacket& p);
 
     // MAIN thread: queue a reliable conservation DROP intent (Phase W2). A fixed-size POD
     // (like an event), sent once on the RELIABLE channel; the peer relocates its own copy
@@ -300,6 +309,7 @@ private:
     // reliable channel for a whole session undetected. PKT_INV_SNAPSHOT
     // bytes/s would have shown that inside five seconds.
     unsigned long txN_[64], txB_[64], rxN_[64], rxB_[64];
+    unsigned long authAssignDropped_; // protocol-59 assertions from a non-host sender
     void tallyTx(const ENetPacket* pkt) {
         if (!pkt || !pkt->dataLength) return;
         const unsigned t = pkt->data[0] & 63u;
@@ -357,9 +367,11 @@ private:
     std::vector<OutWorldClaim>  outWorldClaim_;
     // Reliable NPC existence census (protocol 36): 5xu32 hands, flat. Guarded
     // by outCs_. 1 Hz from the host, so at most a couple pending at once.
-    struct OutNpcCensus { u32 ownerId; std::vector<u32> hands; std::vector<float> pos; bool truncated; };
+    struct OutNpcCensus { u32 ownerId; std::vector<u32> hands; std::vector<float> pos; bool truncated;
+                          std::vector<u8> authors; u32 mapGen; };
     std::vector<OutNpcCensus> outNpcCensus_;
     // Reliable conservation DROP intents (Phase W2), fixed-size PODs. Guarded by outCs_.
+    std::vector<AuthAssignPacket> outAuthAssigns_; // protocol 59, host->join, reliable
     std::vector<WorldDropPacket> outWorldDrops_;
     std::vector<WorldPickupPacket> outWorldPickups_;
     // Reliable cross-owner transfer intents (protocol 37). Guarded by outCs_.

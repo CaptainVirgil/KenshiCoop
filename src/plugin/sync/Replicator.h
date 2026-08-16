@@ -1213,6 +1213,58 @@ private:
     unsigned long proxyUnaddressable_; // minted proxies the engine cannot resolve by hand
     float         timeSlewTarget_;    // slew the per-frame ramp is walking toward (-1 = none)
     unsigned long freezeSkipHurt_;    // census freezes skipped: body is bleeding/critical
+
+    // ---- Authority assertion overlay (auth steps 2-7, docs/AUTHORITY-DESIGN.md)
+    // Step 2: the SHADOW map. Host-side policy output only - nothing reads it
+    // for behaviour yet, nothing is on the wire. Keyed by the census key; value
+    // is the would-be owner id. Policy v1: hContainer parity (measured 77/76
+    // and squad-coherent on 2026-08-16 live data), with the eligibility veto
+    // pinning fighting/bleeding bodies to the incumbent (the host).
+    std::map<Key, unsigned char> assignMap_;
+    // Step 3: what the ARBITER told us (receive-and-store; nothing reads it
+    // for behaviour until authAssert flips in step 4). Keyed like the census.
+    struct AssignRec {
+        unsigned char owner;
+        u32           seq;      // per-key monotonic accept guard
+        u32           gen;      // map generation the row belonged to
+        u32           witness;  // sender's sid witness (0 = none carried)
+        AssignRec() : owner(0), seq(0), gen(0), witness(0) {}
+    };
+    std::map<Key, AssignRec> assignRecv_;
+    std::map<Key, unsigned char> censusAuthor_; // v59 census author tail, stored
+    u32           censusMapGen_;   // newest mapGen seen on a census
+    u32           assignSeqOut_;   // host: next per-row seq to stamp
+    std::map<Key, unsigned char> assignSent_;   // host: last owner ASSERTED per key
+    unsigned long assignRecvN_;    // cumulative stored rows (telemetry)
+    unsigned long assignStaleN_;   // rows dropped by the seq guard (telemetry)
+    // Step 4: the read-path mode. 0 = off (cell verdict, bit-identical to
+    // v0.66), 1 = shadow (cell verdict rules; divergence from the asserted
+    // answer is COUNTED), 2 = on (an asserted owner overrides the cell
+    // verdict; a body with no assertion falls back). Mutable counters because
+    // authorityForBody is const and shadow telemetry must not un-const the
+    // whole authority read path.
+    int                   authAssertMode_;
+    mutable unsigned long assertDiverge_;   // shadow: asserted != cell verdict
+    mutable unsigned long assertConsulted_; // reads answered by an assertion
+    unsigned long assignWitnessRefused_;    // stores refused: witness mismatch
+    // Step 5: liveness. A body asserted to the join whose stream has been
+    // silent this long (while the peer is still connected) is revoked to the
+    // host - one writer who is not writing is ZERO writers, and every latch
+    // needs a second release path plus a horizon (the koLatched lesson,
+    // applied to the assignment itself).
+    unsigned long authLivenessMs_;
+    std::map<Key, unsigned long> assignJoinSinceMs_; // when each key went join-side
+    unsigned long authLivenessRevoked_;              // cumulative revokes (telemetry)
+    // Step 7: proxy reassignment. Keys the peer REQUESTED spawns for - it
+    // holds (or held) a minted proxy of each, so it can author them through
+    // the canonical key. Host policy grants these to the join; the liveness
+    // revoke makes the optimism safe, and the backoff stops a revoked grant
+    // from flapping at the liveness cadence.
+    std::set<Key>                 spawnAnsweredKeys_;
+    std::map<Key, unsigned long>  assignRevokeBackoffMs_;
+    unsigned long assignGen_;     // bumped on every recompute (future map-generation)
+    unsigned long assignLogMs_;   // [auth] map rollup rate limit
+    unsigned long assignVetoed_;  // cumulative eligibility-veto count (telemetry)
     unsigned long midResendSup_;  // cumulative suppressed re-sends (telemetry)
     // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
     // slice cursor advances (50 ms), then re-emitted on every render frame:
@@ -2392,6 +2444,20 @@ public:
     // reads the delayed sample or the newest one - without that assertion the
     // test silently passes either way (it did, once).
     unsigned long debugInterpDelayMs(const unsigned int hand[5]) const;
+    // Test seam (authoritytest): the shadow assign map's current shape.
+    // outHost/outJoin = bodies assigned to each side, outVeto = cumulative
+    // eligibility vetoes, returns the map generation.
+    unsigned long debugAssignCounts(unsigned int* outHost, unsigned int* outJoin,
+                                    unsigned long* outVeto) const;
+    // Step 2 policy: recompute the shadow map over the census enumeration.
+    // Called by publishNpcCensus; public so the harness can drive it directly.
+    void computeAssignMap(GameWorld* gw, Character* const* chars,
+                          const EntityState* states, unsigned int n);
+    // Step 3: drain + STORE received assertions (seq-guarded). No behaviour.
+    void applyAuthAssigns(Inbound& in, u32 localId);
+    // Test seam: the stored assertion for one hand. Returns false if none.
+    bool debugAssignRecv(const unsigned int hand[5], unsigned char* outOwner,
+                         u32* outSeq) const;
     // Presence authority (protocol 49). Publish a claim for each cell our own
     // tabs stand in and drain the peer's, both at ~1 Hz on the reliable
     // channel. No-op with cellAuth_ off, so nothing is on the wire until the
@@ -2430,6 +2496,17 @@ public:
     // every drive. A hash of the save-stable hand splits that with no spatial
     // boundary, and therefore no handoff churn.
     void setSplitAuthority(bool on) { splitAuthority_ = on; }
+    // Step 4 (docs/AUTHORITY-DESIGN.md): the assertion overlay's read mode.
+    void setAuthAssertMode(int m) { authAssertMode_ = m; }
+    // Step 5 seam: the silence horizon before a join-side assignment reverts.
+    void setAuthLivenessMs(unsigned long ms) { authLivenessMs_ = ms; }
+    // Step 7: the reply side answered a spawn REQ for this hand - the peer is
+    // minting a proxy, which makes the body grantable. Called by syncSpawns'
+    // answer path and by the harness.
+    void noteSpawnAnswered(const unsigned int hand[5]);
+    // Test seam: bind a canonical hand to a local body as a minted proxy, the
+    // way the mint path would. Harness-only in practice; safe anywhere.
+    void debugBindProxy(const unsigned int canonHand[5], Character* c);
 private:
     // Recompute claimedCells_ from claimSlots_. Host wins a contested cell.
     void rebuildClaimedCells();

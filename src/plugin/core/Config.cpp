@@ -414,6 +414,18 @@ void loadConfig(Config& c) {
         // escape hatch restores the position-park-only behavior.
         c.censusFreezeAi = envOr("KENSHICOOP_CENSUS_FREEZE_AI",
                                  fileOr(cfgFile, "censusFreezeAi", "1").c_str()) != "0";
+        // Auth step 4 (docs/AUTHORITY-DESIGN.md): the assertion overlay's read
+        // mode. Strings, because "0/1/2" in a player's config file is a riddle:
+        //   off    - cell verdict only, bit-identical to v0.66
+        //   shadow - cell verdict rules; divergence is counted ([auth] rollup)
+        //   on     - an asserted owner overrides the cell verdict
+        // The word-form doubles as the rollback lever step 6 pre-authorizes:
+        // "authAssert": "off" in coop_config.json, no re-release needed.
+        {
+            std::string am = envOr("KENSHICOOP_AUTH_ASSERT",
+                                   fileOr(cfgFile, "authAssert", "on").c_str());
+            c.authAssert = (am == "on") ? 2 : (am == "off" || am == "0") ? 0 : 1;
+        }
         // Camera-anchored interest (protocol 43): fold the local camera +
         // peer camera hint into the interest anchors. DEFAULT ON; the A/B
         // escape hatch restores tab-leader-only anchors.
@@ -514,10 +526,12 @@ std::string describeConfig(const Config& c) {
     char b[192];
     _snprintf(b, sizeof(b) - 1,
               " censusR=%.0f mintR=%.0f park=%.0f snap=%.1f/%.2fs armMs=%lu"
-              " attnR=%.0f cellAuth=%d",
+              " attnR=%.0f cellAuth=%d authAssert=%s",
               c.censusRadius, c.spawnMintRadius, c.censusParkDist,
               c.snapDist, c.snapSeconds, c.scenarioArmTimeoutMs,
-              c.attentionRadius, c.cellAuth ? 1 : 0);
+              c.attentionRadius, c.cellAuth ? 1 : 0,
+              (c.authAssert == 2) ? "on" : (c.authAssert == 0) ? "off"
+                                                               : "shadow");
     b[sizeof(b) - 1] = '\0';
     s += b;
     // The tunables that change how much of the world actually reaches the peer, and

@@ -136,6 +136,20 @@ static void testSizes() {
     CHECK_EQ("sizeof(WeatherPacket)",           sizeof(WeatherPacket),           81);
     // v56: dialogue relay. 1+4+4+4+4+128 packed.
     CHECK_EQ("sizeof(DialoguePacket)",          sizeof(DialoguePacket),          145);
+    // v59: host-asserted body authority. 1+1+1+1+4+4+4+20+4 packed. The layout
+    // is load-bearing beyond the usual reason: the receive arm readPacket()s it
+    // as a POD, and the offsets of hand[] and sidWitness are what the seq/
+    // witness guards parse.
+    CHECK_EQ("sizeof(AuthAssignPacket)",        sizeof(AuthAssignPacket),        40);
+    {
+        AuthAssignPacket ap;
+        CHECK_EQ("AuthAssign hand[] offset",
+                 (unsigned)((char*)&ap.hand[0] - (char*)&ap), 16u);
+        CHECK_EQ("AuthAssign sidWitness offset",
+                 (unsigned)((char*)&ap.sidWitness - (char*)&ap), 36u);
+        CHECK_EQ("AuthAssign assignSeq offset",
+                 (unsigned)((char*)&ap.assignSeq - (char*)&ap), 8u);
+    }
     CHECK_EQ("sizeof(CamHintPacket)",           sizeof(CamHintPacket),           17); // v43: camera hint
     CHECK_EQ("sizeof(CellClaimPacket)",         sizeof(CellClaimPacket),         21); // v49: cell claim
     CHECK_EQ("sizeof(InvXferAckPacket)",        sizeof(InvXferAckPacket),        18); // v50: transfer verdict
@@ -328,8 +342,8 @@ static void testSizes() {
     CHECK_EQ("EVT_SQUAD_MOVE id", (int)EVT_SQUAD_MOVE, 11);
     CHECK("EVT_SQUAD_MOVE distinct", EVT_SQUAD_MOVE != EVT_RECRUIT &&
           EVT_SQUAD_MOVE != EVT_NONE && EVT_SQUAD_MOVE != EVT_EXIT_FURNITURE);
-    CHECK_EQ("PROTOCOL_VERSION (v56: dialogue relay)",
-             (int)PROTOCOL_VERSION, 58); // v58: census truncation bit
+    CHECK_EQ("PROTOCOL_VERSION (v59: authority assertion)",
+             (int)PROTOCOL_VERSION, 59); // v59: PKT_AUTH_ASSIGN + census author tail
 
     // Protocol 52: the shared money pool. The two players spend from ONE wallet,
     // so the join reports CHANGES and the host the authoritative TOTAL - swap
