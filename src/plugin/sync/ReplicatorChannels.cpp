@@ -233,8 +233,16 @@ void Replicator::applyMedical(GameWorld* gw, Inbound& in, NetLink& net, u32 owne
         k.i = p.sIndex; k.s = p.sSerial;
         if (ownHands_.find(k) != ownHands_.end()) continue; // never write our own truth
         unsigned int hand[5] = { k.t, k.c, k.cs, k.i, k.s };
-        Character* c = engine::resolveCharByHand(hand[3], hand[4], hand[0], hand[1], hand[2]);
-        if (!c) continue;
+        // PROXY-AWARE. resolveCharByHand asks the engine, and the engine cannot
+        // name a body that exists here only as a minted proxy - i.e. any NPC the
+        // peer spawned mid-session (a raid, a patrol, a wandering squad). Player
+        // squads are real local bodies out of the shared save and resolved fine,
+        // which is exactly the shape the players reported on 2026-08-15: "we have
+        // health synced for our groups but not for npc/enemies/ai". The host was
+        // sending them - 2,310 [med] SEND rows over 45 hands, npc=1 among them -
+        // and every one for a proxy was dropped here, silently.
+        Character* c = localCharForStreamed(hand);
+        if (!c) { ++proxyBlindSkips_; continue; }
         engine::MedicalRead w;
         memset(&w, 0, sizeof(w));
         w.valid = true;
@@ -365,8 +373,10 @@ void Replicator::applyTreatments(GameWorld* gw, Inbound& in) {
         bool authority = ownHands_.find(k) != ownHands_.end() ||
                          (streamNpcs_ && medNpc_.find(k) != medNpc_.end());
         if (!authority) continue;
-        Character* c = engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs);
-        if (!c) continue;
+        // Proxy-aware, same reason as applyMedical above.
+        unsigned int lh[5] = { k.t, k.c, k.cs, k.i, k.s };
+        Character* c = localCharForStreamed(lh);
+        if (!c) { ++proxyBlindSkips_; continue; }
         int n = engine::applyBandageParts(c, p.partBand);
         char b[160]; _snprintf(b, sizeof(b) - 1,
             "[med] TREAT RECV id=%u hand=%u,%u applied=%d",
@@ -508,8 +518,10 @@ void Replicator::applyStats(GameWorld* gw, Inbound& in) {
         Key k; k.t = p.sType; k.c = p.sContainer; k.cs = p.sContainerSerial;
         k.i = p.sIndex; k.s = p.sSerial;
         if (ownHands_.find(k) != ownHands_.end()) continue; // never write our own truth
-        Character* c = engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs);
-        if (!c) continue;
+        // Proxy-aware, same reason as applyMedical above.
+        unsigned int lh[5] = { k.t, k.c, k.cs, k.i, k.s };
+        Character* c = localCharForStreamed(lh);
+        if (!c) { ++proxyBlindSkips_; continue; }
         engine::StatsRead w;
         memset(&w, 0, sizeof(w));
         w.valid = true;
@@ -2116,8 +2128,10 @@ void Replicator::publishStealth(GameWorld* gw, NetLink& net, u32 ownerId) {
     for (std::map<Key, Driven>::iterator it = targets_.begin(); it != targets_.end(); ++it) {
         const Key& k = it->first;
         if (ownHands_.find(k) != ownHands_.end()) continue;
-        Character* c = engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs);
-        if (!c) continue;
+        // Proxy-aware, same reason as applyMedical above.
+        unsigned int lh[5] = { k.t, k.c, k.cs, k.i, k.s };
+        Character* c = localCharForStreamed(lh);
+        if (!c) { ++proxyBlindSkips_; continue; }
         engine::StealthRead sr;
         if (!engine::readStealth(c, &sr) || !sr.valid) continue;
         bool active = sr.sneaking && sr.nSeers > 0;
@@ -2190,6 +2204,9 @@ void Replicator::applyStealthFeedback(GameWorld* gw, Inbound& in) {
         // map (it IS the detection authority's copy elsewhere) - writing to it
         // would double-count.
         if (ownHands_.find(k) == ownHands_.end()) continue;
+        // Deliberately NOT proxy-aware: this site is gated on ownHands_ above, and
+        // a body we own is never a proxy - so the engine lookup is exhaustive here
+        // and a fallback would be dead code claiming to do something.
         Character* c = engine::resolveCharByHand(k.i, k.s, k.t, k.c, k.cs);
         if (!c) continue;
         unsigned int applied = 0;

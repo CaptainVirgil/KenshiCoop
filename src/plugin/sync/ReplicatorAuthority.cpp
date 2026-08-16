@@ -1118,7 +1118,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             "supp=%u census=%u fresh=%d parks=%lu "
             "nearCap=%d wideCap=%d peerTrunc=%d staleMs=%lu edges=%lu ghostMax=%.0f ghostEdge=%u "
             "dorm=%u attnR=%.0f dormPc=%u pcs=%u mine=%u skip=%u cells=%u "
-            "truncHold=%lu wdHold=%lu",
+            "truncHold=%lu wdHold=%lu noBody=%lu",
             n, wn, cDrv, cCen, cHid, cGhost,
             (unsigned)suppressed_.size(), (unsigned)censusHands_.size(),
             censusFresh ? 1 : 0, censusParks_,
@@ -1126,7 +1126,7 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
             censusStaleMs_, censusStaleEdges_, ghostMaxD, ghostEdge,
             cDorm, attentionRadius_, cDormPc, nPc,
             cMine, authSkip, (unsigned)claimedCells_.size(),
-            truncHoldCulls_, wdOriginHolds_);
+            truncHoldCulls_, wdOriginHolds_, proxyBlindSkips_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
 
