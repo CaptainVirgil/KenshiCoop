@@ -130,6 +130,9 @@ the host's bands.
 
 | Player says | Look at |
 |---|---|
+| "enemies at 0 blood won't go down" | **Ask first: are they down on the OTHER player's screen?** Up on BOTH is not a sync bug - it is the AI suspend skipping the engine's per-character update. `frzAct=` / `frzHurt=` |
+| "people are duplicating over and over" | `[spawn] proxy FAILED` and repeated `[spawn] REQ` for one hand. A mint whose liveness check false-negatives destroys the body and lets the request re-arm |
+| "health syncs for my squad but not NPCs" | `noBody=`. A body that exists here only as a minted proxy cannot be addressed by `resolveCharByHand` |
 | "everything is out of sync / teleporting" | `[interp]` extrap ratio, then `[census] sent mid=` against `enum=` |
 | "things are duplicated" | `[audit] staleMs`/`edges` (culling off ⇒ local copy + minted proxy coexist), then `[spawn] census-missing`. Rule out a shared save folder first — `docs/REPLICATION_PITFALLS.md` §13 |
 | "I can't get up the stairs, he can" | `[audit] hid`/`supp` — a suppressed body is invisible but was solid and cannot be shoved |
@@ -172,6 +175,35 @@ Healthy-session expectations after the fork's fixes: `mid=` should climb well pa
 `staleMs` should stay small, `parks` should not reach five figures, the `[door]`
 channel should not alternate RECV/SEND on one hand, `[caps]` should read `0 of 17`, and
 there should be no `unknown packet type` lines at all.
+
+## Lines added 2026-08-15/16 (v0.62-v0.66)
+
+These are the newest signals and several of them exist because a bug was
+invisible without them. Read `[stage]`, `[q]` and `[net] mix` together: they
+answer "was a stage SLOW, or was it HANDED forty thousand items", which nothing
+could distinguish before.
+
+| Line / field | Means |
+|---|---|
+| `[stage] lines=N/10s peak us: a=max/avg ...` | The five most expensive main-thread stages by PEAK, every 10 s. 42 stages each stamp their own name (28 publish + 14 apply). Sorted by max because the once-a-minute spike is what becomes a freeze. `frame-end` is Kenshi's own render and is normally the largest by far - measured ~9.9 ms avg, against a few hundred us for everything of ours combined |
+| `[q] peak evt=.. ent=../4096 ..` | Inbound queue high-water marks per window. `DROPPING ent=N` appears only while it is actually happening; `(dropped ent=N earlier)` marks a past burst. A load-time burst of 74,097 was mistaken for an ongoing emergency before the two were separated |
+| `[net] mix out/in <type>=<count>/<KB>` | Per-packet-type traffic, top six by bytes then the rest named by count. **The first thing this project ever had that measures what a CHANNEL costs.** Measured: `ent` was ~87% of outbound at ~94 KB/s |
+| `nearSup=` on `[census] sent` | Near-band rows the v0.65 change gate suppressed as unchanged. Should be large; if it is zero the gate is not biting |
+| `noBody=` on `[audit]` | Apply-path rows dropped because no local body exists for a streamed hand - **after** the proxy fallback. Non-zero means state is arriving for bodies this client does not have at all |
+| `wdHold=` / `[wd] HOLD-origin` | A weapon drop held because neither the item nor its owner gave a usable position. Publishing it anyway put the peer's copy at world origin, which is the "he can see items I can't" report |
+| `[wd] GIVEUP-nopos` | A drop that will never be mirrored. Unconditional by design - the dump-gated version of this line hid the bug that motivated it |
+| `lostItems=` / `[xfer] FOLD-LOSS` | Items that left a container and arrived in none we watch. Added for the "transfer too far and it despawns" report, which had no evidence at all before |
+| `frzAct=` on `[ai]` | Census-freeze ACTUATIONS, not log lines. The log is throttled to ~4/s, so 2,140 lines once stood for an unknown number. Measured 88,487 in one session |
+| `frzHurt=` on `[ai]` | Freezes skipped because the body is bleeding or critical. **A suspended body cannot collapse from blood loss** - the suspend skips Kenshi's whole per-character update - so this exemption is what lets a dying enemy fall over |
+| `snapVeto=` vs `snapCbt=` on `[ai]` | Combat snaps vetoed vs attempted. `snapVeto=0` with `snapCbt` climbing meant the veto could not fire at all (it reused a 20 u convergence constant as its range); it has its own 120 u ceiling since v0.66 |
+| `truncHold=` on `[audit]` | Absence-culls suppressed because the peer's census was truncated |
+| `[speed] WARNING intent drain hit its cap` | The engine reported a speed intent without explaining it. Should never fire |
+| `[stage] WARNING stage table full` | More beat labels than the cost table holds; some stages are silently uncosted |
+
+**A note on `[net] mix`:** it prints the top six by BYTES and then names the rest
+by count. That tail exists because a ~30 B door row never outranks ent/census/med,
+and the line was once unable to answer "did the door channel deliver" during an
+investigation into exactly that.
 
 ## Cross-referencing the two logs
 

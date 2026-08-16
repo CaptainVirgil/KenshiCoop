@@ -219,3 +219,52 @@ Replace the folder rather than merging — a stale DLL is what actually gets loa
 Kenshi lives at `~/.local/share/Steam/steamapps/common/Kenshi`. RE_Kenshi loads the plugin
 via `mods/KenshiCoop/RE_Kenshi.json`; if the panel says the plugin never started, check
 `<Kenshi>/RE_Kenshi_log.txt` for `KenshiCoop`.
+
+## The build fails on a correctness warning (since 2026-08-16)
+
+`compile_one` passes `/we4244 /we4267 /we4018 /we4700 /we4701 /we4715 /we4717`,
+so these are ERRORS, not warnings:
+
+| Code | Meaning |
+|---|---|
+| C4244 / C4267 | conversion or narrowing, possible loss of data |
+| C4018 | signed/unsigned comparison |
+| C4700 / C4701 | uninitialised local used |
+| C4715 | not all control paths return a value |
+| C4717 | unconditional recursion |
+
+**Why this exists.** Every build log this project reads was grepped for `error`,
+so warnings were discarded wholesale. MSVC emitted C4244 for a change-gate field
+declared `unsigned char` while the wire field is `u16`, and it SHIPPED in v0.65:
+`bodyState` carries `BODY_CHAINED` at `1<<8` and `BODY_PRONE_MASK` at `7<<9`, so
+the truncation made the gate blind to shackle and to every prone posture.
+
+All seven were at zero when promoted, so this costs nothing on a clean tree.
+Turning it on immediately found three more, all fixed rather than suppressed.
+
+**Deliberately NOT promoted:** C4099, C4005, C4091, C4996. Those come from
+vendored and SDK headers and are long-known noise. This is a correctness gate,
+not a tidiness one - do not add codes to make the output prettier.
+
+**If one fires and you believe it is a false positive** (C4701 in particular is
+flow-analysis-shy about short-circuit evaluation), the fix is to initialise the
+variable, not to drop the code from the list. Two scenario sources were fixed
+that way and cost nothing.
+
+## make_kit tags before it builds
+
+The in-game panel and the banner show `git describe`, which `build_plugin.sh`
+computes at COMPILE time. `gh release create` makes the tag on the REMOTE only,
+so a kit built before its own tag exists is stamped with the PREVIOUS release's
+name - v0.63 shipped reading `V0.61-7-G8CACF6C`, correct commit under the wrong
+label, and a player mid-session reasonably read it as "the update did not take".
+
+`make_kit.sh` now fetches tags, creates the tag LOCALLY first, and warns loudly
+if HEAD is not the tagged commit. It never retargets an existing tag. Verify
+after any kit build:
+
+```bash
+strings -a build/Release/KenshiCoop.dll | grep -oE '20[0-9-]+ [0-9:]+ v0\.[0-9]+[^ ]*'
+```
+
+That must read the label you are cutting, not `<older-tag>-N-g<sha>`.

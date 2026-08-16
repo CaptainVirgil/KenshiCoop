@@ -8,16 +8,16 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`v0.62` is the current public release (protocol 58), installed and unplayed.**
+**`v0.66` is the current public release (protocol 58), installed and unplayed.**
 Eleven releases across two evenings, every one shaped by what two humans hit
-while actually playing. v0.62 is the first cut with no player at the keyboard:
+while actually playing. v0.62 was the first cut with no player at the keyboard:
 it came from the session logs plus an audit run after they went offline, and its
 hold list (below) is as much of the output as its fixes.
 
 | | |
 |---|---|
 | Protocol | **58** — census truncation bit (2026-08-10), after 57 (mod fingerprint) and 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
-| Public release | `v0.62` (protocol 58) — five assets (per-OS archive, kit zip, both updater scripts). Protocol unchanged since v0.61, so v0.61↔v0.62 still connect |
+| Public release | `v0.66` (protocol 58) — five assets. Protocol unchanged since v0.61, so v0.61–v0.66 interoperate |
 | Local build | protocol 58; the banner's build stamp is now the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log again |
 | Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |
 | Interop | any release before the current protocol will NOT connect — the handshake compares `PROTOCOL_VERSION`, not the label |
@@ -179,6 +179,29 @@ check and forces the decision to be made deliberately.
   dockur recipe stays documented in the build skill.
 
 ---
+
+## Closed since that audit (do not reopen)
+
+| Item | Where it went |
+|---|---|
+| **20 Hz near-band change gate** | DONE v0.65. `[net] mix` measured ent at ~94 KB/s / 87% of outbound - the evidence the hold required. 200 ms keepalive, under the receiver's 250 ms tier line; four bounds pinned in prototest |
+| **Raise `combatSnapDist_` (H8)** | DONE v0.66, but NOT by raising it. The veto had reused a 20 u CONVERGENCE constant as its range and could never fire (1,679 snaps, median 89.9 u, none <= 20; `snapCbt=727 snapVeto=0`). It has its own `COMBAT_VETO_MAX_DIST` = 120 u; `COMBAT_SNAP_DIST` is untouched. Pinned in Contract.Tests.ps1, because ReplicatorUtil.h is not includable from prototest |
+| **Time-slew ramp hoist (H6)** | DONE v0.66. The ramp sat after `syncTime`'s "no new sample" return, so it fired at ~1 Hz with `dt` clamped to 1.0 and applied its full 0.35 as a STEP. Now ramps per frame toward a stored target |
+| **Log burst suppressor (H1)** | REJECTED permanently. Per-line flush is what makes a crash keep its tail. v0.63 shipped the line-rate COUNTER only; fix a storm, never hide one |
+
+## The one shape behind most of v0.64-v0.66
+
+`engine::resolveCharByHand` cannot address a minted proxy. Three player-visible
+bugs, three files: NPC health never applying, bodies stuck mid-carry, and
+"people are duplicating over and over" - the last because a post-mint liveness
+guard used it as a predicate, so a false negative destroyed the body and let the
+peer re-request (51 REQs for one hand). **Grep for it used as a predicate before
+writing the next fix.**
+
+Second shape, found 2026-08-16: `addAiSuspend` skips the engine's whole
+per-character update, which is where blood loss becomes unconsciousness. A
+suspended body never collapses - on BOTH clients, so it does not present as a
+sync bug. Combat exempted v0.56, injury v0.66.
 
 ## Held for daylight (2026-08-10 audit, after v0.62)
 

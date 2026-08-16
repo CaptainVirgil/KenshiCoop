@@ -408,3 +408,63 @@ up. Latching whatever the pool reads (recording `moved=0|1`) and saving anyway
 carries the unfixed build to the post-load comparison, where the erase is
 visible and named. A negative control has to REACH the assertion, so no step of
 the script may be gated on a precondition that only the fix satisfies.
+
+## A predicate that cannot see a proxy inverts its own answer (2026-08-14/16)
+
+`engine::resolveCharByHand` asks the ENGINE. The engine cannot reliably name a
+body that exists on this client only as a MINTED PROXY - every NPC the peer
+spawned mid-session. Bodies loaded from the shared save resolve normally, which
+is why every instance of this presents as *"it works for our squads and not for
+NPCs"*.
+
+Three player-visible bugs, three files, one cause:
+
+1. **NPC and enemy health never applied.** `applyMedical` resolved the subject
+   this way and `continue`d silently. The host was sending 2,310 medical rows
+   over 45 hands including `npc=1`; every one for a proxy was dropped on receipt.
+2. **Bodies stuck mid-carry or in furniture.** `sweepCarries` skipped exactly the
+   driven copies it exists to release.
+3. **"People are duplicating over and over."** The post-mint liveness guard
+   verified a FRESHLY MINTED proxy with it. A false negative there is not merely
+   lossy - it despawned the body, never entered it into `proxyByKey_`, and let
+   the peer's request re-arm. One host log: 51 REQs for a single hand, repeated
+   `[spawn] proxy FAILED` on the same body, while the answering client reported
+   `found=1` every time.
+
+Use `localCharForStreamed`. For LIVENESS use `readHand`, which dereferences the
+object under SEH - that is the actual proof, and it is what the drive's
+`viaProxy` path already used. Exempt only where the subject is gated on
+`ownHands_` (a body we own is never a proxy) and say so in a comment.
+
+## Suspending the AI suspends the whole brain (2026-08-16)
+
+`addAiSuspend` routes through `periodicUpdate_hook`, which returns early and
+skips `Character::_NV_periodicUpdate` **entirely** - the engine facade's own
+comment calls it "suppressing the brain wholesale".
+
+That per-tick update is not only task selection. It is where Kenshi turns blood
+loss into unconsciousness. So a suspended body bleeds to zero and never falls
+over, **on both clients**, which is why it presented as a game bug rather than a
+sync one for a whole session. The freeze was running hot enough to make it
+routine: `frzAct=88487` on one side, `40601` on the other.
+
+Compounded by `applyReportedDamage`, which writes flesh/fleshStun/blood as RAW
+STRUCT FIELDS and never runs the engine's hit path, so nothing evaluates "should
+this collapse" at write time either.
+
+Rule: **a body that needs the engine to notice something about itself must keep
+its brain.** Exempt by skipping the ACTUATION and leaving the latch armed, as
+combat (v0.56) and injury (v0.66) both do.
+
+## A guard that cannot fire reads as "this never happens" (2026-08-16)
+
+The combat snap veto shipped using `COMBAT_SNAP_DIST` as its applicability
+window. That constant is 20 u because *a driven brawl churns 12-18 u* - it is a
+CONVERGENCE threshold, not a claim about how far a fighting body can be.
+Measured: 1,679 combat/NPC hard snaps, median gap 89.9 u, p90 294.9 u, **none at
+or below 20 u**. The veto never fired once, and `snapVeto=0` looked like
+evidence the case was rare rather than evidence the guard was dead.
+
+When adding a guard with a threshold, check the threshold against the measured
+distribution of the thing it guards - and give it its OWN constant rather than
+borrowing one whose units happen to match.

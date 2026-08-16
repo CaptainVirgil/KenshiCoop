@@ -81,8 +81,9 @@ covering KenshiLib AND the vendored ENet), the map-based loadability check, and 
 full-include-path header scan exist in **both** scripts as of 2026-08-08 (roadmap items
 45/46) — but the Windows port has **not yet run on a real Windows machine**, and the
 artifacts have not been re-compared since `5a7902d`. No automated parity gate exists, and
-no Windows-built DLL has ever shipped — both `dist/release-fork-6/{win,linux}` DLLs are
-the same Linux build. See the `kenshicoop-build` skill for the comparison procedure.
+no Windows-built DLL has ever shipped — every release through v0.66 ships the SAME
+Linux-built DLL in both the `-windows` and `-linux` archives; they differ only in
+packaging. See the `kenshicoop-build` skill for the comparison procedure.
 
 **The Linux gate builds both configurations**; the Windows gate does not build the plugin
 at all (`verify.ps1` says so itself: "Requires NO Kenshi launch and NO KenshiCoop.dll").
@@ -185,6 +186,17 @@ grep _NV_mainLoop_GPUSensitiveStuff build/Release/KenshiCoop.map
 `?_NV_mainLoop_GPUSensitiveStuff@GameWorld@@QEAAXM@Z` with an address is a local
 definition, and that build will assert on startup. This is also why the kit ships
 the `.map`.
+
+**Current release: `v0.66` (protocol 58).** Protocol has been unchanged since
+v0.61, so v0.61-v0.66 all interoperate and a partial rollout is safe. Releases
+now tag LOCALLY before the kit builds, because the in-game panel shows
+`git describe` and a remote-only tag left v0.63 stamped `V0.61-7-G8CACF6C`.
+
+**The build fails on a correctness warning.** `/we4244 /we4267 /we4018 /we4700
+/we4701 /we4715 /we4717` - promoted after MSVC's C4244 for a `u16`-into-
+`unsigned char` change-gate field was filtered out of the build log and shipped
+in v0.65. Vendored/SDK noise (C4099/4005/4091/4996) is deliberately NOT
+promoted. See the `kenshicoop-build` skill.
 
 **Deps are pinned to `b566d74` — KenshiLib 0.4.0, matching the runtime.**
 
@@ -319,6 +331,35 @@ violation.
   the exemption never held. One Holy Sentinel sat frozen for 97.6% of its active
   frames, then tracked 1008 consecutive frames cleanly once the hold expired.
   Anything that halts, parks or teleports must ask `drivenChars_` first.
+- **`resolveCharByHand` cannot see a PROXY, and using it as a predicate inverts
+  the answer.** It asks the ENGINE, which cannot reliably name a body that
+  exists here only as a minted proxy - i.e. every NPC the peer spawned
+  mid-session. Bodies from the shared save resolve fine, so this always presents
+  as "works for our squads, not for NPCs". It caused three separate
+  player-visible bugs in three files: NPC health never applying (v0.64), bodies
+  stuck mid-carry (v0.65), and - because a post-mint liveness guard used it -
+  **"people are duplicating over and over"** (v0.66), where a false negative
+  destroyed the fresh proxy, never bound it, and let the peer re-request: 51
+  REQs for one hand. Use `localCharForStreamed`; for LIVENESS use `readHand`,
+  which dereferences under SEH and is the actual proof.
+- **Suspending a body's AI suspends its whole BRAIN.** `addAiSuspend` routes
+  through `periodicUpdate_hook`, which skips `Character::_NV_periodicUpdate`
+  entirely. That per-tick update is where Kenshi turns blood loss into
+  unconsciousness, so a suspended body bleeds to zero and never falls over -
+  identically on both clients, which is why it does not look like a sync bug at
+  all. Combat was exempted in v0.56, injury in v0.66. Before suspending a new
+  category, ask what the engine was going to do for that body per tick.
+- **A veto needs a ceiling it can actually reach.** The combat snap veto shipped
+  in v0.61 reusing `COMBAT_SNAP_DIST` (20 u) as its window - but that is a
+  CONVERGENCE constant, sized because a brawl churns 12-18 u. Measured: 1,679
+  combat snaps, median gap 89.9 u, none at or below 20. It never fired once, and
+  its zero counter read as "this case never happens". A guard that cannot
+  trigger is worse than no guard.
+- **Ask whether the other client sees it too, before theorising.** "Enemies at 0
+  blood stay up" was assumed to be replication for a whole session. The answer -
+  up on BOTH screens - ruled out the entire category in one question and pointed
+  straight at the AI suspend. Two other theories the same night died to evidence
+  that was equally cheap to gather.
 - **A speed SETTING is not a measured velocity.** `EntityState::cSpeed` is the owner's
   `CharMovement::currentSpeed`; the engine translates a body faster than that (slope and
   other modifiers land outside it) — measured 64.7 u/s actual against 43.4 reported. A
@@ -432,11 +473,16 @@ machine, the Steam P2P tunnel, or a real network path.
 versus inferred — read it before any protocol change. A 12-dimension audit (2026-08-08)
 produced a ranked backlog; the significant unfixed items are:
 
-- **The 20 Hz near band has no change gate** — a stationary NPC costs exactly what a
-  sprinting one does. The largest remaining bandwidth win, and deliberately not taken
-  blind: it changes what the peer receives for a body that is not moving, which feeds
-  the interpolator, the drive and the authority dwell at once. Judge it against the
-  bandwidth telemetry from a real session first.
+- **The 20 Hz near band change gate — DONE in v0.65.** `[net] mix` (v0.63, added
+  for exactly this) supplied the measurement the decision was waiting on: entity
+  batches were 472 KB per 5 s window, ~94 KB/s, **87% of everything the authoring
+  client sent** and roughly triple the 36 KB/s recorded below. An unchanged
+  near-band NPC row is now suppressed until a **200 ms** keepalive falls due.
+  That number is load-bearing, not round: the receiver demotes to the MID tier on
+  `segMs > 250`, so a slower keepalive would reclassify every stationary NPC and
+  hand it mid-rest release plus park and snap cooldowns. prototest pins all four
+  bounds and the load-bearing one was verified to FAIL at 250. Own squad and mid
+  rows are out of scope. Watch `nearSup=`.
 - **`applyTargets` (~1700 lines) is still one function.** The extraction is safe in
   principle but needs a test that can see the sync layer, which does not exist yet.
 - **A stub-engine harness** would make most of `sync/` testable headlessly; the audit

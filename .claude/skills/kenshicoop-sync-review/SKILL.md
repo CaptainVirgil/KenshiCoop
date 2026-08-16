@@ -80,6 +80,61 @@ build does not pay for fields nobody reads. The authority passes were paying ful
 every body within 2000 u, every frame, on both clients, and discarding all but the hand and
 the position.
 
+### 3c. Can this lookup see a PROXY?
+
+**`engine::resolveCharByHand` asks the ENGINE, and the engine cannot reliably
+name a body that exists on this client only as a minted proxy.** A proxy is
+every NPC the peer spawned mid-session: raids, patrols, wandering squads. Bodies
+loaded from the shared save resolve fine, which is why this always presents as
+"it works for our squads and not for NPCs".
+
+Three player-visible bugs in three different files were all this one thing:
+
+| Symptom | Site |
+|---|---|
+| NPC and enemy health never synced (v0.64) | `applyMedical`, `applyTreatments`, `applyStats` |
+| Bodies stuck mid-carry or in furniture (v0.65) | `sweepCarries` |
+| **"people/enemies are duplicating over and over"** (v0.66) | the post-mint liveness guard |
+
+The third is the one to remember, because it shows the failure is not always
+merely lossy. The guard verified a freshly minted proxy with
+`resolveCharByHand`, so a false negative **destroyed the body**, never entered
+it into `proxyByKey_`, and let the peer's request re-arm - 51 REQs for a single
+hand on one host log, minting and discarding the same NPC over and over.
+
+Use `Replicator::localCharForStreamed(hand)`, which tries the engine and then
+falls back to `proxyByKey_`. For LIVENESS, use `engine::readHand`: it
+dereferences the object under SEH, which is the actual proof, and it is what
+`localCharForStreamed` and the drive's `viaProxy` path already use.
+
+Two sites are legitimately exempt, and both say so in a comment: anything gated
+on `ownHands_` (a body we own is never a proxy, so the engine lookup is
+exhaustive) and anything that genuinely wants "does the ENGINE know this hand",
+which is a different question.
+
+**Before writing a fix, grep `resolveCharByHand` used as a predicate.** Every
+remaining one is a candidate.
+
+### 3d. Does this suspend the body's BRAIN?
+
+`engine::addAiSuspend` routes through `periodicUpdate_hook`, which returns early
+and skips `Character::_NV_periodicUpdate` **entirely** - the engine facade calls
+it "suppressing the brain wholesale". That per-tick update is not just task
+selection: it is where Kenshi turns blood loss into unconsciousness, and
+plausibly where several other timers live.
+
+Players, 2026-08-16: enemies at 0 blood stayed standing **on both clients**, so
+it never looked like a sync bug. Both had suspended the same brain -
+`frzAct=88487` on one side, `40601` on the other. Compounded by
+`applyReportedDamage`, which writes flesh/blood as raw struct fields and never
+runs the engine's hit path, so nothing evaluates "should this collapse" at write
+time either.
+
+The rule: **a body that needs the engine to notice something about itself must
+keep its brain.** Combat was exempted in v0.56, injury in v0.66, both by
+skipping only the ACTUATION and leaving the latch armed. If you suspend a new
+category, ask what the engine was going to do for that body per tick.
+
 ### 4. Does this need a protocol bump?
 
 `PROTOCOL_VERSION` is checked at handshake and a mismatch is a **hard reject with no
