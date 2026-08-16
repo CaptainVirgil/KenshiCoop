@@ -507,6 +507,37 @@ Write-Host ""
 # This is a source-drift check, not a behaviour test: it asks that no control
 # statement be followed by a beat on the next line without an opening brace.
 Write-Host ""
+Write-Host "== the combat snap veto has a reachable ceiling =="
+# prototest cannot see these: ReplicatorUtil.h pulls ENet and the engine facade,
+# which that suite deliberately excludes. So the relationship is checked HERE,
+# out of the source, the same way wireSanitize and pktName are.
+#
+# The v0.61 veto reused COMBAT_SNAP_DIST as its applicability window. That is a
+# 20 u CONVERGENCE threshold (a driven brawl churns 12-18 u), not a statement
+# about how far a fighting body can legitimately be - so the veto was dead code.
+# Measured 2026-08-16: 1,679 combat/NPC hard snaps, median gap 89.9 u, p90
+# 294.9 u, NOT ONE at or below 20 u; the live counters read snapCbt=727 against
+# snapVeto=0. A veto that cannot fire is worse than none, because its zero
+# counter reads as "this case never happens".
+$utilH = Join-Path $repoRoot "src/plugin/sync/ReplicatorUtil.h"
+if (-not (Test-Path $utilH)) {
+    Check "src/plugin/sync/ReplicatorUtil.h exists" $false
+} else {
+    $ut = Get-Content -LiteralPath $utilH -Raw
+    $mSnap = [regex]::Match($ut, 'COMBAT_SNAP_DIST\s*=\s*([0-9.]+)f')
+    $mVeto = [regex]::Match($ut, 'COMBAT_VETO_MAX_DIST\s*=\s*([0-9.]+)f')
+    Check "both combat distances are readable" ($mSnap.Success -and $mVeto.Success)
+    if ($mSnap.Success -and $mVeto.Success) {
+        $snap = [double]$mSnap.Groups[1].Value
+        $veto = [double]$mVeto.Groups[1].Value
+        Check ("veto ceiling reaches past the convergence band ({0} > 2 x {1})" -f $veto, $snap) `
+              ($veto -gt ($snap * 2.0))
+        Check ("...and still lets a departed body snap ({0} < 250)" -f $veto) `
+              ($veto -lt 250.0)
+    }
+}
+
+Write-Host ""
 Write-Host "== packet-mix name table covers every PKT_ =="
 # pktName() in NetLink.cpp is a hand-written list beside an enum - the same
 # shape as wireSanitize, which went stale five times before it got a check.

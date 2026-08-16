@@ -1848,6 +1848,33 @@ void Replicator::censusFreezeDivergedAi(Character* c, const Key& k, float drift)
             return;
         }
     }
+    // A BLEEDING OR CRITICALLY WOUNDED body keeps its brain, exactly as a
+    // fighting one does. addAiSuspend routes through periodicUpdate_hook, which
+    // returns early and skips Character::_NV_periodicUpdate ENTIRELY - the code
+    // there calls it "suppressing the brain wholesale". That per-tick update is
+    // where Kenshi turns blood loss into unconsciousness, so a suspended body
+    // bleeds to zero and never falls over.
+    //
+    // Players, 2026-08-16: "enemies with 0 blood are staying up too long", and
+    // the decisive check said they were up on BOTH screens - never a sync
+    // disagreement, both clients had simply suspended the same brain. The freeze
+    // was running hot enough to make it routine: frzAct=88487 on the join,
+    // 40601 on the host. Join-dealt damage compounds it, because
+    // applyReportedDamage writes flesh/blood as raw struct fields and never runs
+    // the engine's hit path, so periodicUpdate is the ONLY thing left that would
+    // collapse the body.
+    //
+    // Same shape as the combat exemption above: the latch stays armed, only the
+    // ACTUATION is skipped, so a body that stabilises is frozen again normally.
+    {
+        engine::MedicalRead mr;
+        if (engine::readMedical(c, &mr) && mr.valid &&
+            (mr.bleedRate > 0.0f || mr.blood <= 25.0f)) {
+            ++freezeSkipHurt_;
+            return;
+        }
+    }
+
     if (over) {
         censusFrozen_[k] = now;                 // (re)arm / refresh the hold
         if (!wasFrozen) engine::endAction(c);   // drop the in-progress flee/attack once

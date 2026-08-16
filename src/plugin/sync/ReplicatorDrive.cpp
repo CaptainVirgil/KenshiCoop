@@ -1799,9 +1799,16 @@ void Replicator::applyTargets(GameWorld* gw) {
         // through the walk drive as it does inside the combat branch. readCombat
         // runs only when a snap is otherwise about to fire, so this costs
         // exactly what the existing snapCbt counter already cost.
+        // Ceiling is COMBAT_VETO_MAX_DIST, NOT combatSnapDist_. The v0.61 veto
+        // reused the convergence constant (20 u, sized because a driven brawl
+        // churns 12-18 u) as its applicability window, so it could never fire:
+        // measured over the 2026-08-16 session, 1,679 combat/NPC hard snaps had
+        // a median gap of 89.9 u and NOT ONE at or below 20 u. The live counters
+        // said so plainly - snapCbt=727, snapVeto=0 - which is the reading the
+        // audit asked for before touching this.
         bool combatVeto = false;
         if (genuinelyMoving && haveActual && gapNewest > snapGate && snapOk &&
-            gapNewest <= combatSnapDist_) {
+            gapNewest <= COMBAT_VETO_MAX_DIST) {
             engine::CombatRead vcr;
             if (engine::readCombat(c, &vcr) &&
                 (vcr.inCombat || vcr.modeActive || vcr.underMelee)) {
@@ -2158,12 +2165,12 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         _snprintf(b, sizeof(b),
                   "[ai] suspended=%u driven=%u targets=%u"
                   " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu snapVeto=%lu"
-                  " frzAct=%lu",
+                  " frzAct=%lu frzHurt=%lu",
                   engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
                   (unsigned)targets_.size(),
                   midRestReleases_, relWalkDist_,
                   relWalkMs_ / 1000, snapInCombat_, snapVetoCombat_,
-                  freezeActuated_);
+                  freezeActuated_, freezeSkipHurt_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).

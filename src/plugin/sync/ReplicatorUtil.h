@@ -147,6 +147,21 @@ const float TRANSLATE_EPS = 0.02f; // per-frame actual movement counted as "tran
 // disengaged from an ACTIVE fight or its target changed - never on a timer against
 // a WAITING (slot-queued) copy, and with exponential backoff (1.5 s -> 6 s cap) so
 // a copy that legitimately cannot engage is not clearGoals-reset forever.
+// The combat SNAP VETO's own ceiling - deliberately NOT COMBAT_SNAP_DIST.
+//
+// The v0.61 veto ("do not hard-snap a body that is locally fighting") reused
+// COMBAT_SNAP_DIST as its applicability window, and that constant is 20 u
+// because a driven brawl churns 12-18 u - it is a CONVERGENCE threshold, not a
+// statement about how far a fighting body can legitimately be. Measured over
+// the 2026-08-16 session: 1,679 combat/NPC hard snaps, median gap 89.9 u, p90
+// 294.9 u, and ZERO at or below 20 u. So the veto could never fire once, which
+// is exactly what the live counters reported - snapCbt=727 against snapVeto=0.
+//
+// 120 u covers the motivating sighting (a bandit snapped at gap=38..75 while
+// its owner stood still, indoors) with margin, sits above the measured median,
+// and stays well under p90 so a body that has genuinely LEFT still snaps. The
+// readCombat test is what discriminates; this is only the sanity ceiling.
+const float COMBAT_VETO_MAX_DIST = 120.0f;
 const float COMBAT_SOFT_DIST = 6.0f;       // walk-converge combat drift beyond this
 const float COMBAT_SNAP_DIST = 20.0f;      // churn ceiling: a correctly-engaged fight owns its
                                            // footwork up to here (measured: a driven brawl
