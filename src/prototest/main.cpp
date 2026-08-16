@@ -1750,6 +1750,25 @@ static void testSyncTuning() {
     CHECK("a periodic inv resend is never sub-second",
           tun.invResendMs >= 1000 && tun.invResendBigMs >= 1000);
 
+    // NEAR-BAND change gate (v0.65). Same lesson as the inv cadence above: a
+    // zero here means "send every tick", i.e. the gate silently does nothing
+    // and the 94 KB/s it exists to cut comes straight back.
+    CHECK_EQ("near-band still keepalive (ms)", tun.nearStillResendMs, 200);
+    // THE LOAD-BEARING BOUND. The receiver classifies a body into the MID tier
+    // on segMs > 250 (ReplicatorUtil.h). A keepalive at or past that threshold
+    // would demote every stationary NPC into the mid band and hand it the whole
+    // mid machinery - mid-rest release to local AI, park and snap cooldowns -
+    // which is a behaviour change dressed as a bandwidth optimisation. It must
+    // also stay well inside the heal debounces, because healDue() requires the
+    // interp stream to ADVANCE and a suppressed body advances only on keepalive.
+    CHECK("near keepalive stays below the 250 ms mid-tier threshold",
+          tun.nearStillResendMs < 250);
+    CHECK("near keepalive leaves margin inside both heal debounces",
+          tun.nearStillResendMs * 4 <= tun.carryHealDebounceMs &&
+          tun.nearStillResendMs * 4 <= tun.furnHealDebounceMs);
+    CHECK("near keepalive is well inside the interp stale window",
+          (unsigned long)cfg.staleMs >= 4 * tun.nearStillResendMs);
+
     // Send interval -> the interp render delay. The flat ceiling alone does NOT
     // cover the mid band; that is precisely why the cadence-scaled one exists, and
     // the hard bound on it must still clear one send interval.

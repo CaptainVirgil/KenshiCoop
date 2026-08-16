@@ -1196,8 +1196,14 @@ private:
     // (a parked Garru streams cSpeed=15.2 and was mover-classified forever),
     // and one-send-per-rotation suppression of the scan-overlap double-sends
     // whose 50 ms segments flapped the receiver's tier classifier.
-    struct MidSent { unsigned long ms; float x, y, z; };
+    struct MidSent { unsigned long ms; float x, y, z;
+                     unsigned char bodyState; unsigned char task; };
     std::map<Key, MidSent> midSent_;
+    // NEAR-band last-sent state, for the v0.65 change gate. Same shape and same
+    // 512/60s prune as midSent_ - see the gate in publishOwned for why the
+    // keepalive must stay under the receiver's 250 ms tier threshold.
+    std::map<Key, MidSent> nearSent_;
+    unsigned long nearStillSup_;  // near-band rows suppressed as unchanged (telemetry)
     unsigned long midResendSup_;  // cumulative suppressed re-sends (telemetry)
     // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
     // slice cursor advances (50 ms), then re-emitted on every render frame:

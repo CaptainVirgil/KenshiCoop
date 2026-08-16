@@ -76,7 +76,7 @@ Replicator::Replicator()
       speedSeqOut_(1), speedSeqSeen_(0), speedIntentFloodMs_(0),
       freezeActuated_(0), truncHoldCulls_(0),
       wdOriginHolds_(0), wdOriginLogMs_(0), proxyBlindSkips_(0),
-      xferFoldLoss_(0), xferFoldLogMs_(0),
+      xferFoldLoss_(0), xferFoldLogMs_(0), nearStillSup_(0),
       speedLastSendMs_(0), speedCombatSampleMs_(0), speedCombatHoldMs_(0),
       spawnSync_(false), spawnPosLogMs_(0),
       spawnMintRadius_(0.0f), censusScanMs_(0),

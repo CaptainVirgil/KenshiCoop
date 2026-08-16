@@ -33,6 +33,12 @@ struct SyncTuning {
     unsigned long factionResendMs;
 
     // Baked doors (protocol 26): doors move in clicks; 1 Hz sample.
+    // Near-band keepalive for a body the change gate found unchanged. MUST stay
+    // below the receiver's 250 ms tier threshold (ReplicatorUtil.h) or every
+    // stationary NPC is demoted into the mid band. Pinned in prototest, because
+    // a zeroed cadence field means "as fast as possible" and this project has
+    // shipped that mistake before (abe12a2).
+    unsigned long nearStillResendMs;
     unsigned long doorSampleMs;
     unsigned long doorResendMs;
 
@@ -138,6 +144,7 @@ struct SyncTuning {
     SyncTuning()
         : moneyMinSendMs(1000),   moneyResendMs(5000),
           factionSampleMs(1000),  factionResendMs(10000),
+          nearStillResendMs(200),
           doorSampleMs(1000),     doorResendMs(10000),
           prodSampleMs(1000),     prodResendMs(10000),
           researchSampleMs(1000), researchResendMs(15000),

@@ -221,6 +221,12 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
     // streamNpcs_ off, so on the join this publishes ONLY its owned squad subset.
     // Under presence authority BOTH sides stream, so each must keep to the cells
     // it actually owns or the two of us drive the same bodies.
+    const unsigned int npcStart = n;   // near-band NPC rows begin here (squad is [0,npcStart))
+    unsigned int midStart = n;         // set when the mid slice is appended; == npcStart if none
+    // Stillness epsilon in world units. Deliberately small: this decides whether
+    // a body is "not moving", and a generous value would suppress genuine slow
+    // drift, which the drive would then have to snap out of.
+    const float NEAR_STILL_EPS = 0.05f;
     if (streamNpcs_ && n < MAX_PUBLISH) {
         unsigned int got = engine::captureNpcs(gw, buf + n, MAX_PUBLISH - n);
         // The attention gate lives HERE, not on the census. Streaming is the
@@ -421,6 +427,7 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
         // Emit the cached slice every frame: setOwnedEntities overwrites the
         // published snapshot each time, and the net thread samples whichever
         // frame it lands on.
+        midStart = n;   // mid rows are already rotation-limited; never gate them
         for (unsigned int r = 0; r < (unsigned int)midRows_.size() && n < MAX_PUBLISH; ++r)
             buf[n++] = midRows_[r];
         // The map is keyed by hand and the band is rebuilt every census, so
@@ -432,6 +439,72 @@ void Replicator::publishOwned(GameWorld* gw, NetLink& net, u32 ownerId) {
             for (std::map<Key, MidSent>::iterator pit = midSent_.begin();
                  pit != midSent_.end(); ) {
                 if (nowPub - pit->second.ms > 60000) midSent_.erase(pit++);
+                else                                 ++pit;
+            }
+        }
+    }
+    // ---- NEAR-BAND CHANGE GATE -------------------------------------------
+    // The 20 Hz near band had no change gate: a stationary town NPC cost exactly
+    // what a sprinting one did. Measured 2026-08-16 with [net] mix, entity
+    // batches were 472 KB per 5 s window (~94 KB/s) - 87% of everything this
+    // client sent - which is what the roadmap wanted before taking this.
+    //
+    // Absence from the array is NOT removal: setOwnedEntities does out_.assign,
+    // so a row left out simply means "no new sample this tick", and targets_ on
+    // the receiver ages out on a horizon of minutes.
+    //
+    // The keepalive is 200 ms and the ceiling is not arbitrary. The receiver's
+    // tier classifier demotes on segMs > 250 (ReplicatorUtil.h), so a keepalive
+    // at or past 250 would push every stationary NPC into the MID tier and hand
+    // it the whole mid machinery - mid-rest release to local AI, park cooldowns,
+    // snap cooldowns. 200 keeps them near-tier with margin, and sits far inside
+    // the 1500 ms heal debounce and the 2000 ms stale window, so healDue()'s
+    // stream-progress requirement still advances.
+    //
+    // Scope: near-band NPC rows only. Own squad streams unconditionally (the
+    // peer's window into what WE are doing must never depend on our throttle),
+    // and mid rows are already rotation-limited.
+    if (midStart > npcStart) {
+        const unsigned long nowGate = nowMs();
+        unsigned int w = npcStart;
+        for (unsigned int i = npcStart; i < midStart; ++i) {
+            const EntityState& row = buf[i];
+            const Key k = keyOf(row);
+            std::map<Key, MidSent>::iterator sit = nearSent_.find(k);
+            bool changed = true;
+            if (sit != nearSent_.end()) {
+                const float dx = row.x - sit->second.x;
+                const float dy = row.y - sit->second.y;
+                const float dz = row.z - sit->second.z;
+                // Position by DISTANCE, not flags: cMoving lies for a body the
+                // engine is nudging, and the v0.57 stillness work already moved
+                // this channel to position-based stillness for that reason.
+                const bool moved = (dx*dx + dy*dy + dz*dz) > (NEAR_STILL_EPS * NEAR_STILL_EPS);
+                changed = moved || row.bodyState != sit->second.bodyState ||
+                          row.task != sit->second.task;
+            }
+            if (!sync::gateShouldSend(changed, nowGate, (sit == nearSent_.end()) ? 0
+                                                      : sit->second.ms,
+                                      /*minSendMs*/ 0, tuning_.nearStillResendMs,
+                                      /*resendUnsent*/ true)) {
+                ++nearStillSup_;
+                continue;                        // still, and keepalive not due
+            }
+            MidSent& ns = nearSent_[k];
+            ns.ms = nowGate; ns.x = row.x; ns.y = row.y; ns.z = row.z;
+            ns.bodyState = row.bodyState; ns.task = row.task;
+            if (w != i) buf[w] = buf[i];
+            ++w;
+        }
+        // Compact the mid rows down over the gap the gate opened.
+        const unsigned int midCount = n - midStart;
+        for (unsigned int r = 0; r < midCount; ++r) buf[w + r] = buf[midStart + r];
+        n = w + midCount;
+        // Same unbounded-growth prune as midSent_, same reasoning.
+        if (nearSent_.size() > 512) {
+            for (std::map<Key, MidSent>::iterator pit = nearSent_.begin();
+                 pit != nearSent_.end(); ) {
+                if (nowGate - pit->second.ms > 60000) nearSent_.erase(pit++);
                 else                                 ++pit;
             }
         }
@@ -1139,9 +1212,9 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
         char b[320];
         _snprintf(b, sizeof(b) - 1,
                   "[census] sent n=%u radius=%.0f mid=%u anchors=%u%s"
-                  " enum=%u notmine=%u proxyrow=%u attnR=%.0f resendSup=%lu",
+                  " enum=%u notmine=%u proxyrow=%u attnR=%.0f resendSup=%lu nearSup=%lu",
                   m, censusRadius_, (unsigned)midBand_.size(), na, det,
-                  n, nNotMine, nProxyRow, attentionRadius_, midResendSup_);
+                  n, nNotMine, nProxyRow, attentionRadius_, midResendSup_, nearStillSup_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
         // KENSHICOOP_DEBUG_CENSUS=1: dump every census row (hand + name) at the
         // same 10 s cadence, so a join-side cull can be classified against the
