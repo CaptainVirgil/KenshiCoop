@@ -1,5 +1,19 @@
 # Handoff — 2026-08-16 (night session, two players live)
 
+> **v0.66 IS RELEASED AND INSTALLED HERE.** Protocol 58 throughout, so v0.61-v0.66
+> interoperate. The brother still needs to run his updater.
+>
+> **The 0-blood bug is SOLVED, not just diagnosed.** It was ours and it was on
+> BOTH clients: the AI suspend skips Kenshi's whole per-character update, which
+> is where blood loss becomes unconsciousness. Asking "is he down on YOUR
+> screen?" is what cracked it - the answer (up on both) ruled out replication
+> entirely. Ask that class of question FIRST.
+>
+> Two things to read on the next session, both of which decide whether these
+> landed: `frzHurt=` on `[ai]` (bleeding bodies now keep their brain) and
+> `snapVeto=` (the combat veto had NEVER fired - 727 snaps, 0 vetoes - because
+> it reused a 20 u convergence constant as its range; now 120 u with its own).
+
 > **FIRST ACTION NEXT SESSION — one question, ten seconds.**
 > Enemies at 0 blood stay standing on the JOIN's screen. Ask the host:
 > **is that same enemy down on YOUR screen?**
