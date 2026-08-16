@@ -1856,7 +1856,9 @@ public:
     virtual const char* name() const { return "cell_probe"; }
 
     virtual void onStart(const ScenarioContext& ctx) {
-        engine::CellProbe p;
+        // Zero-init: p is only read behind `ok`, so C4701 here is a flow-
+        // analysis false positive - but the build promotes it to an error.
+        engine::CellProbe p; memset(&p, 0, sizeof(p));
         float px = 0.0f, py = 0.0f, pz = 0.0f;
         bool have = leaderPos(ctx, &px, &py, &pz);
         bool ok = have && engine::cellProbe(ctx.gw, px, py, pz, &p);

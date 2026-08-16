@@ -313,10 +313,15 @@ private:
     void sendToPeer(ENetPacket* pkt, int channel) {
         if (!pkt) return;
         tallyTx(pkt);   // BEFORE the send: ENet owns and may free pkt after it
+        // Explicit narrowing. ENet takes an enet_uint8 channel id and every
+        // caller here passes a small literal (0..3), so the conversion is safe
+        // - but it is now SAID rather than assumed, because the build promotes
+        // C4244 to an error after a silent u16->u8 truncation shipped in v0.65.
+        const enet_uint8 ch = (enet_uint8)channel;
         if (isHost_) {
-            enet_host_broadcast(enetHost_, channel, pkt);
+            enet_host_broadcast(enetHost_, ch, pkt);
         } else if (serverPeer_ && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
-            enet_peer_send(serverPeer_, channel, pkt);
+            enet_peer_send(serverPeer_, ch, pkt);
         } else {
             enet_packet_destroy(pkt); // no one to send to yet
         }

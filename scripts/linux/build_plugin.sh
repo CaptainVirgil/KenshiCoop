@@ -165,7 +165,21 @@ compile_one() {
   # is why existence is the test at all.
   rm -f "$obj"
   # /EHsc: the plugin mixes C++ objects with __try frames; /W3 matches Level3.
-  vcl /nologo /c /EHsc /W3 /Gy /Oi $OPT $DEFS \
+  # /we<n>: promote the CORRECTNESS warnings to errors. On 2026-08-16 MSVC
+  # emitted C4244 for a near-band change-gate field declared `unsigned char`
+  # while the wire field is u16 - which made the gate blind to BODY_CHAINED
+  # (1<<8) and every prone posture (7<<9). It shipped in v0.65 because the build
+  # output was only ever grepped for "error". All of these are at zero today, so
+  # making them fatal costs nothing and closes the hole permanently:
+  #   4244 conversion, possible loss of data   4267 size_t narrowing
+  #   4018 signed/unsigned compare             4700 uninitialised local USED
+  #   4701 potentially uninitialised local     4715 not all paths return a value
+  #   4717 unconditional recursion
+  # NOT promoted: 4099/4005/4091/4996, which come from vendored and SDK headers
+  # and are long-known noise. This is a correctness gate, not a tidiness one.
+  vcl /nologo /c /EHsc /W3 /Gy /Oi \
+      /we4244 /we4267 /we4018 /we4700 /we4701 /we4715 /we4717 \
+      $OPT $DEFS \
       /Fo"$(winpath "$obj")" "$(winpath "$abs")" 2>&1 |
     grep -vE '^[A-Za-z0-9_./\\-]+\.(cpp|c)$' || true
   [ -f "$obj" ] || { echo "FAILED: $src" >&2; return 1; }

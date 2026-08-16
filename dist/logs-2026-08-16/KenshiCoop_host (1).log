@@ -1,0 +1,29 @@
+[19:11:55.042] [HOST] INFO: log opened
+[19:11:55.042] [HOST] INFO: [host] KenshiLib runtime=0.4.0 built-against=v0.1-1-gb566d74-dirty
+[19:11:55.042] [HOST] INFO: [host] ENet vendored=5a9c537-dirty
+[19:11:55.042] [HOST] INFO: KenshiCoop loaded! (clean rebuild)
+[19:11:55.042] [HOST] INFO: KenshiCoop: build Aug  9 2026 21:02:03
+[19:11:55.042] [HOST] INFO: KenshiCoop: role=HOST proto=v56 port=27800 save=''
+[19:11:55.042] [HOST] INFO: KenshiCoop: effective cfg scenario='' transport=udp on=[inv,xfer,world,med,speed,speedCombatCap,stats,carry,furn,chain,stealth,prone,money,spawn,recruit,faction,time,door,build,bdoor,hunger,save,load,prod,research,deed,store,squad,latejoin,aiSuspend,gateAuth,camInterest,censusFreezeAi,dmgFloat,weather,dialogue] off=[blockXfer,crashTracer,splitAuth] censusR=2000 mintR=600 park=120 snap=8.0/0.75s armMs=45000 attnR=1000 cellAuth=1 midBand=256/32 healDeb=1500/1500 doorHold=5000 koRel=3000
+[19:11:55.074] [HOST] INFO: [engine] CAPS saveload=1 savepath=1 hand_resolve=1 npc_stream=1 limb=1 stats=1 carry=1 furniture=1 chain=1 shackle=1 slave=1 stealth=1 camera=1 speed=1 quiet_speed=1 door=1 build=1 machine=1 time=1 wallet=1 faction=1 combat_escalate=1 move_restore=1 deed=1 hull=1
+[19:11:55.074] [HOST] INFO: [caps] 0 of 17 enabled features are missing their engine capability
+[19:11:55.074] [HOST] INFO: KenshiCoop: ownership ranks = {0} (bidirectional presence)
+[19:11:55.074] [HOST] INFO: KenshiCoop: interp delay=50-200ms extrap=250ms stale=2000ms snap=50u drive catchupK=2.00 snapDist=8.0u snapSec=0.75 sendStamp=1 census=2000u mint=600u park=120u starveHold=10000ms
+[19:11:55.104] [HOST] INFO: [ai] periodicUpdate detour installed; AI-suspend ON (default)
+[19:11:55.164] [HOST] INFO: [dlg] speech-bubble capture installed; dialogue relay ON
+[19:11:55.194] [HOST] INFO: [dmg] hitByMeleeAttack detour installed; damage guard ON (host, driven peer-squad bodies)
+[19:11:55.194] [HOST] INFO: [dmg] suppressed-hit damage floaters ON (KENSHICOOP_DAMAGE_FLOATERS=0 disables)
+[19:11:55.223] [HOST] INFO: [shop] buyItem detour installed; purchase logging ON
+[19:11:55.253] [HOST] INFO: [wi] dropItem detour installed; query-free drop capture ON
+[19:11:55.283] [HOST] INFO: [recruit] recruit detour installed; recruitment sync ON
+[19:11:55.342] [HOST] INFO: [build] createBuilding capture installed; placement logging ON
+[19:11:55.373] [HOST] INFO: [build] dismantle detour installed; removal logging ON
+[19:11:55.434] [HOST] INFO: [fac] affectRelations detours installed; relation logging ON
+[19:11:55.464] [HOST] INFO: [save] save detour installed; coordinated save ON
+[19:11:55.525] [HOST] INFO: [load] load detour installed; coordinated load ON
+[19:11:55.555] [HOST] INFO: KenshiCoop: title hook armed (F2 panel + push-on-connect at menu; no auto-load save)
+[19:11:55.555] [HOST] INFO: [steam] id=76561198095203167 loggedOn=1 iface=SteamNetworking005
+[19:11:55.555] [HOST] INFO: [invite] ready: mm=SteamMatchMaking009 friends=SteamFriends015 (in-panel friend picker armed)
+[19:11:55.555] [HOST] INFO: KenshiCoop: session DEFERRED - press F2 in-game to pick role/transport, enter the friend's Steam ID, and check CONNECTED
+[19:11:58.404] [HOST] INFO: [boot] title-tick running=0 host=1 started=0 saveEmpty=1
+[19:11:58.407] [HOST] INFO: [coop-ui] gui ptr=00007FF754C82750

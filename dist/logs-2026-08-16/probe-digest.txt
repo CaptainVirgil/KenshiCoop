@@ -1,0 +1,350 @@
+===== 23:25:28  KenshiCoop_join.log  lines=1976 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=64 wide=83 drv=78 cen=4 hid=0 ghost=0 supp=0 census=91 fresh=1 parks=90 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=0
+interp: lerp=141019 extrap=4750 clamp=59 seg=453 single=63698 snapSq=0 snapNpc=0 reissueSq=7 reissueNpc=2338 restFlip=39 delay=646 jit=136.3 starve=0 snapMid=91 restFlipMid=33 haltDrv=0 haltCbt=2295
+stage : lines=240/10s peak us: frame-end=23202/10819 engine=3224/1247 app:targets=477/126 app:authority=197/39 pub:owned=179/73
+q     : peak evt=0 ent=73/4096 inv=5 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=73/23.5KB med=23/10.5KB inv=9/8.9KB stats=4/0.8KB cam=5/0.1KB census=5/0.0KB
+mixin :  ent=239/228.2KB med=40/18.2KB census=5/14.3KB inv=7/4.1KB stats=3/0.6KB time=5/0.1KB
+bw    : [net] [net] bandwidth out=9.2 KB/s in=55.0 KB/s (window 5s)
+noBody: noBody=0   wdHold: wdHold=0   frzAct: frzAct=2936
+ERRORS: 0
+  ! [23:25:16.099] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=5 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:25:21.109] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=5 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:25:26.120] [JOIN] INFO: [q] peak evt=0 ent=73/4096 inv=5 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+===== 23:27:28  KenshiCoop_join.log  lines=4640 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=58 wide=127 drv=2 cen=40 hid=1 ghost=0 supp=2 census=44 fresh=1 parks=270 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=84 skip=84 cells=2 truncHold=0 wdHold=0 noBody=0
+interp: lerp=537257 extrap=28926 clamp=59 seg=2389 single=279182 snapSq=1 snapNpc=0 reissueSq=378 reissueNpc=8785 restFlip=99 delay=388 jit=102.1 starve=2 snapMid=230 restFlipMid=113 haltDrv=0 haltCbt=5840
+stage : lines=186/10s peak us: frame-end=24186/11272 engine=4955/1634 pub:owned=300/109 app:targets=213/53 app:authority=211/44
+q     : peak evt=0 ent=4/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=448/437.5KB med=47/21.4KB census=5/13.8KB inv=11/10.9KB spwnInf=6/0.8KB stats=4/0.8KB
+mixin :  ent=34/8.6KB census=5/6.9KB med=15/6.8KB inv=8/3.9KB stats=3/0.6KB spwnReq=6/0.1KB
+bw    : [net] [net] bandwidth out=98.0 KB/s in=5.8 KB/s (window 5s)
+noBody: noBody=0   wdHold: wdHold=0   frzAct: frzAct=12588
+ERRORS: 0
+  ! [23:27:16.264] [JOIN] INFO: [q] peak evt=1 ent=4/4096 inv=4 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:27:21.271] [JOIN] INFO: [q] peak evt=0 ent=4/4096 inv=5 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:27:26.282] [JOIN] INFO: [q] peak evt=0 ent=4/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:29:28  KenshiCoop_join.log  lines=7425 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=52 wide=127 drv=2 cen=40 hid=1 ghost=0 supp=2 census=44 fresh=1 parks=822 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=84 skip=84 cells=2 truncHold=0 wdHold=0 noBody=0
+interp: lerp=554702 extrap=33307 clamp=59 seg=2993 single=304608 snapSq=1 snapNpc=0 reissueSq=378 reissueNpc=8934 restFlip=99 delay=597 jit=102.1 starve=1 snapMid=263 restFlipMid=113 haltDrv=0 haltCbt=8084
+stage : lines=230/10s peak us: frame-end=44878/18840 engine=6986/2496 app:authority=517/76 pub:owned=464/213 pub:weaponDrops=459/104
+q     : peak evt=0 ent=5/4096 inv=3 cen=2 stealth=5 cam=2 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=474/472.0KB med=53/24.2KB census=5/13.5KB inv=9/8.6KB stats=5/0.9KB spwnInf=6/0.8KB
+mixin :  stealth=20/8.3KB ent=26/7.1KB census=5/6.9KB med=15/6.8KB inv=7/3.8KB research=11/0.6KB
+bw    : [net] [net] bandwidth out=103.7 KB/s in=7.2 KB/s (window 5s)
+noBody: noBody=0   wdHold: wdHold=0   frzAct: frzAct=43499
+ERRORS: 0
+  ! [23:29:16.448] [JOIN] INFO: [q] peak evt=0 ent=4/4096 inv=4 cen=1 stealth=4 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:29:21.455] [JOIN] INFO: [q] peak evt=0 ent=4/4096 inv=4 cen=2 stealth=7 cam=2 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:29:26.466] [JOIN] INFO: [q] peak evt=0 ent=5/4096 inv=3 cen=2 stealth=5 cam=2 DROPPED ent=74097 stealth=0 cam=0
+===== 23:31:28  KenshiCoop_join.log  lines=12189 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=49 wide=134 drv=26 cen=14 hid=3 ghost=0 supp=4 census=46 fresh=1 parks=1523 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=91 skip=91 cells=2 truncHold=0 wdHold=0 noBody=
+interp: lerp=625627 extrap=88834 clamp=59 seg=6903 single=339702 snapSq=16 snapNpc=0 reissueSq=469 reissueNpc=12406 restFlip=102 delay=613 jit=155.8 starve=21 snapMid=881 restFlipMid=122 haltDrv=0 haltCbt=10090
+stage : lines=354/10s peak us: frame-end=21314/13135 engine=3735/2016 pub:owned=315/183 app:targets=270/97 app:authority=211/56
+q     : peak evt=0 ent=8/4096 inv=5 cen=2 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=546/534.8KB med=98/44.7KB census=5/14.7KB inv=14/9.2KB stats=4/0.8KB dlg=1/0.1KB
+mixin :  med=21/9.6KB ent=11/6.5KB census=4/5.8KB inv=12/4.4KB stealth=7/2.9KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=121.7 KB/s in=6.4 KB/s (window 5s)
+noBody: noBody=0   wdHold: wdHold=0   frzAct: frzAct=64155
+ERRORS: 0
+  ! [23:31:16.702] [JOIN] INFO: [q] peak evt=0 ent=43/4096 inv=2 cen=1 stealth=6 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:31:21.703] [JOIN] INFO: [q] peak evt=0 ent=36/4096 inv=5 cen=3 stealth=8 cam=3 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:31:26.711] [JOIN] INFO: [q] peak evt=0 ent=8/4096 inv=5 cen=2 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:33:28  KenshiCoop_join.log  lines=18426 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=80 wide=105 drv=88 cen=3 hid=14 ghost=0 supp=15 census=101 fresh=1 parks=1662 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=
+interp: lerp=956913 extrap=148175 clamp=59 seg=13940 single=508181 snapSq=25 snapNpc=21 reissueSq=862 reissueNpc=17773 restFlip=214 delay=702 jit=162.8 starve=0 snapMid=1159 restFlipMid=242 haltDrv=34337 haltCbt=12516
+stage : lines=453/10s peak us: frame-end=23338/12043 engine=3255/1541 app:targets=374/160 app:authority=299/56 pub:owned=192/95
+q     : peak evt=1 ent=88/4096 inv=5 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=69/22.2KB inv=10/8.8KB med=6/2.7KB stats=4/0.8KB spwnReq=5/0.1KB cam=5/0.1KB
+mixin :  ent=341/346.7KB med=109/49.7KB census=5/16.0KB stealth=18/7.5KB inv=9/4.1KB research=11/0.6KB
+bw    : [net] [net] bandwidth out=7.3 KB/s in=86.5 KB/s (window 5s)
+noBody: noBody=164   wdHold: wdHold=0   frzAct: frzAct=69535
+ERRORS: 0
+  ! [23:33:16.889] [JOIN] INFO: [q] peak evt=0 ent=91/4096 inv=4 cen=1 stealth=1 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:33:21.898] [JOIN] INFO: [q] peak evt=0 ent=89/4096 inv=4 cen=1 stealth=1 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:33:26.898] [JOIN] INFO: [q] peak evt=1 ent=88/4096 inv=5 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:35:28  KenshiCoop_join.log  lines=23618 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=77 wide=106 drv=83 cen=8 hid=15 ghost=0 supp=16 census=101 fresh=1 parks=1713 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=
+interp: lerp=1548670 extrap=160803 clamp=59 seg=15798 single=701980 snapSq=27 snapNpc=22 reissueSq=932 reissueNpc=25736 restFlip=597 delay=601 jit=142.5 starve=1 snapMid=1273 restFlipMid=338 haltDrv=110182 haltCbt=1364
+stage : lines=530/10s peak us: frame-end=46862/18804 engine=6788/2679 app:targets=899/284 pub:owned=477/159 app:authority=414/85
+q     : peak evt=0 ent=79/4096 inv=5 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=67/21.6KB inv=10/8.8KB med=6/2.7KB stats=4/0.8KB spwnReq=5/0.1KB cam=5/0.1KB
+mixin :  ent=292/295.5KB med=96/43.8KB census=5/15.8KB stealth=20/8.3KB inv=8/3.8KB spwnInf=5/0.7KB
+bw    : [net] [net] bandwidth out=7.2 KB/s in=74.5 KB/s (window 5s)
+noBody: noBody=293   wdHold: wdHold=0   frzAct: frzAct=70571
+ERRORS: 0
+  ! [23:35:17.099] [JOIN] INFO: [q] peak evt=0 ent=79/4096 inv=5 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:35:22.115] [JOIN] INFO: [q] peak evt=0 ent=79/4096 inv=5 cen=1 stealth=2 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:35:27.117] [JOIN] INFO: [q] peak evt=0 ent=79/4096 inv=5 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:37:28  KenshiCoop_join.log  lines=30245 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=4 wide=144 drv=61 cen=65 hid=15 ghost=0 supp=16 census=137 fresh=1 parks=2029 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=3 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=
+interp: lerp=1949451 extrap=182707 clamp=59 seg=19033 single=885797 snapSq=27 snapNpc=22 reissueSq=991 reissueNpc=36275 restFlip=705 delay=740 jit=163.1 starve=38 snapMid=1442 restFlipMid=503 haltDrv=166368 haltCbt=152
+stage : lines=539/10s peak us: frame-end=22431/10515 engine=7147/2175 app:targets=744/167 app:authority=563/67 pub:owned=219/91
+q     : peak evt=0 ent=9/4096 inv=1 cen=1 stealth=1 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=75/24.2KB inv=6/8.5KB med=7/3.2KB stats=6/1.1KB spwnReq=4/0.1KB cam=5/0.1KB
+mixin :  ent=92/81.7KB med=83/37.9KB census=6/25.7KB stealth=9/3.8KB inv=2/3.3KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=8.2 KB/s in=31.6 KB/s (window 5s)
+noBody: noBody=439   wdHold: wdHold=0   frzAct: frzAct=77954
+ERRORS: 0
+  ! [23:37:17.309] [JOIN] INFO: [q] peak evt=0 ent=86/4096 inv=4 cen=1 stealth=3 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:37:22.320] [JOIN] INFO: [q] peak evt=1 ent=82/4096 inv=1 cen=1 stealth=1 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:37:27.323] [JOIN] INFO: [q] peak evt=0 ent=9/4096 inv=1 cen=1 stealth=1 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:39:28  KenshiCoop_join.log  lines=35322 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=36 wide=43 drv=39 cen=0 hid=2 ghost=2 supp=18 census=48 fresh=1 parks=2304 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=46 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=470
+interp: lerp=2173319 extrap=221774 clamp=59 seg=23967 single=1012203 snapSq=822 snapNpc=123 reissueSq=1139 reissueNpc=41480 restFlip=903 delay=696 jit=167.4 starve=0 snapMid=2138 restFlipMid=709 haltDrv=167419 haltCbt=
+stage : lines=368/10s peak us: frame-end=19295/9475 engine=4810/1921 app:targets=412/126 pub:weaponDrops=241/70 pub:owned=211/52
+q     : peak evt=0 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=67/21.6KB inv=4/8.3KB med=8/3.6KB stats=8/1.5KB treat=7/0.5KB cam=5/0.1KB
+mixin :  ent=161/172.6KB med=61/27.8KB census=5/7.5KB inv=2/3.3KB dlg=14/2.0KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=7.5 KB/s in=43.3 KB/s (window 5s)
+noBody: noBody=470   wdHold: wdHold=0   frzAct: frzAct=85990
+ERRORS: 0
+  ! [23:39:17.514] [JOIN] INFO: [q] peak evt=0 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:39:22.518] [JOIN] INFO: [q] peak evt=0 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:39:27.528] [JOIN] INFO: [q] peak evt=0 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:41:28  KenshiCoop_join.log  lines=39637 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=31 wide=45 drv=39 cen=4 hid=2 ghost=0 supp=18 census=46 fresh=1 parks=2395 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=471
+interp: lerp=2448197 extrap=278040 clamp=59 seg=41308 single=1073168 snapSq=822 snapNpc=136 reissueSq=1139 reissueNpc=47352 restFlip=1020 delay=748 jit=174.0 starve=3 snapMid=2224 restFlipMid=882 haltDrv=167552 haltCbt
+stage : lines=376/10s peak us: frame-end=12310/8054 engine=3810/1726 app:targets=271/99 app:authority=204/30 pub:owned=203/42
+q     : peak evt=1 ent=39/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=70/22.6KB inv=4/8.3KB med=9/4.1KB stats=4/0.8KB treat=10/0.8KB dlg=1/0.1KB
+mixin :  ent=138/135.5KB med=64/29.2KB census=5/7.3KB inv=2/3.3KB stats=6/1.1KB dlg=5/0.7KB
+bw    : [net] [net] bandwidth out=7.7 KB/s in=35.5 KB/s (window 5s)
+noBody: noBody=471   wdHold: wdHold=0   frzAct: frzAct=88487
+ERRORS: 0
+  ! [23:41:17.627] [JOIN] INFO: [q] peak evt=0 ent=35/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:41:22.634] [JOIN] INFO: [q] peak evt=0 ent=37/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:41:27.642] [JOIN] INFO: [q] peak evt=1 ent=39/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:43:28  KenshiCoop_join.log  lines=43441 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=37 wide=46 drv=43 cen=1 hid=2 ghost=0 supp=3 census=49 fresh=1 parks=2419 nearCap=0 wideCap=0 peerTrunc=0 staleMs=0 edges=0 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBody=471
+interp: lerp=2839998 extrap=310180 clamp=59 seg=43948 single=1111408 snapSq=822 snapNpc=158 reissueSq=1139 reissueNpc=54624 restFlip=1159 delay=642 jit=169.2 starve=0 snapMid=2365 restFlipMid=1009 haltDrv=180565 haltCb
+stage : lines=152/10s peak us: frame-end=20706/9454 engine=7117/1996 app:targets=318/103 pub:weaponDrops=224/71 pub:owned=158/47
+q     : peak evt=1 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=69/22.2KB inv=4/8.3KB med=9/4.1KB stats=6/1.1KB dlg=5/0.7KB treat=8/0.6KB
+mixin :  ent=141/151.1KB med=76/34.7KB census=5/7.7KB inv=2/3.3KB stats=4/0.8KB time=5/0.1KB
+bw    : [net] [net] bandwidth out=8.1 KB/s in=40.3 KB/s (window 5s)
+noBody: noBody=471   wdHold: wdHold=0   frzAct: frzAct=90176
+ERRORS: 0
+  ! [23:43:17.786] [JOIN] INFO: [q] peak evt=0 ent=35/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:43:22.794] [JOIN] INFO: [q] peak evt=1 ent=40/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:43:27.803] [JOIN] INFO: [q] peak evt=1 ent=42/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:45:28  KenshiCoop_join.log  lines=46982 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=97 wide=143 drv=51 cen=3 hid=3 ghost=0 supp=4 census=48 fresh=1 parks=2440 nearCap=0 wideCap=0 peerTrunc=0 staleMs=629 edges=1 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=1 pcs=7 mine=85 skip=85 cells=2 truncHold=0 wdHold=0 noBody
+interp: lerp=3122180 extrap=351652 clamp=59 seg=49546 single=1162444 snapSq=822 snapNpc=158 reissueSq=1139 reissueNpc=63257 restFlip=1306 delay=748 jit=188.9 starve=6 snapMid=2605 restFlipMid=1101 haltDrv=197236 haltCb
+stage : lines=371/10s peak us: frame-end=34348/13718 engine=4092/2039 pub:owned=393/166 app:targets=283/94 app:authority=253/68
+q     : peak evt=1 ent=25/4096 inv=3 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=574/558.9KB med=78/35.6KB census=5/16.4KB inv=6/8.4KB spwnInf=7/1.0KB stats=4/0.8KB
+mixin :  ent=44/42.4KB med=42/19.2KB census=5/7.5KB inv=4/3.4KB stats=3/0.6KB spwnReq=7/0.2KB
+bw    : [net] [net] bandwidth out=125.5 KB/s in=15.1 KB/s (window 5s)
+noBody: noBody=471   wdHold: wdHold=0   frzAct: frzAct=90883
+ERRORS: 0
+  ! [23:45:17.918] [JOIN] INFO: [q] peak evt=1 ent=24/4096 inv=3 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:45:22.933] [JOIN] INFO: [q] peak evt=0 ent=25/4096 inv=1 cen=4 stealth=0 cam=4 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:45:27.949] [JOIN] INFO: [q] peak evt=1 ent=25/4096 inv=3 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+===== 23:47:28  KenshiCoop_join.log  lines=51872 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=95 wide=143 drv=41 cen=8 hid=6 ghost=3 supp=7 census=40 fresh=1 parks=2508 nearCap=0 wideCap=0 peerTrunc=0 staleMs=629 edges=1 ghostMax=1183 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=85 skip=85 cells=2 truncHold=0 wdHold=0 noBo
+interp: lerp=3230965 extrap=454355 clamp=59 seg=63790 single=1233179 snapSq=822 snapNpc=180 reissueSq=1139 reissueNpc=67843 restFlip=1328 delay=689 jit=143.7 starve=4 snapMid=3250 restFlipMid=1146 haltDrv=198438 haltCb
+stage : lines=427/10s peak us: frame-end=14739/9015 engine=3600/1862 pub:owned=333/147 app:authority=291/62 app:targets=203/85
+q     : peak evt=1 ent=24/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=498/541.3KB med=73/33.3KB census=5/16.1KB inv=4/8.3KB spwnInf=8/1.1KB dlg=7/1.0KB
+mixin :  ent=43/37.5KB med=33/15.0KB census=5/6.1KB inv=2/3.3KB stats=4/0.8KB spwnReq=8/0.2KB
+bw    : [net] [net] bandwidth out=121.7 KB/s in=14.9 KB/s (window 5s)
+noBody: noBody=471   wdHold: wdHold=0   frzAct: frzAct=95277
+ERRORS: 0
+  ! [23:47:18.140] [JOIN] INFO: [q] peak evt=0 ent=14/4096 inv=1 cen=1 stealth=0 cam=0 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:47:23.143] [JOIN] INFO: [q] peak evt=0 ent=25/4096 inv=1 cen=2 stealth=0 cam=2 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:47:28.148] [JOIN] INFO: [q] peak evt=1 ent=24/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:49:28  KenshiCoop_join.log  lines=56181 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=73 wide=138 drv=39 cen=4 hid=14 ghost=0 supp=15 census=31 fresh=1 parks=2607 nearCap=0 wideCap=0 peerTrunc=0 staleMs=629 edges=1 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=81 skip=81 cells=2 truncHold=0 wdHold=0 noBo
+interp: lerp=3302230 extrap=520174 clamp=59 seg=75096 single=1269057 snapSq=836 snapNpc=180 reissueSq=1341 reissueNpc=70081 restFlip=1338 delay=740 jit=169.7 starve=3 snapMid=3504 restFlipMid=1199 haltDrv=201405 haltCb
+stage : lines=393/10s peak us: engine=124317/3074 frame-end=45664/13048 pub:owned=756/199 app:authority=381/79 app:targets=351/90
+q     : peak evt=1 ent=6/4096 inv=5 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=480/475.5KB med=129/58.8KB census=5/15.8KB inv=9/8.9KB spwnInf=8/1.1KB dlg=7/1.0KB
+mixin :  med=24/10.9KB ent=25/9.9KB census=5/4.9KB inv=7/3.9KB dlg=18/2.5KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=112.9 KB/s in=7.5 KB/s (window 5s)
+noBody: noBody=471   wdHold: wdHold=0   frzAct: frzAct=99963
+ERRORS: 0
+  ! [23:49:18.330] [JOIN] INFO: [q] peak evt=2 ent=9/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:49:23.358] [JOIN] INFO: [q] peak evt=0 ent=7/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:49:28.366] [JOIN] INFO: [q] peak evt=1 ent=6/4096 inv=5 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:51:28  KenshiCoop_join.log  lines=62450 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=82 wide=139 drv=105 cen=5 hid=21 ghost=0 supp=22 census=109 fresh=1 parks=2926 nearCap=0 wideCap=0 peerTrunc=0 staleMs=629 edges=1 ghostMax=-1 ghostEdge=0 dorm=2 attnR=1000 dormPc=0 pcs=7 mine=6 skip=6 cells=1 truncHold=0 wdHold=0 noBo
+interp: lerp=3413287 extrap=593700 clamp=60 seg=87526 single=1569213 snapSq=848 snapNpc=181 reissueSq=1713 reissueNpc=72331 restFlip=1355 delay=743 jit=184.2 starve=2 snapMid=3732 restFlipMid=1270 haltDrv=221894 haltCb
+stage : lines=467/10s peak us: frame-end=21579/10090 engine=7067/2150 app:targets=384/142 app:authority=340/44 pub:weaponDrops=175/72
+q     : peak evt=0 ent=89/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=69/26.6KB inv=4/8.3KB med=10/4.6KB census=5/3.8KB stats=5/0.9KB dlg=2/0.3KB
+mixin :  ent=124/113.3KB med=86/39.2KB census=5/17.0KB inv=2/3.3KB stats=3/0.6KB spwnInf=3/0.4KB
+bw    : [net] [net] bandwidth out=9.7 KB/s in=35.5 KB/s (window 5s)
+noBody: noBody=613   wdHold: wdHold=0   frzAct: frzAct=108986
+ERRORS: 0
+  ! [23:51:18.481] [JOIN] INFO: [q] peak evt=0 ent=14/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:51:23.481] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:51:28.485] [JOIN] INFO: [q] peak evt=0 ent=89/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:53:28  KenshiCoop_join.log  lines=68584 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=55 wide=134 drv=99 cen=6 hid=28 ghost=0 supp=35 census=107 fresh=1 parks=3157 nearCap=0 wideCap=0 peerTrunc=0 staleMs=629 edges=1 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBod
+interp: lerp=3985006 extrap=608493 clamp=60 seg=91125 single=1856158 snapSq=1168 snapNpc=208 reissueSq=1846 reissueNpc=74234 restFlip=1418 delay=604 jit=166.5 starve=7 snapMid=3779 restFlipMid=1327 haltDrv=378562 haltC
+stage : lines=528/10s peak us: frame-end=31850/12059 engine=4197/1614 app:targets=460/188 pub:owned=386/118 app:authority=267/76
+q     : peak evt=3 ent=91/4096 inv=3 cen=2 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+mixout: ent=78/25.1KB inv=7/8.7KB med=13/5.9KB stats=6/1.1KB hit=3/0.1KB cam=5/0.1KB
+mixin :  ent=66/66.2KB med=106/48.3KB census=5/16.8KB inv=7/4.8KB stats=3/0.6KB spwnInf=2/0.3KB
+bw    : [net] [net] bandwidth out=8.6 KB/s in=28.0 KB/s (window 5s)
+noBody: noBody=734   wdHold: wdHold=0   frzAct: frzAct=118259
+ERRORS: 0
+  ! [23:53:18.615] [JOIN] INFO: [q] peak evt=0 ent=91/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:53:23.624] [JOIN] INFO: [q] peak evt=0 ent=91/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+  ! [23:53:28.632] [JOIN] INFO: [q] peak evt=3 ent=91/4096 inv=3 cen=2 stealth=0 cam=1 DROPPED ent=74097 stealth=0 cam=0
+===== 23:55:29  KenshiCoop_join.log  lines=74026 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=79 wide=131 drv=93 cen=7 hid=29 ghost=0 supp=36 census=98 fresh=1 parks=3374 nearCap=0 wideCap=0 peerTrunc=0 staleMs=5766 edges=3 ghostMax=-1 ghostEdge=0 dorm=2 attnR=1000 dormPc=1 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBod
+interp: lerp=4346404 extrap=619820 clamp=60 seg=93728 single=2000114 snapSq=1171 snapNpc=314 reissueSq=1888 reissueNpc=76149 restFlip=1491 delay=747 jit=175.5 starve=4 snapMid=4109 restFlipMid=1395 haltDrv=476580 haltC
+stage : lines=425/10s peak us: frame-end=28453/13205 engine=3863/2061 pub:spawns=574/8 app:targets=401/180 pub:owned=341/110
+q     : peak evt=0 ent=79/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=79/25.5KB inv=8/8.8KB med=18/8.2KB stats=4/0.8KB treat=2/0.2KB cam=5/0.1KB
+mixin :  ent=216/220.8KB med=73/33.3KB census=5/15.3KB inv=7/7.6KB stats=3/0.6KB spwnInf=3/0.4KB
+bw    : [net] [net] bandwidth out=9.1 KB/s in=56.3 KB/s (window 5s)
+noBody: noBody=841   wdHold: wdHold=0   frzAct: frzAct=140365
+ERRORS: 0
+  ! [23:55:18.770] [JOIN] INFO: [q] peak evt=0 ent=79/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:55:23.773] [JOIN] INFO: [q] peak evt=1 ent=79/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:55:28.781] [JOIN] INFO: [q] peak evt=0 ent=79/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 23:57:29  KenshiCoop_join.log  lines=81219 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=90 wide=131 drv=94 cen=6 hid=30 ghost=0 supp=37 census=97 fresh=1 parks=3492 nearCap=0 wideCap=0 peerTrunc=0 staleMs=5766 edges=3 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBod
+interp: lerp=4822139 extrap=627532 clamp=61 seg=94948 single=2284624 snapSq=1172 snapNpc=315 reissueSq=1898 reissueNpc=78501 restFlip=1552 delay=779 jit=175.5 starve=2 snapMid=4129 restFlipMid=1461 haltDrv=617551 haltC
+stage : lines=618/10s peak us: frame-end=19431/10982 engine=3021/1635 app:targets=501/171 app:authority=408/83 pub:owned=327/124
+q     : peak evt=0 ent=86/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=72/23.2KB inv=10/9.3KB med=19/8.7KB stats=4/0.8KB census=5/0.2KB cam=5/0.1KB
+mixin :  ent=274/259.8KB med=71/32.4KB census=5/15.2KB inv=9/7.7KB research=11/0.6KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=9.0 KB/s in=65.6 KB/s (window 5s)
+noBody: noBody=948   wdHold: wdHold=0   frzAct: frzAct=143218
+ERRORS: 0
+  ! [23:57:18.935] [JOIN] INFO: [q] peak evt=0 ent=85/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:57:23.938] [JOIN] INFO: [q] peak evt=1 ent=86/4096 inv=2 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:57:28.938] [JOIN] INFO: [q] peak evt=0 ent=86/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 23:59:29  KenshiCoop_join.log  lines=87773 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=80 wide=131 drv=97 cen=4 hid=29 ghost=0 supp=36 census=98 fresh=1 parks=3651 nearCap=0 wideCap=0 peerTrunc=0 staleMs=5766 edges=3 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBod
+interp: lerp=5366984 extrap=637010 clamp=61 seg=96457 single=2545164 snapSq=1172 snapNpc=328 reissueSq=1898 reissueNpc=81595 restFlip=1636 delay=895 jit=174.0 starve=2 snapMid=4264 restFlipMid=1521 haltDrv=795393 haltC
+stage : lines=603/10s peak us: frame-end=25405/10894 engine=3643/1531 app:targets=369/160 app:authority=300/77 pub:owned=291/107
+q     : peak evt=0 ent=81/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=76/24.5KB inv=9/9.1KB med=9/4.1KB stats=7/1.3KB census=5/0.2KB cam=5/0.1KB
+mixin :  ent=234/245.2KB med=79/36.0KB census=5/15.3KB inv=9/7.7KB research=11/0.6KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=8.4 KB/s in=62.3 KB/s (window 5s)
+noBody: noBody=1062   wdHold: wdHold=0   frzAct: frzAct=145652
+ERRORS: 0
+  ! [23:59:19.033] [JOIN] INFO: [q] peak evt=1 ent=82/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:59:24.036] [JOIN] INFO: [q] peak evt=0 ent=82/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [23:59:29.042] [JOIN] INFO: [q] peak evt=0 ent=81/4096 inv=3 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:01:29  KenshiCoop_join.log  lines=94147 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=81 wide=130 drv=89 cen=10 hid=29 ghost=0 supp=36 census=96 fresh=1 parks=3806 nearCap=0 wideCap=0 peerTrunc=0 staleMs=5766 edges=3 ghostMax=-1 ghostEdge=0 dorm=2 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBo
+interp: lerp=5855648 extrap=645066 clamp=61 seg=97136 single=2840943 snapSq=1172 snapNpc=356 reissueSq=1898 reissueNpc=84202 restFlip=1718 delay=740 jit=163.5 starve=2 snapMid=4348 restFlipMid=1610 haltDrv=965334 haltC
+stage : lines=562/10s peak us: frame-end=18853/12994 engine=7382/2267 app:targets=485/140 app:authority=393/84 pub:owned=338/110
+q     : peak evt=0 ent=77/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=75/24.2KB inv=9/8.9KB med=7/3.2KB stats=4/0.8KB census=5/0.2KB wi=2/0.2KB
+mixin :  ent=172/169.2KB med=46/21.0KB census=5/15.0KB inv=7/7.6KB research=11/0.6KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=7.9 KB/s in=45.0 KB/s (window 5s)
+noBody: noBody=1152   wdHold: wdHold=0   frzAct: frzAct=149037
+ERRORS: 0
+  ! [00:01:15.116] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=2 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:01:20.116] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:01:25.122] [JOIN] INFO: [q] peak evt=0 ent=77/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:03:29  KenshiCoop_join.log  lines=100384 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=64 wide=138 drv=97 cen=4 hid=36 ghost=0 supp=37 census=95 fresh=1 parks=3950 nearCap=0 wideCap=0 peerTrunc=0 staleMs=5766 edges=3 ghostMax=-1 ghostEdge=0 dorm=1 attnR=1000 dormPc=0 pcs=7 mine=0 skip=0 cells=1 truncHold=0 wdHold=0 noBod
+interp: lerp=6291240 extrap=653403 clamp=61 seg=98626 single=3066081 snapSq=1172 snapNpc=382 reissueSq=1898 reissueNpc=87024 restFlip=1785 delay=651 jit=163.5 starve=0 snapMid=4543 restFlipMid=1697 haltDrv=1110446 halt
+stage : lines=498/10s peak us: frame-end=18843/11072 engine=4350/1810 app:targets=526/156 pub:owned=296/104 app:authority=248/77
+q     : peak evt=0 ent=74/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=60/19.3KB inv=9/9.7KB med=14/6.4KB stats=4/0.8KB wi=2/0.2KB cam=5/0.1KB
+mixin :  ent=356/337.0KB med=59/26.9KB census=5/14.9KB inv=9/7.7KB research=11/0.6KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=7.7 KB/s in=80.9 KB/s (window 5s)
+noBody: noBody=1222   wdHold: wdHold=0   frzAct: frzAct=153619
+ERRORS: 0
+  ! [00:03:15.305] [JOIN] INFO: [q] peak evt=0 ent=74/4096 inv=2 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:03:20.318] [JOIN] INFO: [q] peak evt=0 ent=74/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:03:25.322] [JOIN] INFO: [q] peak evt=0 ent=74/4096 inv=4 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:05:29  KenshiCoop_join.log  lines=105557 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=25 wide=81 drv=41 cen=16 hid=4 ghost=0 supp=5 census=50 fresh=1 parks=4171 nearCap=0 wideCap=0 peerTrunc=0 staleMs=11159 edges=6 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=20 skip=20 cells=2 truncHold=0 wdHold=0 noBo
+interp: lerp=6493898 extrap=672778 clamp=66 seg=103501 single=3174012 snapSq=1298 snapNpc=382 reissueSq=2645 reissueNpc=89229 restFlip=1850 delay=713 jit=196.3 starve=4 snapMid=4632 restFlipMid=1767 haltDrv=1164232 hal
+stage : lines=293/10s peak us: frame-end=56242/17307 engine=4408/2115 app:targets=271/104 app:authority=271/61 pub:owned=267/80
+q     : peak evt=0 ent=25/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=70/34.6KB census=4/13.9KB inv=4/9.1KB med=14/6.4KB spwnInf=9/1.3KB stats=4/0.8KB
+mixin :  ent=84/77.0KB med=50/22.8KB census=5/7.8KB inv=2/3.2KB stats=7/1.3KB research=11/0.6KB
+bw    : [net] [net] bandwidth out=13.8 KB/s in=23.1 KB/s (window 5s)
+noBody: noBody=1265   wdHold: wdHold=0   frzAct: frzAct=166917
+ERRORS: 0
+  ! [00:05:15.598] [JOIN] INFO: [q] peak evt=0 ent=25/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:05:20.598] [JOIN] INFO: [q] peak evt=0 ent=25/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:05:25.619] [JOIN] INFO: [q] peak evt=0 ent=25/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:07:29  KenshiCoop_join.log  lines=108987 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=25 wide=160 drv=69 cen=12 hid=4 ghost=0 supp=5 census=50 fresh=1 parks=4274 nearCap=0 wideCap=0 peerTrunc=0 staleMs=11159 edges=6 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=75 skip=75 cells=1 truncHold=0 wdHold=0 noB
+interp: lerp=6638246 extrap=685776 clamp=66 seg=105416 single=3230422 snapSq=1298 snapNpc=384 reissueSq=2645 reissueNpc=90218 restFlip=1901 delay=718 jit=196.3 starve=3 snapMid=4684 restFlipMid=1812 haltDrv=1206653 hal
+stage : lines=194/10s peak us: frame-end=27507/21548 engine=5288/1952 app:targets=292/99 pub:weaponDrops=194/74 pub:owned=182/59
+q     : peak evt=1 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=81/27.5KB inv=4/9.1KB census=5/4.4KB med=9/4.1KB stats=6/1.1KB wi=3/0.2KB
+mixin :  ent=64/66.8KB med=51/23.3KB census=4/6.3KB inv=2/3.2KB stats=4/0.8KB research=11/0.6KB
+bw    : [net] [net] bandwidth out=9.7 KB/s in=20.6 KB/s (window 5s)
+noBody: noBody=1265   wdHold: wdHold=0   frzAct: frzAct=173610
+ERRORS: 0
+  ! [00:07:15.812] [JOIN] INFO: [q] peak evt=0 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:07:20.815] [JOIN] INFO: [q] peak evt=1 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:07:25.820] [JOIN] INFO: [q] peak evt=1 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:09:29  KenshiCoop_join.log  lines=111784 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=26 wide=57 drv=38 cen=13 hid=4 ghost=0 supp=5 census=50 fresh=1 parks=4350 nearCap=0 wideCap=0 peerTrunc=0 staleMs=11159 edges=6 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=2 skip=2 cells=1 truncHold=0 wdHold=0 noBody
+interp: lerp=6800450 extrap=699203 clamp=66 seg=107113 single=3290083 snapSq=1298 snapNpc=384 reissueSq=2645 reissueNpc=90717 restFlip=1917 delay=718 jit=166.7 starve=3 snapMid=4722 restFlipMid=1826 haltDrv=1254315 hal
+stage : lines=265/10s peak us: frame-end=25296/18260 engine=6071/2486 app:targets=312/115 app:authority=223/54 pub:sampled=214/54
+q     : peak evt=0 ent=27/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=72/23.9KB inv=4/9.0KB med=9/4.1KB census=5/1.4KB stats=6/1.1KB wi=3/0.2KB
+mixin :  ent=80/80.0KB med=78/35.6KB census=5/7.8KB inv=2/3.2KB stats=5/0.9KB research=11/0.6KB
+bw    : [net] [net] bandwidth out=8.4 KB/s in=26.1 KB/s (window 5s)
+noBody: noBody=1265   wdHold: wdHold=0   frzAct: frzAct=179268
+ERRORS: 0
+  ! [00:09:16.012] [JOIN] INFO: [q] peak evt=0 ent=27/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:09:21.012] [JOIN] INFO: [q] peak evt=1 ent=26/4096 inv=1 cen=2 stealth=0 cam=2 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:09:26.029] [JOIN] INFO: [q] peak evt=0 ent=27/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:11:29  KenshiCoop_join.log  lines=114514 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=28 wide=56 drv=38 cen=12 hid=4 ghost=0 supp=5 census=49 fresh=1 parks=4417 nearCap=0 wideCap=0 peerTrunc=0 staleMs=11159 edges=6 ghostMax=-1 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=2 skip=2 cells=1 truncHold=0 wdHold=0 noBody
+interp: lerp=6997959 extrap=719229 clamp=67 seg=108468 single=3344008 snapSq=1298 snapNpc=385 reissueSq=2645 reissueNpc=91495 restFlip=1948 delay=710 jit=162.2 starve=4 snapMid=4803 restFlipMid=1844 haltDrv=1314059 hal
+stage : lines=319/10s peak us: frame-end=14510/9266 engine=3335/1731 app:targets=204/77 app:authority=144/43 pub:weaponDrops=119/66
+q     : peak evt=0 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=79/26.0KB inv=4/9.0KB med=10/4.6KB stats=8/1.5KB census=5/1.3KB wi=3/0.2KB
+mixin :  ent=64/67.4KB med=77/35.1KB census=4/6.2KB inv=2/3.2KB research=11/0.6KB stats=3/0.6KB
+bw    : [net] [net] bandwidth out=9.0 KB/s in=23.2 KB/s (window 5s)
+noBody: noBody=1265   wdHold: wdHold=0   frzAct: frzAct=183995
+ERRORS: 0
+  ! [00:11:16.212] [JOIN] INFO: [q] peak evt=0 ent=27/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:11:21.221] [JOIN] INFO: [q] peak evt=0 ent=27/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:11:26.221] [JOIN] INFO: [q] peak evt=0 ent=28/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+===== 00:13:29  KenshiCoop_join.log  lines=118360 =====
+build : build 2026-08-15 23:17:20 v0.64
+audit : near=21 wide=168 drv=75 cen=12 hid=5 ghost=1 supp=6 census=47 fresh=1 parks=4466 nearCap=0 wideCap=0 peerTrunc=0 staleMs=11159 edges=6 ghostMax=586 ghostEdge=0 dorm=0 attnR=1000 dormPc=0 pcs=7 mine=75 skip=75 cells=1 truncHold=0 wdHold=0 no
+interp: lerp=7274076 extrap=751916 clamp=68 seg=117054 single=3416837 snapSq=1328 snapNpc=389 reissueSq=2748 reissueNpc=94128 restFlip=2015 delay=659 jit=158.7 starve=8 snapMid=4939 restFlipMid=1955 haltDrv=1397125 hal
+stage : lines=623/10s peak us: frame-end=27298/13242 engine=21454/2284 app:targets=457/121 app:authority=222/63 pub:owned=211/74
+q     : peak evt=0 ent=44/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+mixout: ent=75/28.3KB census=5/17.4KB inv=4/8.8KB med=10/4.6KB spwnInf=7/1.0KB stats=5/0.9KB
+mixin :  ent=111/86.2KB med=61/27.8KB inv=3/7.8KB census=5/7.6KB stats=3/0.6KB treat=6/0.5KB
+bw    : [net] [net] bandwidth out=12.7 KB/s in=28.1 KB/s (window 5s)
+noBody: noBody=1265   wdHold: wdHold=0   frzAct: frzAct=187853
+ERRORS: 0
+  ! [00:13:16.365] [JOIN] INFO: [q] peak evt=0 ent=44/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:13:21.380] [JOIN] INFO: [q] peak evt=0 ent=44/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0
+  ! [00:13:26.388] [JOIN] INFO: [q] peak evt=0 ent=44/4096 inv=1 cen=1 stealth=0 cam=1 DROPPED ent=118379 stealth=0 cam=0

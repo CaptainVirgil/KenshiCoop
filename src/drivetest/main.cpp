@@ -358,7 +358,63 @@ static void t3_walkerSteady() {
     check(faketest::suspendCount() >= 2,
           "T3: both driven walkers AI-suspended this tick");
 
-    // ---- T4 (WITHDRAWN) ----------------------------------------------------
+    // ---- T4: a DOWN transition is read from the NEWEST sample --------------
+    // EntityInterp::sample copies the last received state wholesale and then
+    // overwrites only x/y/z/heading, so out.bodyState lags by the render delay.
+    // The drive's down test used to read exactly that, so a knockout landed a
+    // render delay late - measured delay=748 ms on a live join, reported as
+    // "enemies with 0 blood are staying up too long".
+    //
+    // The FIRST attempt at this pin passed with the fix reverted, i.e. proved
+    // nothing, because a fast cadence keeps renderDelay tiny and out.bodyState
+    // == latest().bodyState. renderDelay is avgInterval + 2*jitter + lag with a
+    // ceiling that SCALES on avgInterval (Interp.cpp), so the delay is forced
+    // here by feeding a deliberately SLOW mid-band-like cadence - and the test
+    // asserts the delay actually got large before trusting its own conclusion.
+    // A pin that cannot fail is worse than no pin.
+    {
+        faketest::reset();
+        static const unsigned int HD[5] = { 1u, 77u, 4242u, 1u, 990099u };
+        Character* cd = faketest::addChar(HD, 500.0f, 0.0f, 500.0f, false);
+        const unsigned long t0d = qnow();
+        const unsigned long STEP = 400;   // mid-band-ish cadence
+        unsigned int pushed = 0;
+        bool sentDown = false;
+        faketest::CharLedger beforeDown;
+        std::memset(&beforeDown, 0, sizeof(beforeDown));
+        unsigned long delaySeen = 0;
+        for (;;) {
+            const unsigned long el = qnow() - t0d;
+            while (!sentDown && pushed < 9 && (pushed * STEP) <= el) {
+                EntityState e = mkState(HD, 500.0f + 4.0f * pushed, 0.0f, 500.0f,
+                                        10.0f, true);
+                in->pushEntity(0, (u32)(t0d + pushed * STEP), e);
+                ++pushed;
+            }
+            if (!sentDown && pushed >= 9 && el >= 9 * STEP) {
+                delaySeen = r->debugInterpDelayMs(HD);
+                beforeDown = faketest::led(cd);
+                EntityState down = mkState(HD, 500.0f + 4.0f * 9, 0.0f, 500.0f,
+                                           0.0f, false);
+                down.bodyState = (unsigned short)BODY_DOWN;
+                in->pushEntity(0, (u32)(t0d + 9 * STEP), down);
+                sentDown = true;
+            }
+            r->ingest(*in);
+            r->applyTargets(gw);
+            if (sentDown) break;          // assert on the FIRST tick after DOWN
+            if (el > 8000) break;
+        }
+        const faketest::CharLedger afterDown = faketest::led(cd);
+        // Guard the guard: without a large delay this test is vacuous.
+        check(delaySeen >= 250,
+              "T4: the slow cadence actually forced a large render delay");
+        check((afterDown.knockDown + afterDown.holdDown) >
+              (beforeDown.knockDown + beforeDown.holdDown),
+              "T4: a DOWN sample collapses the copy on the tick it arrives");
+    }
+
+    // ---- T4 note -----------------------------------------------------------
     // A pin for "the DOWN transition is read from interp.latest(), not from the
     // interpolated sample" was written here and then REMOVED, deliberately.
     //

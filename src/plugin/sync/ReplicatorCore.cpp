@@ -106,6 +106,15 @@ Replicator::Replicator()
     weatherLastName_[0] = '\0';
 }
 
+unsigned long Replicator::debugInterpDelayMs(const unsigned int hand[5]) const {
+    if (!hand) return 0;
+    Key k; k.t = hand[0]; k.c = hand[1]; k.cs = hand[2];
+    k.i = hand[3]; k.s = hand[4];
+    std::map<Key, Driven>::const_iterator it = targets_.find(k);
+    if (it == targets_.end()) return 0;
+    return it->second.interp.lastDelayMs();
+}
+
 Character* Replicator::localCharForStreamed(const unsigned int inHand[5]) {
     if (!inHand) return 0;
     Character* c = engine::resolveCharByHand(inHand[3], inHand[4], inHand[0],

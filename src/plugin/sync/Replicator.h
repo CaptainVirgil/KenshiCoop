@@ -1196,8 +1196,14 @@ private:
     // (a parked Garru streams cSpeed=15.2 and was mover-classified forever),
     // and one-send-per-rotation suppression of the scan-overlap double-sends
     // whose 50 ms segments flapped the receiver's tier classifier.
+    // bodyState/task are u16 ON THE WIRE and must be stored at full width here.
+    // They were unsigned char in v0.65, which silently truncated bits 8-15:
+    // BODY_CHAINED is 1<<8 and BODY_PRONE_MASK is 7<<9, so the near-band change
+    // gate could not see a shackle or a prone-posture transition at all, and a
+    // task id above 255 aliased. Those rows waited for the 200 ms keepalive
+    // instead of sending on the change. MSVC warned (C4244) and it shipped.
     struct MidSent { unsigned long ms; float x, y, z;
-                     unsigned char bodyState; unsigned char task; };
+                     u16 bodyState; u16 task; };
     std::map<Key, MidSent> midSent_;
     // NEAR-band last-sent state, for the v0.65 change gate. Same shape and same
     // 512/60s prune as midSent_ - see the gate in publishOwned for why the
@@ -2380,6 +2386,11 @@ private:
     // nothing about the peer, and every caller must fail OPEN on that.
     unsigned int peerAnchors(GameWorld* gw, float* out);
 public:
+    // Test seam: the render delay the interpolator last used for one streamed
+    // hand. drivetest asserts this is LARGE before testing whether a decision
+    // reads the delayed sample or the newest one - without that assertion the
+    // test silently passes either way (it did, once).
+    unsigned long debugInterpDelayMs(const unsigned int hand[5]) const;
     // Presence authority (protocol 49). Publish a claim for each cell our own
     // tabs stand in and drain the peer's, both at ~1 Hz on the reliable
     // channel. No-op with cellAuth_ off, so nothing is on the wire until the

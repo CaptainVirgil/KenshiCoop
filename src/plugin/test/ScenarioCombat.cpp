@@ -468,7 +468,11 @@ private:
                 Character* s = engine::resolveCharByHand(striker[3], striker[4],
                                                          striker[0], striker[1],
                                                          striker[2]);
-                engine::CombatRead cr;
+                // Zero-init: cr is only READ when readCombat returned true, so
+                // this is a compiler flow-analysis false positive (C4701) - but
+                // the build promotes that warning to an error, and stating the
+                // initial value is cheaper than teaching the compiler.
+                engine::CombatRead cr; memset(&cr, 0, sizeof(cr));
                 bool fighting = s && engine::readCombat(s, &cr) && cr.inCombat;
                 if (fighting && !(cr.hasTarget && cr.target[3] == vic[3] &&
                                   cr.target[4] == vic[4])) {
