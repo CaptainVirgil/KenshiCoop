@@ -393,11 +393,31 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
         // drive into a UAF. On failure, destroy it and treat as a failed mint.
         // Mirrors the ~1 Hz syncSpawns sweep, closing the gap at mint time.
         {
+            // LIVENESS is readHand, not a resolveCharByHand round-trip.
+            //
+            // The guard's purpose is to refuse a mint that handed back a pointer
+            // we would later drive into a use-after-free. readHand dereferences
+            // the object under SEH, so its success IS that proof - which is
+            // exactly the standard localCharForStreamed and the drive's viaProxy
+            // path already use ("readHand doubles as the liveness proof").
+            //
+            // Demanding that the engine also resolve the body back BY HAND asks
+            // a minted proxy for the one thing it is known not to do: the engine
+            // cannot reliably address a proxy by its hand. That false negative
+            // was catastrophic here rather than merely lossy - the body was
+            // despawned, never bound into proxyByKey_, and the peer's request
+            // therefore re-armed, so the same NPC was minted and thrown away
+            // over and over. Measured on the host, 2026-08-16: 51 REQs for one
+            // hand and repeated "[spawn] proxy FAILED" on the same body, while
+            // the answering side reported found=1 every time. Players saw it as
+            // "people/enemies are duplicating over and over" - every cycle that
+            // failed to despawn cleanly left another copy standing.
+            //
+            // Same root cause as the v0.64 medical fix and the v0.65
+            // sweepCarries fix: resolveCharByHand is proxy-blind, and using it
+            // as a predicate silently inverts the answer.
             unsigned int ph[5];
-            Character* back = 0;
-            if (engine::readHand(proxy, ph))
-                back = engine::resolveCharByHand(ph[0], ph[1], ph[2], ph[3], ph[4]);
-            if (back != proxy) {
+            if (!engine::readHand(proxy, ph)) {
                 engine::despawnProxyNpc(gw, proxy);
                 rq.deniedMs = now;
                 char b[176]; _snprintf(b, sizeof(b) - 1,
@@ -406,6 +426,10 @@ void Replicator::syncSpawns(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerI
                 b[sizeof(b) - 1] = '\0'; coop::logLine(b);
                 continue;
             }
+            // Not fatal, but worth seeing: a proxy the engine CAN address by
+            // hand is the happy case, and a change in that rate is a signal.
+            if (engine::resolveCharByHand(ph[0], ph[1], ph[2], ph[3], ph[4]) != proxy)
+                ++proxyUnaddressable_;
         }
         proxyByKey_[k] = proxy;
         ++mintedThisTick;

@@ -358,6 +358,23 @@ static void t3_walkerSteady() {
     check(faketest::suspendCount() >= 2,
           "T3: both driven walkers AI-suspended this tick");
 
+    // ---- T4 (WITHDRAWN) ----------------------------------------------------
+    // A pin for "the DOWN transition is read from interp.latest(), not from the
+    // interpolated sample" was written here and then REMOVED, deliberately.
+    //
+    // It passed with the fix AND with the fix reverted, i.e. it proved nothing.
+    // The reason is a real limit of this harness: EntityInterp::sample falls
+    // back to the newest snapshot whenever the ring is short, so out.bodyState
+    // and latest().bodyState are the same value here. The defect only appears
+    // once the adaptive render delay has grown large (measured 748 ms on a live
+    // join), and nothing in this harness drives the delay up.
+    //
+    // Keeping a green test that cannot fail would be worse than having none -
+    // it is the "a green gate is not a launched game" trap this project is
+    // named after. To pin it, the harness first needs a way to force a large
+    // render delay (feed a jittery cadence until interp reports one, then
+    // assert against it). Recorded rather than faked.
+
     delete r;
     delete in;
 }

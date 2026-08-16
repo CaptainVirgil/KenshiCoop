@@ -816,7 +816,15 @@ void Replicator::applyTargets(GameWorld* gw) {
         // deathLatched is untouched. A corpse does not stand up, and that latch is
         // the only thing holding a body dead across a hand re-key.
         if (d.koLatched && !d.deathLatched) {
-            if (coop::bodyIsDown(out.bodyState)) {
+            // Same reasoning as the down test below: the owner's CURRENT word,
+            // not the delayed one. Releasing a KO latch against a stale sample
+            // is the inverted-action class this file warns about.
+            unsigned short relBs = out.bodyState;
+            {
+                EntityState rb; float rvx, rvy, rvz;
+                if (d.interp.latest(&rb, &rvx, &rvy, &rvz)) relBs = rb.bodyState;
+            }
+            if (coop::bodyIsDown(relBs)) {
                 d.koSeeTick = 0; d.koSeeSample = 0;   // owner still says down
             } else {
                 if (d.koSeeTick == 0) {
@@ -843,8 +851,24 @@ void Replicator::applyTargets(GameWorld* gw) {
         // deathLatched/koLatched from the old key onto the new one (2026-07-15);
         // without that carry a dead body that re-containers would fall through
         // to the drive path below and the local AI would stand it back up.
+        // DOWN reads the NEWEST sample, not the interpolated one. The doctrine
+        // is explicit that EntityInterp::sample copies the last received state
+        // wholesale and then overwrites only x/y/z/heading, so out.bodyState
+        // lags by the render delay plus a send interval - and this is exactly
+        // the "did a transition happen?" question the doctrine says `out`
+        // cannot answer. Measured on the join 2026-08-16: delay=748 ms, so a
+        // knockout landed at least three quarters of a second late and players
+        // reported "enemies with 0 blood are staying up too long".
+        //
+        // Position still comes from `out` below - that is what interpolation is
+        // FOR. Only the transition test moves to latest().
+        unsigned short downBs = out.bodyState;
+        {
+            EntityState nb; float nvx, nvy, nvz;
+            if (d.interp.latest(&nb, &nvx, &nvy, &nvz)) downBs = nb.bodyState;
+        }
         if (!crawling &&
-            (coop::bodyIsDown(out.bodyState) || d.deathLatched || d.koLatched)) {
+            (coop::bodyIsDown(downBs) || d.deathLatched || d.koLatched)) {
             unsigned short localBs = engine::readBodyState(c);
             if (!coop::bodyIsDown(localBs)) engine::knockDown(c, true);
             else                            engine::holdDown(c);

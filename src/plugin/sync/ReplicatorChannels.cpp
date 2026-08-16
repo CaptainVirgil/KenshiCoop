@@ -2642,6 +2642,8 @@ void Replicator::syncWeather(Inbound& in, NetLink& net, u32 ownerId,
     }
 }
 
+static const float SLEW_RATE_PER_S_C = 0.35f;
+
 void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
                           bool isHost) {
     std::deque<InboundTime> got;
@@ -2675,6 +2677,38 @@ void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
         if (timeSeqSeen_ != 0 && (long)(it->pkt.seq - timeSeqSeen_) <= 0) continue;
         timeSeqSeen_ = it->pkt.seq;
         newest = &it->pkt;
+    }
+    // ---- PER-FRAME SLEW RAMP ---------------------------------------------
+    // Runs BEFORE the "no new sample" return, and that placement is the whole
+    // point. The ramp used to live below, after this return, so it evaluated
+    // only when a time packet arrived (~1 Hz): dt was ~1.0 s every time and
+    // clamped to 1.0, so each evaluation applied the FULL 0.35 at once. It was
+    // written as a ramp, described in its own comment as making "the sim rate
+    // MOVE rather than jump", and shipped as a 0.35 step once a second - which
+    // is what players reported on 2026-08-16 as speeds feeling funky when the
+    // two clients disagree. Ramping here, at frame rate, against real elapsed
+    // time is what that comment always claimed.
+    {
+        const float RATE = SLEW_RATE_PER_S_C;
+        const unsigned long lastMs = timeSlewRampMs_;
+        timeSlewRampMs_ = now;
+        float dt = (lastMs == 0) ? 0.0f : (float)(now - lastMs) / 1000.0f;
+        if (dt > 0.25f) dt = 0.25f;   // a long gap must not authorise a jump
+        if (dt > 0.0f && timeSlewTarget_ > 0.0f) {
+            const float step = RATE * dt;
+            float ns = timeSlew_;
+            if (timeSlewTarget_ > timeSlew_ + step)      ns = timeSlew_ + step;
+            else if (timeSlewTarget_ < timeSlew_ - step) ns = timeSlew_ - step;
+            else                                         ns = timeSlewTarget_;
+            if (fabs(ns - timeSlew_) > 0.0001f) {
+                timeSlew_ = ns;
+                // Re-assert through the consensus layer so the engine actually
+                // runs at the ramped rate rather than the last stepped one.
+                if (speedLastSet_ > 0.01f)
+                    engine::writeGameSpeedQuiet(gw, slewedEffective(speedLastSet_),
+                                                speedLastSet_ <= 0.01f);
+            }
+        }
     }
     if (!newest) return;
     double local = -1.0;
@@ -2728,22 +2762,11 @@ void Replicator::syncTime(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId,
     // the difference between "the world is slightly fast" and "the game
     // stuttered into slow motion". 0.35/s crosses the full 0.5..2.0 range in
     // ~4 s and is under the ~0.5/s where a speed change reads as a step.
-    const float SLEW_RATE_PER_S = 0.35f;
-    {
-        const unsigned long lastMs = timeSlewRampMs_;
-        timeSlewRampMs_ = now;
-        float dt = (lastMs == 0) ? 0.0f : (float)(now - lastMs) / 1000.0f;
-        if (dt > 1.0f) dt = 1.0f;   // a long gap must not authorise a jump
-        if (dt > 0.0f) {
-            const float step = SLEW_RATE_PER_S * dt;
-            if (newSlew > timeSlew_ + step)      newSlew = timeSlew_ + step;
-            else if (newSlew < timeSlew_ - step) newSlew = timeSlew_ - step;
-        } else {
-            newSlew = timeSlew_;    // first sample: hold, ramp from the next
-        }
-    }
+    // The measurement sets the TARGET; the per-frame block above walks toward
+    // it. Nothing here changes timeSlew_ directly any more - a measurement that
+    // moved the rate instantly is exactly the step this fix removes.
+    timeSlewTarget_ = newSlew;
     bool slewChanged = fabs(newSlew - timeSlew_) > 0.01f;
-    timeSlew_ = newSlew;
 
     // Apply through the consensus layer immediately (its continuous
     // enforcement would converge next tick anyway; this shaves the latency).

@@ -1204,6 +1204,8 @@ private:
     // keepalive must stay under the receiver's 250 ms tier threshold.
     std::map<Key, MidSent> nearSent_;
     unsigned long nearStillSup_;  // near-band rows suppressed as unchanged (telemetry)
+    unsigned long proxyUnaddressable_; // minted proxies the engine cannot resolve by hand
+    float         timeSlewTarget_;    // slew the per-frame ramp is walking toward (-1 = none)
     unsigned long midResendSup_;  // cumulative suppressed re-sends (telemetry)
     // The mid-band rows emitted for the CURRENT slice. Rebuilt only when the
     // slice cursor advances (50 ms), then re-emitted on every render frame:
