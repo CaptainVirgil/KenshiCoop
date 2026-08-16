@@ -1,3 +1,84 @@
+# Handoff — 2026-08-16 (night session, two players live)
+
+> **FIRST ACTION NEXT SESSION — one question, ten seconds.**
+> Enemies at 0 blood stay standing on the JOIN's screen. Ask the host:
+> **is that same enemy down on YOUR screen?**
+> - down on his, up on the join -> ours, and task #50 names the cause and the fix.
+> - up on both -> not sync at all. Kenshi does not knock a body over for blood
+>   alone; it bleeds out over time. Two of my three theories tonight died to
+>   evidence I could have gathered first. Ask before building.
+
+## Where the code is
+
+`v0.65` is the last RELEASE. `main` is **four commits past it and unreleased**,
+held at the player's request:
+
+| | |
+|---|---|
+| `e2b0384` | duplication fix (proxy-blind post-mint liveness), slew per-frame ramp |
+| `d7a335a` | correctness warnings promoted to errors; a no-op "fix" reverted |
+
+Gate green: prototest 745, tunneltest 17, netlinktest 48, drivetest 24,
+contract 38. Both players are on **v0.64** - they never updated to v0.65, so the
+near-band change gate has NEVER RUN LIVE. Its first reading should be a large
+`nearSup=` on `[census] sent` and a fall in the `ent=` share of `[net] mix out`.
+
+## Tonight's logs
+
+Archived to `dist/logs-2026-08-16/` (join 14 MB, host 9 MB, plus a 2-minute
+probe digest). The `.prev` rotation bug that ate the previous session's log is
+fixed in v0.65, but these are kept because the fix is not in the players' build.
+
+## The one shape behind almost everything
+
+`engine::resolveCharByHand` **cannot address a minted proxy**. Three separate
+player-visible bugs were all this, in three different files:
+
+- v0.64 - NPC and enemy health never applied (apply paths).
+- v0.65 - bodies stuck mid-carry or in furniture (`sweepCarries`).
+- unreleased - **"people/enemies are duplicating over and over"**: the post-mint
+  liveness guard verified a fresh proxy with `resolveCharByHand`, so a false
+  negative DESTROYED the body, never bound it, and let the peer re-request -
+  51 REQs for one hand on the host log. Liveness is now `readHand`, which is
+  what `localCharForStreamed` and the drive's viaProxy path already use.
+
+**Before writing another fix, grep for `resolveCharByHand` used as a predicate.**
+Every remaining one is a candidate.
+
+## Two things I got wrong, recorded so they are not repeated
+
+1. **A fix that fixed nothing.** I rerouted the drive's DOWN test through
+   `interp.latest()`. `sample()` already copies every non-positional field from
+   the newest received snapshot, so it was the same value by a longer path. The
+   drivetest case I wrote passed with the fix reverted - that is what exposed
+   it. Reverted; reasoning left in the source.
+2. **A vacuous test.** The first version of that pin could not fail. Deleting it
+   was better than keeping a green check. The second version asserts the harness
+   forced a large render delay BEFORE testing anything against it.
+
+## Still open, and what each needs
+
+| # | Item | Needs |
+|---|---|---|
+| 50 | 0-blood enemies stay up - KO edge detected by diffing the PUBLISHED buffer, so a mid-band body cannot be noticed for up to ~1.5 s | the question at the top, then a publish-side fix |
+| 43 | Publish harness | the big unlock; `ReplicatorPublish.cpp` compiles standalone (verified), so the remaining work is engine fakes + a NetLink sink |
+| 48 | Items despawn on a too-far transfer | one reproduction on v0.65+; `[xfer] FOLD-LOSS` and `lostItems=` will now record it |
+| 46 | Render delay runs 4-5x its band (740-887 ms vs 50-200) | root is architectural: both players in ONE cell means the host authors everything and the join drives 112 bodies |
+| 34 | Buy-probe | one building purchase on a Harness build |
+| 41 | The publish wedge | only closable if it recurs; all 42 stages now name themselves |
+
+## Live numbers worth keeping
+
+- `ent` is ~87% of outbound; 472 KB per 5 s window, 94 KB/s, ~3x the 36 KB/s
+  CLAUDE.md records as steady state.
+- `noBody=471` - state arriving for bodies this client has no copy of at all.
+  Different from the v0.64 bug and only visible because v0.64 started counting.
+- `frzAct=88487` census freeze actuations.
+- `DROPPED ent=74097`, flat all session - one load-time burst, not ongoing.
+  (v0.65's per-window field will say which without ambiguity.)
+
+---
+
 # Handoff — 2026-08-11 (overnight, unattended)
 
 > **v0.63 supersedes v0.62. Take it.** v0.62 shipped a regression in its own
