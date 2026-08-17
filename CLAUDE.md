@@ -98,6 +98,12 @@ regressions shipped green through this gate and were caught by players
 (the v0.51 mid-rest hold, the v0.57 tier hysteresis). Its T2 pins deliberately
 document CURRENT behaviour including a known defect (a released body's AI is
 not suspended) - read the comments before "fixing" a failing pin.
+`authoritytest` (2026-08-16) extends the same pattern to the publish/authority
+side: it links the real `ReplicatorPublish.cpp` + `ReplicatorAuthority.cpp`
+against the fake engine plus a link-substituted NetLink ledger
+(`src/authtest/NetLinkFakes.cpp`), and found four real bugs while being
+written — including the census-dual-semantic trap the authority design
+predicted about itself. Extend it before touching Items or Channels.
 
 Both gates run `prototest`
 (exact packed sizes and field offsets for every struct in `Wire.h`, `PROTOCOL_VERSION`,
@@ -279,8 +285,25 @@ violation.
 - **A hold must be applied at both ends.** `xferLatch_` in `ReplicatorItems.cpp` is the
   reference implementation.
 - **Absence is not evidence.** A truncated census or a capped enumeration means "unknown",
-  not "gone". Broadcasting it as absence makes the peer delete real bodies. (The census
-  publish path still does this — it is a known open bug, not a rule being followed.)
+  not "gone". Broadcasting it as absence makes the peer delete real bodies. Applied three
+  times now: the census truncation bit (protocol 58), the receiver's unstreamed gate, and
+  the item-transfer detector (v0.71 — a truncated 64-entry capture was DIFFED, so boundary
+  items "vanished" between scans and a phantom loss could pair with a real gain and move
+  an item nobody dragged). Any new code that diffs an enumeration must check its
+  truncated flag first.
+- **Exemptions on one divergence signal ship in pairs.** Freeze and park both act on the
+  same "copy has diverged" signal. v0.66 exempted injured bodies from the freeze but not
+  the park, and the un-paired half composed into the teleport-run loop: park teleports the
+  body, AI (not frozen) runs it back, park teleports it again — the visible "enemies
+  teleporting out of one another". An exemption added to one actuator goes into every
+  actuator reading the same signal, in the same commit; the site comment in
+  `ReplicatorAuthority.cpp` names this rule.
+- **The configured role is a request; the negotiated role is a fact.** Anything keyed on
+  `g_cfg` role breaks the moment the F2 panel switches it — this machine configures HOST
+  and plays join every session. It broke the log filename (fixed), then the authority
+  arbiter (v0.68→v0.70: a false arbiter emitted a competing map and the real one decayed
+  to nothing, 1000+ liveness revokes in an hour). Key on what the handshake decided —
+  `g_net.localId()` — evaluated per tick, and clear derived state on demotion.
 - **A debounce counts stream progress, not wall clock.** `sample()` re-serves the same
   snapshot for seconds after a peer goes quiet, so a time-only window expires against the
   very sample it exists to wait out. `healDue()` requires `interp.newestMs()` to advance.

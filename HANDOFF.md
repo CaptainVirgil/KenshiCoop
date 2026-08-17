@@ -1,4 +1,46 @@
-# Handoff — 2026-08-16 (authority overhaul day)
+# Handoff — 2026-08-16 late night (the live-iteration ladder)
+
+> **v0.71 IS THE RELEASE TO TAKE. Skip v0.67–v0.70 — all five are protocol 59
+> and interoperate, but each fixed a defect the previous one shipped, and only
+> v0.71 has all of them.** The local install is PENDING: Kenshi was running at
+> handoff time — run `scripts/linux/update-kenshicoop.sh` once it closes. The
+> brother runs his updater as usual.
+>
+> The ladder, one live session per rung, each defect caught by the monitor or
+> the players within minutes of going live:
+>
+> | | shipped | fixed |
+> |---|---|---|
+> | v0.67 | all 7 authority steps | — |
+> | v0.68 | `authArbiter_` flag | v0.67's DUAL ARBITER: both clients emitted assign maps because the gate was `streamNpcs_`, true on both under cellAuth |
+> | v0.69 | paired park exemptions | v0.68's TELEPORT-RUN LOOP (freeze exempted injured bodies, park did not — the two act on the same divergence signal, so the un-paired half fired alone) + the corpse fountain (parks on down/dead bodies) |
+> | v0.70 | arbiter = negotiated role | v0.68/69 keyed the arbiter on the CONFIGURED role. Virgil configures HOST and panel-switches to join ⇒ false arbiter on his machine, map decays (revokes 1000+, join→2 by gen=991, watched live). Now `g_net.localId() == 0` per tick, and a demoted arbiter wipes assignMap_/assignSent_/liveness state |
+> | v0.71 | xfer truncation guard | the transfer detector diffed a 64-entry capture and ignored the truncated flag — boundary items "vanish" between scans, and a phantom loss can pair with a real gain and MOVE an item nobody dragged. Best mechanism yet for #48. Truncated ⇒ skip that bag this tick, `xferTrunc=` counts |
+>
+> **The design is validated.** v0.69 ran ~10 minutes with a true arbiter before
+> the decay set in: join-side delay 50 ms (from 741), snapSq 0 (from 11,483),
+> parks 5 (from 456), map split 48/54. That window is the number the redesign
+> was built to produce.
+>
+> **The live gate for v0.71, in order:**
+> 1. `[auth] map` join= holding ~half the population for a full hour (decay
+>    to single digits = the v0.70 fix did not land).
+> 2. `LIVENESS revoke` total near ZERO (1050 in tonight's broken session).
+> 3. Join `[interp]` delay sustained 50–200 ms, snapSq ~0.
+> 4. Host's own numbers NOT degraded (flicker must shrink, not migrate).
+> 5. `xferTrunc=` on [audit] — nonzero while looting big containers is the
+>    guard working, not a bug.
+>
+> **Item-loss triage now starts with a question: "did you sell anything?"**
+> Tonight's four FOLD-LOSS sightings were a shop sale — a vendor counter is a
+> container the tracker does not watch, so a sale reads as loss by
+> construction. Third time this week a one-line player answer beat a theory.
+>
+> Open and unexplained: `[wi] scan` rollup shows `baselined=0 streamed=0` all
+> session — the ground-item channel is enumerating nothing. Needs both logs
+> from a session where loot demonstrably hit the ground.
+
+# Previous handoff — 2026-08-16 (authority overhaul day)
 
 > **v0.67 IS RELEASED — PROTOCOL 59, A HARD CUT. Both players must update
 > before they can connect at all.** Installed and verified on this machine;

@@ -8,19 +8,22 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`v0.67` is the current public release — protocol 59, a HARD CUT, carrying the
-full authority redesign (docs/AUTHORITY-DESIGN.md, all seven steps). Installed
-and unplayed; the live gate and its rollback lever are in HANDOFF.md.**
-Eleven releases across two evenings, every one shaped by what two humans hit
-while actually playing. v0.62 was the first cut with no player at the keyboard:
-it came from the session logs plus an audit run after they went offline, and its
-hold list (below) is as much of the output as its fixes.
+**`v0.71` is the current public release — protocol 59. The authority redesign
+(docs/AUTHORITY-DESIGN.md, all seven steps) shipped as v0.67 and was then
+hardened across four live-iteration releases in one night — v0.68 (single
+arbiter), v0.69 (paired park exemptions), v0.70 (arbiter follows the
+NEGOTIATED role, not the configured one), v0.71 (truncated inventory captures
+are not diffed). The ladder and the live gate are in HANDOFF.md.** The design
+is validated by measurement: a ~10-minute true-arbiter window on v0.69 took the
+join's render delay from 741 ms to 50, squad snaps from 11,483 to 0, parks
+from 456 to 5. v0.62 remains the only cut made with no player at the keyboard;
+every other release was shaped by what two humans hit while actually playing.
 
 | | |
 |---|---|
-| Protocol | **58** — census truncation bit (2026-08-10), after 57 (mod fingerprint) and 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
-| Public release | `v0.67` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect to it |
-| Local build | protocol 58; the banner's build stamp is now the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log again |
+| Protocol | **59** — authority assertions: `PKT_AUTH_ASSIGN` + census author tail (2026-08-16), after 58 (census truncation bit), 57 (mod fingerprint), 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
+| Public release | `v0.71` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect. v0.67–v0.70 CAN connect but are superseded; each shipped a defect the next one fixed |
+| Local build | protocol 59; the banner's build stamp is the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log |
 | Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |
 | Interop | any release before the current protocol will NOT connect — the handshake compares `PROTOCOL_VERSION`, not the label |
 
@@ -149,7 +152,6 @@ at ~900 KB/s); Kenshi's per-frame engine-call budget is.
 | 50 | **Per-frame time budget.** Plugin cost scales with town size. The mid band already round-robins and the wide sweep is throttled, but there is no global budget: stamp a counter at tick entry, stop issuing engine calls past ~2 ms, resume next frame from a cursor. Makes plugin cost independent of how many NPCs are loaded |
 | 51 | **Cache hand→`Character*` resolution.** Every pass re-resolves each hand from scratch (deliberate: a despawn degrades to a skip). Hundreds per frame in a town. Wants a generation-stamped cache with a cheap validity check, invalidated where the session reset already clears pointer caches |
 | 52 | **`captureLite` audit.** Doctrine says the authority passes pay ~14 engine calls per body and discard all but hand and position. Verify per call site, flip the ones that over-capture |
-| 53 | **Split authority by hand-hash inside a contested cell.** Cell authority splits by SPACE, so two players in one cell means the host authors all ~216 NPCs and drives none while the join drives all of them. A stable hash of the (save-stable) hand splits the duty with no spatial boundary and therefore no handoff churn. Safest increment: split the DRIVE/publish duty only, leaving existence/census authority with the host, so neither client can cull the other's half |
 
 ## Phase 4 — known bugs, not yet worth their fix
 
@@ -190,6 +192,7 @@ check and forces the decision to be made deliberately.
 | **Raise `combatSnapDist_` (H8)** | DONE v0.66, but NOT by raising it. The veto had reused a 20 u CONVERGENCE constant as its range and could never fire (1,679 snaps, median 89.9 u, none <= 20; `snapCbt=727 snapVeto=0`). It has its own `COMBAT_VETO_MAX_DIST` = 120 u; `COMBAT_SNAP_DIST` is untouched. Pinned in Contract.Tests.ps1, because ReplicatorUtil.h is not includable from prototest |
 | **Time-slew ramp hoist (H6)** | DONE v0.66. The ramp sat after `syncTime`'s "no new sample" return, so it fired at ~1 Hz with `dt` clamped to 1.0 and applied its full 0.35 as a STEP. Now ramps per frame toward a stored target |
 | **Log burst suppressor (H1)** | REJECTED permanently. Per-line flush is what makes a crash keep its tail. v0.63 shipped the line-rate COUNTER only; fix a storm, never hide one |
+| **Hand-hash authority split in a contested cell (was 53)** | SUPERSEDED by the authority redesign, v0.67–v0.71. The shipped design is that item grown up: hContainer PARITY (77/76 measured, squad-coherent — hSerial parity was 153/0, pointer-aligned garbage) instead of a raw hash, ASSERTED by the negotiated host over the wire instead of derived independently on each end, with an eligibility veto, spawn grants, and liveness revoke. docs/AUTHORITY-DESIGN.md records the killed alternatives |
 
 ## The one shape behind most of v0.64-v0.66
 
