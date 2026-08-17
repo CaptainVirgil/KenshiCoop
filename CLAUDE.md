@@ -303,6 +303,15 @@ violation.
   teleporting out of one another". An exemption added to one actuator goes into every
   actuator reading the same signal, in the same commit; the site comment in
   `ReplicatorAuthority.cpp` names this rule.
+- **Transport-connected is not a session.** ENet's connect completing proves a
+  route exists, not that the handshake ran: until WELCOME assigns an id, there is
+  no peer, and a client's `localId()` deliberately reads `OWNER_ID_ALL`, not 0 —
+  0 is the HOST's id, and reading it pre-WELCOME made every half-open connection
+  a false host (2026-08-16: a Steam relay flip produced six minutes of 2 s
+  half-connections, each running the authority sweep — NPCs visibly blinking).
+  Anything session-scoped gates on `g_net.sessionUp()`, never on "the socket
+  connected". Corollary: a handshake packet sent once per connection is a
+  packet with no retry — HELLO re-sends on a timer while unanswered.
 - **The configured role is a request; the negotiated role is a fact.** Anything keyed on
   `g_cfg` role breaks the moment the F2 panel switches it — this machine configures HOST
   and plays join every session. It broke the log filename (fixed), then the authority

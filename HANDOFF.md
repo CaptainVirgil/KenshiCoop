@@ -1,6 +1,40 @@
-# Handoff — 2026-08-16 late night (the live-iteration ladder)
+# Handoff — 2026-08-17 (the night ended by a relay flip)
 
-> **v0.72 IS THE RELEASE TO TAKE. Skip v0.67–v0.71 — all six are protocol 59
+> **v0.73 IS THE RELEASE TO TAKE — installed on this machine already; the
+> brother runs his updater.** Protocol 59 (v0.67+ interoperate); each release
+> since v0.67 fixed a defect the previous one shipped, so both players run the
+> newest.
+>
+> **The second session on 2026-08-16 never actually reconnected, and nobody
+> could tell.** Post-mortem from BOTH logs (his clock runs 2 h behind):
+> mid-play the Steam P2P session dropped and re-established with the ends
+> DISAGREEING on the route — host `relay=1`, join `relay=0`. Every ENet
+> connect then completed while the one-shot HELLO never arrived (host:
+> `peer connecting (awaiting HELLO)` → dead ~100 ms later, every 2 s, six
+> minutes). The players discovered it when a beakthing fight happened on one
+> screen only. Meanwhile each half-open window ran the join's authority sweep
+> as a FALSE HOST — a client's `localId()` read 0 (the host's id) until
+> WELCOME — hiding NPCs and un-hiding them on teardown: the visible
+> "NPCs disappearing and reappearing" (churn 2710/1853).
+>
+> v0.73 is that incident, fixed four ways (no wire change):
+> 1. `sessionUp()` — a half-open connection is not a session. localId() is
+>    OWNER_ID_ALL until WELCOME; arbiter, authority/census arms, cell claims
+>    and cam hints all gate on a COMPLETED handshake.
+> 2. HELLO re-sends every 500 ms inside a held connection (was one-shot).
+> 3. The join slot is id 1, reused — the old `nextId++` would have rejected
+>    the first same-run reconnect as a "third player".
+> 4. Five dead handshakes → loud log + F2 panel names the failure + redial
+>    slows to 10 s. WELCOME clears it.
+>
+> **Untested live:** the whole v0.73 batch, plus v0.72's pause fix and the
+> [wi] rates. The v0.72 live gate below still applies, plus: on any future
+> transport outage expect `handshake failing: 5 connections in a row` and the
+> panel message, NOT silent NPC blinking.
+
+# Previous handoff — 2026-08-16 late night (the live-iteration ladder)
+
+> **v0.72 WAS the release to take. Skip v0.67–v0.71 — all six are protocol 59
 > and interoperate, but each fixed a defect the previous one shipped, and only
 > v0.72 has all of them.** The local install is PENDING: Kenshi was running at
 > handoff time — run `scripts/linux/update-kenshicoop.sh` once it closes. The
