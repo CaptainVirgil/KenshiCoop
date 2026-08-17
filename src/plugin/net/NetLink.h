@@ -232,7 +232,10 @@ public:
     enum Fault {
         FAULT_NONE = 0,
         FAULT_VERSION,      // peer speaks a different PROTOCOL_VERSION
-        FAULT_THIRD_PLAYER  // a third peer tried to join a two-player session
+        FAULT_THIRD_PLAYER, // a third peer tried to join a two-player session
+        FAULT_HANDSHAKE     // transport connects, but HELLO/WELCOME never completes
+                            // (v0.73: the 2026-08-16 Steam relay outage - ENet-level
+                            // connects that die unanswered, over and over)
     };
     int  lastFault()   const { return (int)faultKind_; }
     u32  peerVersion() const { return (u32)faultPeerVer_; }
@@ -256,12 +259,30 @@ public:
     // fault fields.
     u32 peerModsHash()  const { return (u32)peerModsHash_; }
     u16 peerModsCount() const { return (u16)peerModsCount_; }
-    // host = 0; client = id from WELCOME. myId_ is written by the NET thread when
-    // the WELCOME arrives and read here on the MAIN thread, so it is a volatile
-    // LONG written via InterlockedExchange; an aligned 32-bit volatile read is
-    // atomic on x86/x64 and the volatile bars the compiler from caching a stale
-    // value (Phase 4: myId_ cross-thread safety).
+    // host = 0; client = id from WELCOME, and OWNER_ID_ALL until then. myId_ is
+    // written by the NET thread when the WELCOME arrives and read here on the
+    // MAIN thread, so it is a volatile LONG written via InterlockedExchange; an
+    // aligned 32-bit volatile read is atomic on x86/x64 and the volatile bars
+    // the compiler from caching a stale value (Phase 4: myId_ cross-thread
+    // safety).
+    //
+    // The sentinel is load-bearing (v0.73). A client used to sit at 0 before
+    // its WELCOME - which is the HOST's id, so every main-thread consumer of
+    // localId() concluded "I am the host" during a half-open connection: the
+    // arbiter engaged, cells got claimed, and the authority sweep suppressed
+    // NPCs it had no business judging. A 2 s connect/timeout loop against a
+    // non-answering host (live 2026-08-16 23:18) turned that into visible
+    // NPC blink: suppress-on-connect, restore-on-leave, every cycle. The
+    // receive gate ("established") always knew the difference; localId() now
+    // does too.
     u32  localId()   const { return (u32)myId_; }
+    // True once the handshake has COMPLETED: the join has its id from WELCOME,
+    // the host has at least one welcomed peer. Everything session-scoped on
+    // the main thread (arbiter wiring, cell claims, authority sweeps, census)
+    // gates on this - transport-connected is not a session.
+    bool sessionUp() const {
+        return isHost_ ? (peersUp_ > 0) : ((u32)myId_ != OWNER_ID_ALL);
+    }
 
 private:
     static DWORD WINAPI threadEntry(LPVOID self);
@@ -441,6 +462,11 @@ private:
     // Written by the NET thread on WELCOME (InterlockedExchange) and read on the
     // MAIN thread via localId(); volatile LONG so the read is atomic + uncached.
     volatile LONG myId_;
+    // Host side of sessionUp(): welcomed-peer count. Incremented by the NET
+    // thread when a WELCOME goes out, decremented when a peer WITH an id
+    // disconnects (an un-welcomed peer dropping never touches it). Same
+    // volatile-LONG read rules as myId_.
+    volatile LONG peersUp_;
 
     // Session epoch (protocol 44). sendEpoch_ is bumped by the MAIN thread
     // (InterlockedIncrement in bumpSessionEpoch) and read by the NET thread when

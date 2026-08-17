@@ -869,6 +869,11 @@ void coopPanelDrive() {
     } else if (g_net.lastFault() == coop::NetLink::FAULT_THIRD_PLAYER) {
         detail = "A third player tried to join. KenshiCoop supports two players.";
         ostate = 0;
+    } else if (g_net.lastFault() == coop::NetLink::FAULT_HANDSHAKE) {
+        detail = "Reaching the host but the handshake never completes (flaky "
+                 "Steam relay?). Still retrying - if it persists, both quit "
+                 "to menu and reconnect.";
+        ostate = 1;
     } else if (g_net.isRunning()) {
         // Escalate on time. The first twenty seconds of "waiting" are normal; after
         // that it is a misconfiguration, and the two that actually happen are both
@@ -1265,7 +1270,13 @@ void tickReplicatePublish(GameWorld* gw, bool worldLive) {
     // bug reproduced through a different door, live 2026-08-16 22:15
     // (host=119 join=0 gen=91, 61 revokes). localId is 0 exactly on the
     // negotiated host; setAuthArbiter clears all arbiter state on demotion.
-    g_repl.setAuthArbiter(g_net.localId() == 0);
+    // sessionUp is the second half of the same rule: localId() is only a fact
+    // once the handshake COMPLETED. A client's id used to read 0 (the host's
+    // id) before its WELCOME, so a half-open connection made it the arbiter -
+    // live 2026-08-16 23:18, a 2 s connect/timeout loop against a wedged host
+    // ran suppress-on-connect/restore-on-leave every cycle (visible NPC
+    // blink, churn 2710/1853 in ~10 min).
+    g_repl.setAuthArbiter(g_net.sessionUp() && g_net.localId() == 0);
     if (worldLive) {
         coop::mainThreadBeat("pub:ingest"); g_repl.ingest(g_inbound);
         // Phase 4a: drain received container-contents snapshots into the per-container
@@ -1578,12 +1589,18 @@ void tickReplicateApply(GameWorld* gw, bool worldLive) {
         // authors the cells it stands in and judges its local copies of the
         // other's. With cellAuth off the two conditions collapse to today's
         // exclusive split, which is what makes the fail-open A/B meaningful.
-        if (!g_cfg.isHost || g_cfg.cellAuth) {
+        // All four arms additionally gate on sessionUp: these judge and mutate
+        // the LOCAL world on the peer's behalf, and with no completed handshake
+        // there is no peer - there is only a half-open connection whose
+        // suppressions get rolled back two seconds later (the 2026-08-16 NPC
+        // blink). Config flags say what the session WOULD run; sessionUp says
+        // whether there is a session at all.
+        if (g_net.sessionUp() && (!g_cfg.isHost || g_cfg.cellAuth)) {
             coop::mainThreadBeat("app:authAssign"); g_repl.applyAuthAssigns(g_inbound, g_net.localId());
-        coop::mainThreadBeat("app:npcCensus"); g_repl.applyNpcCensus(g_inbound);
+            coop::mainThreadBeat("app:npcCensus"); g_repl.applyNpcCensus(g_inbound);
             coop::mainThreadBeat("app:authority"); g_repl.enforceHostAuthority(gw, g_net.localId());
         }
-        if (g_cfg.isHost || g_cfg.cellAuth) {
+        if (g_net.sessionUp() && (g_cfg.isHost || g_cfg.cellAuth)) {
             coop::mainThreadBeat("app:pubCensus"); g_repl.publishNpcCensus(gw, g_net, g_net.localId());
         }
         // Camera-anchored interest (protocol 43): both sides publish their
@@ -1592,8 +1609,10 @@ void tickReplicateApply(GameWorld* gw, bool worldLive) {
         // Runs even with CAM_INTEREST off (the engine-side knob makes
         // interestCenters ignore the anchors) so an A/B toggle needs no
         // session restart logic.
-        coop::mainThreadBeat("app:camHint"); g_repl.syncCamHint(gw, g_inbound, g_net, g_net.localId());
-        coop::mainThreadBeat("app:cellClaims"); g_repl.syncCellClaims(gw, g_inbound, g_net, g_net.localId());
+        if (g_net.sessionUp()) {
+            coop::mainThreadBeat("app:camHint"); g_repl.syncCamHint(gw, g_inbound, g_net, g_net.localId());
+            coop::mainThreadBeat("app:cellClaims"); g_repl.syncCellClaims(gw, g_inbound, g_net, g_net.localId());
+        }
         coop::mainThreadBeat("app:trackMove"); trackMove(gw);
     }
 }

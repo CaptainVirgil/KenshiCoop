@@ -61,6 +61,24 @@ void netErr(const char* msg) {
 // appeared on one screen only, NPCs that existed for one of them, and a weather
 // id the peer could not resolve. Every one of those reads as a replication bug.
 // Nobody thought to diff the two mod lists for hours. One line at handshake.
+// Build + send our HELLO to the host. Called from the CONNECT event and,
+// since v0.73, re-called every ~500 ms while the connection is held but the
+// WELCOME has not arrived: the 2026-08-16 relay outage lost the one-shot
+// HELLO on every fresh connection while ENet's own protocol traffic got
+// through, and a single lost datagram had no second chance before the 2 s
+// redial tore the connection down. The host side treats a repeat HELLO as
+// idempotent (same id, WELCOME re-sent).
+static void sendHello(ENetPeer* peer) {
+    HelloPacket h;
+    h.type = (u8)PKT_HELLO; h.version = PROTOCOL_VERSION; h.nameLen = 0;
+    h.modsCount = 0;
+    { unsigned int mc = 0;
+      h.modsHash = coop::modsFingerprint(&mc);
+      h.modsCount = (u16)(mc > 65535u ? 65535u : mc); }
+    ENetPacket* out = enet_packet_create(&h, sizeof(h), ENET_PACKET_FLAG_RELIABLE);
+    enet_peer_send(peer, CH_RELIABLE, out);
+}
+
 static void checkModsFingerprint(const char* peerLabel, u32 peerHash, u16 peerCount) {
     unsigned int mineCount = 0;
     const unsigned int mineHash = coop::modsFingerprint(&mineCount);
@@ -262,11 +280,17 @@ NetLink::~NetLink() {
 
 bool NetLink::startHost(int port, Inbound* inbound) {
     isHost_ = true; port_ = port; inbound_ = inbound; myId_ = 0;
+    peersUp_ = 0;
     return launchThread();
 }
 
 bool NetLink::startClient(const std::string& ip, int port, Inbound* inbound) {
-    isHost_ = false; ip_ = ip; port_ = port; inbound_ = inbound; myId_ = 0;
+    // OWNER_ID_ALL, not 0: 0 is the HOST's id, and a client that reports it
+    // before its WELCOME impersonates the host to every localId() consumer on
+    // the main thread (the v0.72 NPC-blink bug). WELCOME assigns the real id.
+    isHost_ = false; ip_ = ip; port_ = port; inbound_ = inbound;
+    myId_ = (LONG)OWNER_ID_ALL;
+    peersUp_ = 0;
     return launchThread();
 }
 
@@ -589,8 +613,14 @@ void NetLink::threadLoop() {
         if (serverPeer_) serverPeer_->mtu = 1200;
     }
 
-    u32   nextId = 1;
     DWORD lastConnectAttempt = GetTickCount();
+    // Handshake pacing (client): re-send HELLO on a held connection instead of
+    // tearing it down, and count connections that died unanswered so the
+    // redial can slow down and the panel can say why. The 2026-08-16 relay
+    // outage ran a silent 2 s redial storm for six minutes; the players found
+    // out from an invisible beakthing.
+    DWORD lastHelloMs = 0;
+    unsigned int handshakeDeadCount = 0;
     // Bandwidth sampling. Nothing in the plugin measured its own traffic, so every
     // judgement about what to send was made blind - including "the mid band is
     // cheap", which was true but unverified. ENet already counts the bytes; this
@@ -633,8 +663,24 @@ void NetLink::threadLoop() {
             // Re-dialling a host that rejected us on version can never succeed, and
             // at 2 s it fills BOTH logs with the same rejection until someone gives
             // up. Keep a slow retry so a genuine reinstall still reconnects on its
-            // own, but stop pretending progress is being made.
-            const DWORD retryMs = (faultKind_ == (LONG)FAULT_VERSION) ? 30000u : 2000u;
+            // own, but stop pretending progress is being made. Same shape for a
+            // handshake that keeps dying unanswered (v0.73): after five dead
+            // connections in a row, slow to 10 s - the in-connection HELLO
+            // re-send below is the thing that makes actual progress.
+            const DWORD retryMs = (faultKind_ == (LONG)FAULT_VERSION) ? 30000u
+                                : (handshakeDeadCount >= 5 ? 10000u : 2000u);
+            // While a connection IS held but the WELCOME hasn't arrived,
+            // re-introduce ourselves instead of waiting out the teardown: a
+            // reliable packet ENet accepted can still have died with a
+            // connection that reset underneath it (Steam relay flip), and
+            // the host answers a repeat HELLO idempotently.
+            if (!disconnected &&
+                serverPeer_->state == ENET_PEER_STATE_CONNECTED &&
+                (u32)InterlockedCompareExchange(&myId_, 0, 0) == OWNER_ID_ALL &&
+                (now - lastHelloMs) >= 500u) {
+                sendHello(serverPeer_);
+                lastHelloMs = now;
+            }
             if (disconnected && (now - lastConnectAttempt) >= retryMs) {
                 lastConnectAttempt = now;
                 if (serverPeer_) { enet_peer_reset(serverPeer_); serverPeer_ = 0; }
@@ -663,14 +709,8 @@ void NetLink::threadLoop() {
                         netLog("peer connecting (awaiting HELLO)");
                     } else {
                         // Introduce ourselves with our protocol version.
-                        HelloPacket h;
-                        h.type = (u8)PKT_HELLO; h.version = PROTOCOL_VERSION; h.nameLen = 0;
-                        h.modsCount = 0;
-                        { unsigned int mc = 0;
-                          h.modsHash = coop::modsFingerprint(&mc);
-                          h.modsCount = (u16)(mc > 65535u ? 65535u : mc); }
-                        ENetPacket* out = enet_packet_create(&h, sizeof(h), ENET_PACKET_FLAG_RELIABLE);
-                        enet_peer_send(ev.peer, CH_RELIABLE, out);
+                        sendHello(ev.peer);
+                        lastHelloMs = GetTickCount();
                         netLog("connected to host; sent HELLO");
                     }
                     break;
@@ -688,7 +728,7 @@ void NetLink::threadLoop() {
                     // on the join when myId_ has been set from WELCOME.
                     const bool established = isHost_
                         ? (ev.peer != 0 && ev.peer->data != 0)
-                        : (InterlockedCompareExchange(&myId_, 0, 0) != 0);
+                        : ((u32)InterlockedCompareExchange(&myId_, 0, 0) != OWNER_ID_ALL);
                     const bool handshake = (type == PKT_HELLO) || (type == PKT_WELCOME);
                     if (!established && !handshake) {
                         enet_packet_destroy(ev.packet);
@@ -708,7 +748,21 @@ void NetLink::threadLoop() {
                                 InterlockedExchange(&faultKind_, (LONG)FAULT_VERSION);
                                 enet_peer_disconnect(ev.peer, 0);
                             } else {
-                                u32 id = nextId++;
+                                // Two-player model: the join SLOT is id 1, freed when
+                                // its peer disconnects. This used to be `nextId++`, a
+                                // thread-lifetime counter - so the first RECONNECT
+                                // inside one hosting run drew id 2 and was rejected as
+                                // a third player. It never fired live only because the
+                                // host's game restarted between sessions every time
+                                // (fresh thread, fresh counter); the 2026-08-16 relay
+                                // outage was one delivered HELLO away from proving it.
+                                // A re-HELLO from an already-welcomed peer keeps its
+                                // id and just gets its WELCOME again (idempotent);
+                                // a HELLO while the slot is HELD by another live peer
+                                // is the real third-player case.
+                                const bool reHello = (ev.peer->data != 0);
+                                u32 id = reHello ? (u32)(size_t)ev.peer->data
+                                                 : (peersUp_ > 0 ? 2u : 1u);
                                 // TWO-PLAYER ASSUMPTION (step-6 guard): the sync model
                                 // is host + ONE join. Join-authored events/inventory/
                                 // conservation intents reach only the host and are NOT
@@ -747,7 +801,12 @@ void NetLink::threadLoop() {
                                           (unsigned)id, (unsigned)PROTOCOL_VERSION);
                                 b[sizeof(b) - 1] = '\0';
                                 netLog(b);
-                                if (inbound_) inbound_->pushConnect(id);
+                                // Only a FRESH welcome moves the count or replays the
+                                // connect edge - a re-HELLO already did both.
+                                if (!reHello) {
+                                    InterlockedIncrement(&peersUp_);
+                                    if (inbound_) inbound_->pushConnect(id);
+                                }
                             }
                         }
                     } else if (!isHost_ && type == PKT_WELCOME) {
@@ -775,6 +834,12 @@ void NetLink::threadLoop() {
                                 if (ev.peer) enet_peer_disconnect(ev.peer, 0);
                             } else {
                                 InterlockedExchange(&myId_, (LONG)w.playerId);
+                                handshakeDeadCount = 0;
+                                // A completed handshake retires the handshake fault
+                                // (and only that one - a version fault is a fact
+                                // about builds, not about this connection).
+                                InterlockedCompareExchange(&faultKind_,
+                                    (LONG)FAULT_NONE, (LONG)FAULT_HANDSHAKE);
                                 char b[96];
                                 _snprintf(b, sizeof(b) - 1,
                                           "peer connected id=%u (proto v%u) - received WELCOME",
@@ -1338,6 +1403,10 @@ void NetLink::threadLoop() {
                     epochSeen_.clear(); // peer gone; its epoch sequence ends (v44)
                     if (isHost_) {
                         u32 id = (u32)(size_t)ev.peer->data;
+                        // Only a WELCOMED peer counts toward sessionUp; an
+                        // un-welcomed connect that times out has data == 0
+                        // and never incremented.
+                        if (ev.peer->data != 0) InterlockedDecrement(&peersUp_);
                         ev.peer->data = 0;
                         if (inbound_) inbound_->pushLeave(id);
                         char b[64];
@@ -1346,6 +1415,27 @@ void NetLink::threadLoop() {
                         netLog(b);
                     } else {
                         serverPeer_ = 0;
+                        // A connection that died WITHOUT ever completing the
+                        // handshake counts toward the storm detector; a real
+                        // session ending resets it. Five dead in a row is no
+                        // longer a transient - say so once, loudly, and let
+                        // the panel explain it to the player (2026-08-16: six
+                        // minutes of silent 2 s redials, discovered in-game
+                        // by an invisible beakthing fight).
+                        const bool wasEstablished =
+                            ((u32)InterlockedCompareExchange(&myId_, 0, 0) != OWNER_ID_ALL);
+                        if (wasEstablished) {
+                            handshakeDeadCount = 0;
+                        } else if (++handshakeDeadCount == 5) {
+                            netErr("handshake failing: 5 connections in a row died "
+                                   "before WELCOME (transport up, handshake lost) - "
+                                   "slowing redial to 10 s; see the F2 panel");
+                            InterlockedExchange(&faultKind_, (LONG)FAULT_HANDSHAKE);
+                        }
+                        // Back to "no session": localId() must stop answering
+                        // with a real id the moment the session ends, or the
+                        // next half-open reconnect inherits it.
+                        InterlockedExchange(&myId_, (LONG)OWNER_ID_ALL);
                         if (inbound_) inbound_->pushLeave(OWNER_ID_ALL);
                         netLog("disconnected from host");
                     }
