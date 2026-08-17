@@ -332,6 +332,18 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
         unsigned long nowD = nowMs();
         if ((nowD - proxyDriftLogMs_) >= 1000) {
             proxyDriftLogMs_ = nowD;
+            // The healthy-case rollup (see the threshold below): one line per
+            // 30 s carrying what 30 lines/sec used to.
+            if (proxyDriftRollMs_ == 0) proxyDriftRollMs_ = nowD;
+            if ((nowD - proxyDriftRollMs_) >= 30000 && proxyDriftN_ > 0) {
+                char rb[144]; _snprintf(rb, sizeof(rb) - 1,
+                    "[proxy] drift rollup n=%lu avg=%.1f max=%.0f over %lus",
+                    proxyDriftN_, (double)proxyDriftSum_ / (double)proxyDriftN_,
+                    proxyDriftMax_, (nowD - proxyDriftRollMs_) / 1000);
+                rb[sizeof(rb) - 1] = '\0'; coop::logLine(rb);
+                proxyDriftRollMs_ = nowD;
+                proxyDriftN_ = 0; proxyDriftSum_ = 0.0f; proxyDriftMax_ = 0.0f;
+            }
             for (std::map<Key, Character*>::iterator it = proxyByKey_.begin();
                  it != proxyByKey_.end(); ++it) {
                 std::map<Key, CensusPos>::iterator cp = censusPos_.find(it->first);
@@ -360,6 +372,16 @@ void Replicator::enforceHostAuthority(GameWorld* gw, u32 localId) {
                 engine::CombatRead pc;
                 bool fighting = engine::readCombat(it->second, &pc) &&
                                 (pc.inCombat || pc.modeActive);
+                // Per-body line only when something is actually WRONG. This
+                // series was 57% of a session's log (75,280 of 130,097 lines)
+                // reporting a median drift of 7 u - the healthy case drowned
+                // every other signal at ~33 fflushes/sec. Below the threshold
+                // the sample still feeds the 30 s rollup, so the healthy case
+                // stays measurable in one line instead of thirty a second.
+                proxyDriftN_ += 1;
+                proxyDriftSum_ += d;
+                if (d > proxyDriftMax_) proxyDriftMax_ = d;
+                if (d < 30.0f) continue;
                 char b[208]; _snprintf(b, sizeof(b) - 1,
                     "[proxy] drift hand=%u,%u d=%.0f local=%.0f,%.0f host=%.0f,%.0f "
                     "streamed=%d fight=%d hstep=%.0f",

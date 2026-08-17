@@ -1257,6 +1257,15 @@ static void logTickBudget(unsigned long pubUs, unsigned long appUs) {
 }
 
 void tickReplicatePublish(GameWorld* gw, bool worldLive) {
+    // The arbiter is the NEGOTIATED host, not the configured one. Wired per
+    // tick because the roles settle at handshake, after configureReplicator
+    // has already run: Virgil configures HOST and panel-switches to join, so
+    // the config-time wiring made his client a false arbiter whose liveness
+    // pass reverted the entire split within a minute - v0.67's dual-arbiter
+    // bug reproduced through a different door, live 2026-08-16 22:15
+    // (host=119 join=0 gen=91, 61 revokes). localId is 0 exactly on the
+    // negotiated host; setAuthArbiter clears all arbiter state on demotion.
+    g_repl.setAuthArbiter(g_net.localId() == 0);
     if (worldLive) {
         coop::mainThreadBeat("pub:ingest"); g_repl.ingest(g_inbound);
         // Phase 4a: drain received container-contents snapshots into the per-container

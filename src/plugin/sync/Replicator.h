@@ -1215,6 +1215,10 @@ private:
     unsigned long freezeSkipHurt_;    // census freezes skipped: body is bleeding/critical
     unsigned long parkSkipHurt_;      // census parks skipped for the same reason - MUST pair with the freeze exemption
     unsigned long parkSkipDown_;      // census parks skipped: body is down/dead (a corpse cannot walk away)
+    unsigned long proxyDriftRollMs_;  // 30s drift-rollup window start
+    unsigned long proxyDriftN_;       // samples this window
+    float         proxyDriftSum_;     // sum of drifts this window
+    float         proxyDriftMax_;     // max drift this window
 
     // ---- Authority assertion overlay (auth steps 2-7, docs/AUTHORITY-DESIGN.md)
     // Step 2: the SHADOW map. Host-side policy output only - nothing reads it
@@ -2508,7 +2512,19 @@ public:
     void setSplitAuthority(bool on) { splitAuthority_ = on; }
     // Step 4 (docs/AUTHORITY-DESIGN.md): the assertion overlay's read mode.
     void setAuthAssertMode(int m) { authAssertMode_ = m; }
-    void setAuthArbiter(bool v) { authArbiter_ = v; }
+    void setAuthArbiter(bool v) {
+        if (authArbiter_ && !v) {
+            // Demotion (e.g. configured host negotiated into the join role):
+            // the read path consults our own map FIRST, so a stale map from
+            // the arbitral past would silently overrule the real arbiter
+            // forever. Clear every arbiter-side artefact in the same breath.
+            assignMap_.clear();
+            assignSent_.clear();
+            assignJoinSinceMs_.clear();
+            assignRevokeBackoffMs_.clear();
+        }
+        authArbiter_ = v;
+    }
     // Ceiling on the arbitrated effective speed (0 = uncapped). See Config.
     void setSpeedMax(float v) { speedMaxMult_ = v; }
     // Step 5 seam: the silence horizon before a join-side assignment reverts.
