@@ -1810,8 +1810,26 @@ void Replicator::detectAndPublishTransfers(GameWorld* gw, NetLink& net, u32 owne
     for (std::set<Key>::iterator it = tracked.begin(); it != tracked.end(); ++it) {
         unsigned int cHand[5] = { it->t, it->c, it->cs, it->i, it->s };
         if (engine::resolveObjectByHand(cHand) == 0) continue;
+        // TRUNCATION IS UNKNOWN, NOT ABSENCE. The capture caps at 64 entries
+        // and this call used to ignore the truncation flag entirely - so a
+        // looting character whose kit crossed the cap had a shifting cut
+        // point, and items at the boundary read as VANISHING between scans.
+        // The fold path then logged them as losses (four FOLD-LOSS sightings
+        // on player-squad hands, live 2026-08-16 22:19), and worse: a phantom
+        // truncation-loss pairing with a REAL same-sid gain in another
+        // container fires a false TRANSFER, which relocates an item nobody
+        // dragged - a genuine despawn-from-the-victim's-view. A truncated
+        // capture is an incomplete description; this container is simply not
+        // diffable this tick.
+        bool capTrunc = false;
         std::map<XKey, int>& tot = cur[*it];
-        unsigned int n = engine::captureContainerContents(gw, cHand, items, 64, 0);
+        unsigned int n = engine::captureContainerContents(gw, cHand, items, 64, 0,
+                                                          &capTrunc);
+        if (capTrunc) {
+            ++xferScanTrunc_;
+            cur.erase(*it);       // no diff, no fold, no pairing this tick
+            continue;
+        }
         for (unsigned int i = 0; i < n; ++i) {
             int q = items[i].quantity; if (q < 1) q = 1;
             tot[XKey(std::string(items[i].stringID), items[i].itemType)] += q;

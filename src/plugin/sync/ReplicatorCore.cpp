@@ -76,7 +76,7 @@ Replicator::Replicator()
       speedSeqOut_(1), speedSeqSeen_(0), speedIntentFloodMs_(0),
       freezeActuated_(0), truncHoldCulls_(0),
       wdOriginHolds_(0), wdOriginLogMs_(0), proxyBlindSkips_(0),
-      xferFoldLoss_(0), xferFoldLogMs_(0), nearStillSup_(0), proxyUnaddressable_(0), timeSlewTarget_(-1.0f),
+      xferFoldLoss_(0), xferFoldLogMs_(0), xferScanTrunc_(0), nearStillSup_(0), proxyUnaddressable_(0), timeSlewTarget_(-1.0f),
       freezeSkipHurt_(0), parkSkipHurt_(0), parkSkipDown_(0),
       proxyDriftRollMs_(0), proxyDriftN_(0), proxyDriftSum_(0.0f), proxyDriftMax_(0.0f),
       assignGen_(0), assignLogMs_(0), assignVetoed_(0),
