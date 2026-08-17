@@ -22,7 +22,7 @@ every other release was shaped by what two humans hit while actually playing.
 | | |
 |---|---|
 | Protocol | **59** — authority assertions: `PKT_AUTH_ASSIGN` + census author tail (2026-08-16), after 58 (census truncation bit), 57 (mod fingerprint), 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
-| Public release | `v0.71` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect. v0.67–v0.70 CAN connect but are superseded; each shipped a defect the next one fixed |
+| Public release | `v0.72` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect. v0.67–v0.71 CAN connect but are superseded; each shipped a defect the next one fixed |
 | Local build | protocol 59; the banner's build stamp is the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log |
 | Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |
 | Interop | any release before the current protocol will NOT connect — the handshake compares `PROTOCOL_VERSION`, not the label |

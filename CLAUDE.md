@@ -160,9 +160,14 @@ natively this way).
 ## Shipping a build
 
 ```bash
-scripts/linux/make_kit.sh <label>     # dist/KenshiCoop-kit-<label>.zip
-gh release create <tag> dist/KenshiCoop-kit-<label>.zip --repo CaptainVirgil/KenshiCoop
+scripts/linux/make_kit.sh <tag>                        # dist/KenshiCoop-kit-<tag>.zip (also tags locally)
+scripts/linux/publish_release.sh <tag> <notes.md> [title]   # stages per-OS archives, pushes tag, gh release
 ```
+
+`publish_release.sh` exists because `gh release create` resolves asset paths
+against the CWD and the archive-staging step leaves a shell inside
+`dist/stage-<tag>/` — that exact slip failed five consecutive releases before
+it was funnelled. Do not hand-run the tail.
 
 Players then run `scripts/update-kenshicoop.ps1` (Windows) or
 `scripts/linux/update-kenshicoop.sh`, which pull the latest release, verify it against the

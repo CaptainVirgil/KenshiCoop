@@ -1,8 +1,8 @@
 # Handoff — 2026-08-16 late night (the live-iteration ladder)
 
-> **v0.71 IS THE RELEASE TO TAKE. Skip v0.67–v0.70 — all five are protocol 59
+> **v0.72 IS THE RELEASE TO TAKE. Skip v0.67–v0.71 — all six are protocol 59
 > and interoperate, but each fixed a defect the previous one shipped, and only
-> v0.71 has all of them.** The local install is PENDING: Kenshi was running at
+> v0.72 has all of them.** The local install is PENDING: Kenshi was running at
 > handoff time — run `scripts/linux/update-kenshicoop.sh` once it closes. The
 > brother runs his updater as usual.
 >
@@ -16,6 +16,7 @@
 > | v0.69 | paired park exemptions | v0.68's TELEPORT-RUN LOOP (freeze exempted injured bodies, park did not — the two act on the same divergence signal, so the un-paired half fired alone) + the corpse fountain (parks on down/dead bodies) |
 > | v0.70 | arbiter = negotiated role | v0.68/69 keyed the arbiter on the CONFIGURED role. Virgil configures HOST and panel-switches to join ⇒ false arbiter on his machine, map decays (revokes 1000+, join→2 by gen=991, watched live). Now `g_net.localId() == 0` per tick, and a demoted arbiter wipes assignMap_/assignSent_/liveness state |
 > | v0.71 | xfer truncation guard | the transfer detector diffed a 64-entry capture and ignored the truncated flag — boundary items "vanish" between scans, and a phantom loss can pair with a real gain and MOVE an item nobody dragged. Best mechanism yet for #48. Truncated ⇒ skip that bag this tick, `xferTrunc=` counts |
+> | v0.72 | speed → unreliable channel + 3-tick change burst; `[wi]` rollup carries real rates | "we can't pause the game … well it did let us eventually": pause votes queued 27 s behind the assign/spawn backlog on CH_RELIABLE (five REQ paused=1 22:33:56–:04, SET back 22:34:23); the impossible 0↔1 SET flapping was that queue draining. Speed is idempotent state — seq guards + safety resend + enforcement already existed, so unreliable is strictly better. Also: the [wi] rollup read 0/0 in steady state by construction; now reports tracks/drops/sent/culls/defer |
 >
 > **The design is validated.** v0.69 ran ~10 minutes with a true arbiter before
 > the decay set in: join-side delay 50 ms (from 741), snapSq 0 (from 11,483),
