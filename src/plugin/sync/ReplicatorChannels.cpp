@@ -2421,7 +2421,11 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
         // userActed with an UNCHANGED effective = a denied raise (consensus
         // holdback): re-apply immediately so the host engine doesn't run fast
         // until the enforcement below - a click is a request, not an override.
-        if (changed || userActed || speedLastSendMs_ == 0 ||
+        // v0.72: speed rides the UNRELIABLE channel, so a changed effective is
+        // burst three ticks running - a lost datagram costs a tick, not the
+        // full RESEND_MS window with the sims diverged.
+        if (changed || userActed) speedBurstLeft_ = 3;
+        if (changed || userActed || speedBurstLeft_ > 0 || speedLastSendMs_ == 0 ||
             (now - speedLastSendMs_) >= RESEND_MS) {
             bool effPaused = (eff <= EPS);
             // slewedEffective is identity on the host (timeSlew_ stays 1.0).
@@ -2438,6 +2442,7 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
             net.queueSpeed(pkt);
             speedLastSet_    = eff;
             speedLastSendMs_ = now;
+            if (speedBurstLeft_ > 0) --speedBurstLeft_;
             if (changed) {
                 char b[128]; _snprintf(b, sizeof(b) - 1,
                     "[speed] SET mult=%.2f paused=%d combat=%d (my=%.2f peer=%.2f)",
@@ -2448,7 +2453,11 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
         }
     } else {
         // Join: send our request on change / combat edge / safety resend.
-        if (userActed || combatEdge || speedLastSendMs_ == 0 ||
+        // Same three-tick burst as the host's SET (unreliable channel, v0.72):
+        // the vote that must not wait out a RESEND_MS window is PAUSE.
+        if (userActed || combatEdge) speedBurstLeft_ = 3;
+        if (userActed || combatEdge || speedBurstLeft_ > 0 ||
+            speedLastSendMs_ == 0 ||
             (now - speedLastSendMs_) >= RESEND_MS) {
             SpeedPacket pkt;
             memset(&pkt, 0, sizeof(pkt));
@@ -2460,6 +2469,7 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
                           (speedMyCombat_ ? SPEED_IN_COMBAT : 0);
             net.queueSpeed(pkt);
             speedLastSendMs_ = now;
+            if (speedBurstLeft_ > 0) --speedBurstLeft_;
         }
     }
 

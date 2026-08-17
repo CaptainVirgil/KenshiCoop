@@ -2586,6 +2586,10 @@ private:
     unsigned long xferFoldLogMs_;     // last [xfer] FOLD-LOSS line (rate limit)
     unsigned long xferScanTrunc_;     // xfer scans skipped: capture truncated (unknown, not absence)
     unsigned long speedLastSendMs_;    // last REQ (join) / SET (host) send, safety resend
+    unsigned int  speedBurstLeft_;     // v0.72: remaining per-tick re-sends of a CHANGED vote.
+                                       // Speed rides the unreliable channel now, so a changed
+                                       // vote goes out three ticks running - one datagram lost
+                                       // costs a tick, not the 3 s safety-resend window
     unsigned long speedCombatSampleMs_;// last own-combat sample time
     unsigned long speedCombatHoldMs_;  // last time own-squad combat read TRUE (cap hysteresis)
 

@@ -1632,17 +1632,26 @@ void NetLink::threadLoop() {
             sendToPeer(out, CH_RELIABLE);
         }
 
-        // Drain + send any queued game-speed packets on CH_RELIABLE (consensus
-        // speed sync). Change-gated by the Replicator; a lost SET would leave
-        // the engines running at different rates, so reliable is mandatory.
+        // Drain + send any queued game-speed packets on CH_UNRELIABLE (v0.72).
+        // These rode CH_RELIABLE ("a lost SET would leave the engines running
+        // at different rates, so reliable is mandatory") - and the 2026-08-16
+        // session proved the cure worse than the disease: a pause vote queued
+        // BEHIND the assign/spawn/event backlog took 27 SECONDS to apply, the
+        // exact head-of-line blocking CH_BULK exists to prevent. Speed is
+        // idempotent STATE, not a transition: both directions carry a seq
+        // guard (stale drops), both re-send on a 3 s safety cadence, the
+        // Replicator bursts every CHANGED vote for three ticks, and the
+        // continuous enforcement loop re-asserts the effective every frame -
+        // so a lost datagram costs at most one burst gap, not a divergent sim.
+        // Doctrine: state is unreliable, events are reliable. A vote is state.
         std::vector<SpeedPacket> speeds;
         EnterCriticalSection(&outCs_);
         speeds.swap(outSpeed_);
         LeaveCriticalSection(&outCs_);
         for (size_t i = 0; i < speeds.size(); ++i) {
             ENetPacket* out = enet_packet_create(&speeds[i], sizeof(SpeedPacket),
-                                                 ENET_PACKET_FLAG_RELIABLE);
-            sendToPeer(out, CH_RELIABLE);
+                                                 0 /*unreliable*/);
+            sendToPeer(out, CH_UNRELIABLE);
         }
 
         // Drain + send any queued character-stats snapshots on CH_RELIABLE

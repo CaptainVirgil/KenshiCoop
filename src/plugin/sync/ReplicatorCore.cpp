@@ -85,7 +85,8 @@ Replicator::Replicator()
       assertDiverge_(0), assertConsulted_(0),
       authLivenessMs_(10000), authLivenessRevoked_(0),
       assignWitnessRefused_(0),
-      speedLastSendMs_(0), speedCombatSampleMs_(0), speedCombatHoldMs_(0),
+      speedLastSendMs_(0), speedBurstLeft_(0),
+      speedCombatSampleMs_(0), speedCombatHoldMs_(0),
       spawnSync_(false), spawnPosLogMs_(0),
       spawnMintRadius_(0.0f), censusScanMs_(0),
       poolSeen_(-1), poolSent_(-1), poolSentMs_(0), poolTotal_(-1),
@@ -441,6 +442,7 @@ void Replicator::resetSession() {
     speedSeqSeen_     = 0;
     speedIntentFloodMs_ = 0;
     speedLastSendMs_  = 0;
+    speedBurstLeft_   = 0;
     speedCombatSampleMs_ = 0;
     speedCombatHoldMs_ = 0;
     timeSlew_         = 1.0f;
