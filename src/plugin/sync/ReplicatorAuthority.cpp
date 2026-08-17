@@ -1974,6 +1974,11 @@ void Replicator::pruneDebugMarkers(const std::set<Character*>& live) {
 void Replicator::computeAssignMap(GameWorld* gw, Character* const* chars,
                                   const EntityState* states, unsigned int n) {
     (void)gw;
+    // Arbiter only. A non-arbiter computing a map would consult it FIRST in
+    // authorityForBody (own-map-beats-received order) and thereby overrule the
+    // actual arbiter with a locally-derived answer - the exact class of bug
+    // the assertion overlay exists to end.
+    if (!authArbiter_) return;
     assignMap_.clear();
     unsigned int nHost = 0, nJoin = 0, vetoNow = 0;
     for (unsigned int i = 0; i < n; ++i) {

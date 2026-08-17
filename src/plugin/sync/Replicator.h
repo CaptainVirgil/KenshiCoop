@@ -1244,6 +1244,14 @@ private:
     // authorityForBody is const and shadow telemetry must not un-const the
     // whole authority read path.
     int                   authAssertMode_;
+    // THE ARBITER FLAG. Exactly one client computes the map and emits ASSIGN
+    // rows: the host. The first live minute of v0.67 proved why this cannot be
+    // inferred from streamNpcs_ - under cell authority BOTH sides stream, so
+    // both sides arbitrated, and the join's self-computed map liveness-reverted
+    // its own grants against a targets_ that never contains its own stream.
+    // Two arbiters is two writers of the ownership fact itself.
+    bool                  authArbiter_;
+    float                 speedMaxMult_;
     mutable unsigned long assertDiverge_;   // shadow: asserted != cell verdict
     mutable unsigned long assertConsulted_; // reads answered by an assertion
     unsigned long assignWitnessRefused_;    // stores refused: witness mismatch
@@ -2498,6 +2506,9 @@ public:
     void setSplitAuthority(bool on) { splitAuthority_ = on; }
     // Step 4 (docs/AUTHORITY-DESIGN.md): the assertion overlay's read mode.
     void setAuthAssertMode(int m) { authAssertMode_ = m; }
+    void setAuthArbiter(bool v) { authArbiter_ = v; }
+    // Ceiling on the arbitrated effective speed (0 = uncapped). See Config.
+    void setSpeedMax(float v) { speedMaxMult_ = v; }
     // Step 5 seam: the silence horizon before a join-side assignment reverts.
     void setAuthLivenessMs(unsigned long ms) { authLivenessMs_ = ms; }
     // Step 7: the reply side answered a spawn REQ for this hand - the peer is

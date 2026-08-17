@@ -66,6 +66,7 @@ static Replicator* mkHost() {
     r->setLeaderOnly(false);
     r->setStreamNpcs(true);
     r->setCensusRadius(2000.0f); // ctor default is 0 = census disabled
+    r->setAuthArbiter(true);     // the host IS the arbiter (live: cfg.isHost)
     return r;
 }
 
@@ -697,6 +698,23 @@ static void tH_proxyReassign() {
           "H: the proxy publishes under the CANONICAL hand the peer resolves");
     check(!localRow,
           "H: the local hand never reaches the wire");
+
+    // The NON-arbiter must never arbitrate: a join-side census beat computes
+    // no map and asserts nothing, even with everything else identical. Found
+    // live in v0.67's first minute - under cell authority both sides stream,
+    // so gating the map on streamNpcs_ made BOTH sides arbiters, and the
+    // join's self-computed map fought the host's.
+    netfake::reset();
+    unsigned int nh2 = 0, nj2 = 0;
+    unsigned long genJ = rj->debugAssignCounts(&nh2, &nj2, 0);
+    rj->publishNpcCensus(gw, *net, 1);
+    genJ = rj->debugAssignCounts(&nh2, &nj2, 0);
+    check(genJ == 0 && nh2 == 0 && nj2 == 0,
+          "H: the join computes NO map on its census beat");
+    check(netfake::assigns.empty(),
+          "H: the join emits NO assertions");
+    check(netfake::lastCensusAuthors.empty(),
+          "H: the join's census carries no author tail");
 
     delete rh; delete rj;
     delete in; delete net;

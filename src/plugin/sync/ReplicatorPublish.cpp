@@ -1156,13 +1156,15 @@ void Replicator::publishNpcCensus(GameWorld* gw, NetLink& net, u32 ownerId) {
     pruneAttention(censusKeys);
     // trunc, not censusPubTrunc_: the member only updates on log edges; the
     // wire must carry THIS beat's truth.
-    net.queueNpcCensus(ownerId, hands, poss, m, trunc, authors, assignGen_);
+    net.queueNpcCensus(ownerId, hands, poss, m, trunc,
+                       authArbiter_ ? authors : 0,
+                       authArbiter_ ? assignGen_ : 0);
     // Protocol 59: assert CHANGED ownerships as reliable rows. The census tail
     // above self-heals a lost row within a second; the event is what makes a
     // change prompt. Emitted only by the arbiter - the join never computes a
     // map (computeAssignMap runs under streamNpcs_, the host role), so this
     // loop is host-only by construction.
-    for (unsigned int i = 0; i < m; ++i) {
+    for (unsigned int i = 0; authArbiter_ && i < m; ++i) {
         Key k;
         k.t = hands[i * 5 + 0]; k.c = hands[i * 5 + 1];
         k.cs = hands[i * 5 + 2]; k.i = hands[i * 5 + 3];

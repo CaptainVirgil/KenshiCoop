@@ -129,6 +129,7 @@ struct Config {
     // gated; well-tracking census NPCs keep their local AI. A/B escape hatch.
     bool         censusFreezeAi;     // KENSHICOOP_CENSUS_FREEZE_AI     (on)
     int          authAssert;         // KENSHICOOP_AUTH_ASSERT: 0 off, 1 shadow, 2 on (shadow)
+    float        speedMax;           // KENSHICOOP_SPEED_MAX: cap on the arbitrated speed; 0 = uncapped
 
     // Camera-anchored interest (KENSHICOOP_CAM_INTEREST, DEFAULT ON,
     // protocol 43): interestCenters grows from the two squad-tab-leader

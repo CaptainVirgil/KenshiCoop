@@ -2536,6 +2536,8 @@ void configureReplicator() {
         g_repl.setCensusParkDist(g_cfg.censusParkDist);
         g_repl.setCensusFreezeAi(g_cfg.censusFreezeAi);
         g_repl.setAuthAssertMode(g_cfg.authAssert);
+        g_repl.setAuthArbiter(g_cfg.isHost);
+        g_repl.setSpeedMax(g_cfg.speedMax);
         g_repl.setAttentionRadius(g_cfg.attentionRadius);
         g_repl.setCellAuth(g_cfg.cellAuth);
         g_repl.setSpeedCombatCap(g_cfg.speedCombatCap);

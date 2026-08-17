@@ -426,6 +426,18 @@ void loadConfig(Config& c) {
                                    fileOr(cfgFile, "authAssert", "on").c_str());
             c.authAssert = (am == "on") ? 2 : (am == "off" || am == "0") ? 0 : 1;
         }
+        // Ceiling on the arbitrated game speed. 0 keeps today's behaviour
+        // (uncapped). Exists because the crash correlate is now 4 sightings
+        // with 3 at 5x - all in Kenshi's own frame-end, i.e. the engine
+        // presenting under quintuple sim load - and a pair who keep losing
+        // sessions to it deserve a one-line way to fence it off:
+        // "speedMax": 2 in coop_config.json.
+        {
+            std::string sm = envOr("KENSHICOOP_SPEED_MAX",
+                                   fileOr(cfgFile, "speedMax", "0").c_str());
+            c.speedMax = (float)std::atof(sm.c_str());
+            if (c.speedMax < 0.0f) c.speedMax = 0.0f;
+        }
         // Camera-anchored interest (protocol 43): fold the local camera +
         // peer camera hint into the interest anchors. DEFAULT ON; the A/B
         // escape hatch restores tab-leader-only anchors.
@@ -532,6 +544,12 @@ std::string describeConfig(const Config& c) {
               c.attentionRadius, c.cellAuth ? 1 : 0,
               (c.authAssert == 2) ? "on" : (c.authAssert == 0) ? "off"
                                                                : "shadow");
+    if (c.speedMax > 0.0f) {
+        char sm[32];
+        _snprintf(sm, sizeof(sm) - 1, " speedMax=%.1f", c.speedMax);
+        sm[sizeof(sm) - 1] = '\0';
+        s += sm;
+    }
     b[sizeof(b) - 1] = '\0';
     s += b;
     // The tunables that change how much of the world actually reaches the peer, and

@@ -2412,6 +2412,11 @@ void Replicator::syncSpeed(GameWorld* gw, Inbound& in, NetLink& net, u32 ownerId
         if (speedPeerReq_ >= 0.0f && speedPeerReq_ < eff) eff = speedPeerReq_;
         bool combat = speedMyCombat_ || speedPeerCombat_;
         if (combat && speedCombatCap_ && eff > 1.0f) eff = 1.0f;
+        // The optional hard ceiling, applied AFTER the min-arbitration so it
+        // can only lower, never raise. A capped click still registers as a
+        // VOTE (the consensus machinery re-asserts the capped effective), so
+        // the button flashes and settles rather than sticking.
+        if (speedMaxMult_ > 0.0f && eff > speedMaxMult_) eff = speedMaxMult_;
         bool changed = (speedLastSet_ < 0.0f || fabs(eff - speedLastSet_) > EPS);
         // userActed with an UNCHANGED effective = a denied raise (consensus
         // holdback): re-apply immediately so the host engine doesn't run fast
