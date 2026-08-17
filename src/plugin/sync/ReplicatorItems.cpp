@@ -496,6 +496,14 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
     static UnresolvedEdge unresolvedEdges[8]; // zero-init: ms==0 = empty slot
     static unsigned int   unresolvedHead = 0;
     static unsigned long  scanBaselined = 0, scanStreamed = 0;
+    // Channel-rate window counters (v0.72). Everything this channel DOES is
+    // KENSHICOOP_INV_DUMP-gated, so without the env var a player log's only
+    // periodic [wi] line was the discovery rollup - which reads 0/0 in steady
+    // state by construction (it counts NEW tracks, and by minute two everything
+    // near the camera is already tracked). That made the channel unreadable in
+    // exactly the logs that matter: quiet is not silent, so the rollup now
+    // carries the real rates too.
+    static unsigned long  wiDropCaps = 0, wiSends = 0, wiCulls = 0, wiDefers = 0;
 
     // ---- Discovery 1: query-free drop-hook edges (town reliable) -----------
     {
@@ -542,6 +550,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
             t.stringID[sizeof(t.stringID) - 1] = '\0';
             t.itemType = de[i].itemType; t.quantity = de[i].quantity; t.quality = de[i].quality;
             worldTrack_[k] = t;
+            ++wiDropCaps;
             if (dumpWi) { char b[200]; _snprintf(b, sizeof(b) - 1,
                 "[wi] DROP-CAP netId=%u sid='%s' qty=%u pos=%.2f,%.2f,%.2f (query-free)",
                 t.netId, t.stringID, t.quantity, t.x, t.y, t.z);
@@ -615,11 +624,17 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
         static unsigned long wiRollMs = 0;
         if (wiRollMs == 0) wiRollMs = now;
         if ((now - wiRollMs) >= 60000) {
-            char b[128]; _snprintf(b, sizeof(b) - 1,
-                "[wi] scan rollup baselined=%lu streamed=%lu over %lus",
-                scanBaselined, scanStreamed, (now - wiRollMs) / 1000);
+            // tracks= includes baselined save-natives; every other figure is
+            // wire-visible activity in the window. All zeros with tracks>0 is
+            // a HEALTHY idle channel; drops>0 with sent=0 is the broken one.
+            char b[200]; _snprintf(b, sizeof(b) - 1,
+                "[wi] scan rollup baselined=%lu streamed=%lu tracks=%u drops=%lu "
+                "sent=%lu culls=%lu defer=%lu over %lus",
+                scanBaselined, scanStreamed, (unsigned int)worldTrack_.size(),
+                wiDropCaps, wiSends, wiCulls, wiDefers, (now - wiRollMs) / 1000);
             b[sizeof(b) - 1] = '\0'; coop::logLine(b);
-            scanBaselined = scanStreamed = 0; wiRollMs = now;
+            scanBaselined = scanStreamed = 0;
+            wiDropCaps = wiSends = wiCulls = wiDefers = 0; wiRollMs = now;
         }
     }
 
@@ -657,6 +672,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
                     continue;
                 }
                 removed[nr++] = tr.netId;
+                ++wiCulls;
             }
             if (dumpWi) { char b[112]; _snprintf(b, sizeof(b) - 1,
                 "[wi] CULL netId=%u (gone/picked-up) baseline=%d", tr.netId, tr.baseline ? 1 : 0);
@@ -689,6 +705,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
                 e.quality  = tr.quality;
                 e.x = pos[0]; e.y = pos[1]; e.z = pos[2];
                 e.state = 0;
+                ++wiSends;
                 tr.hash = h; tr.lastSendMs = now;
                 tr.x = pos[0]; tr.y = pos[1]; tr.z = pos[2];
                 if (changed && dumpWi) {
@@ -706,6 +723,7 @@ void Replicator::publishWorldItems(GameWorld* gw, NetLink& net, u32 ownerId) {
         ++it;
     }
     if (deferred > 0) {
+        wiDefers += deferred;
         // Unconditional, and at most one line per tick: a deferred item is one the peer cannot
         // see yet, which is the hardest W1 symptom to tell apart from a drop that was never
         // detected at all.
