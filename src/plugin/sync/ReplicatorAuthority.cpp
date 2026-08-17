@@ -1746,6 +1746,38 @@ float Replicator::parkDivergedCopy(Character* c, const EntityState& st, const Ke
             return -1.0f;
         }
     }
+    // A BLEEDING body is exempt from the park for the same reason it is exempt
+    // from the freeze - and the two exemptions MUST match, because mismatched
+    // they compose into the teleport-run loop the players reported on
+    // 2026-08-16 ("enemies are teleporting out of one another and running"):
+    // v0.66 freed a wounded body's brain so it can collapse from blood loss,
+    // but the park kept teleporting it back to the census spot, where the
+    // living brain ran it off again - every five seconds, for every wounded
+    // body in a fight (frzHurt=18529 in one evening). A dying body bleeds out
+    // wherever it runs to; its KO/death still syncs by event and the medical
+    // stream. Position divergence for the dying is the cheaper error.
+    {
+        engine::MedicalRead mr;
+        if (engine::readMedical(c, &mr) && mr.valid &&
+            (mr.bleedRate > 0.0f || mr.blood <= 25.0f)) {
+            ++parkSkipHurt_;
+            return -1.0f;
+        }
+    }
+    // A DOWN or DEAD body is never parked. It cannot walk away, so a park
+    // teleport buys nothing - and live 2026-08-16 it bought worse than
+    // nothing: corpses whose ragdolls settled a few units from the host's
+    // census spot were teleported back through the same coordinate every
+    // park interval, which players watched as bodies "teleporting through a
+    // specific spot". A divergent corpse position is cosmetic; a corpse
+    // fountain is not.
+    {
+        unsigned short bs = engine::readBodyState(c);
+        if (coop::bodyIsDown(bs)) {
+            ++parkSkipDown_;
+            return -1.0f;
+        }
+    }
     parkMs_[k] = nowP;
     // Anchor break (world_parity 2026-07-17): a census copy chained/caged at
     // the WRONG fixture (cross-client furniture identity is unreliable) is

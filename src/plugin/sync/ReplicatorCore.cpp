@@ -77,7 +77,7 @@ Replicator::Replicator()
       freezeActuated_(0), truncHoldCulls_(0),
       wdOriginHolds_(0), wdOriginLogMs_(0), proxyBlindSkips_(0),
       xferFoldLoss_(0), xferFoldLogMs_(0), nearStillSup_(0), proxyUnaddressable_(0), timeSlewTarget_(-1.0f),
-      freezeSkipHurt_(0),
+      freezeSkipHurt_(0), parkSkipHurt_(0), parkSkipDown_(0),
       assignGen_(0), assignLogMs_(0), assignVetoed_(0),
       censusMapGen_(0), assignSeqOut_(1), assignRecvN_(0), assignStaleN_(0),
       authAssertMode_(1), authArbiter_(false), speedMaxMult_(0.0f),

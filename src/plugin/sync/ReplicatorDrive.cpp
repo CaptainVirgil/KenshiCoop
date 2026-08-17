@@ -2165,12 +2165,12 @@ void Replicator::logDriveTelemetry(unsigned long now) {
         _snprintf(b, sizeof(b),
                   "[ai] suspended=%u driven=%u targets=%u"
                   " rel=%lu relWalk=%.0fu/%lus snapCbt=%lu snapVeto=%lu"
-                  " frzAct=%lu frzHurt=%lu",
+                  " frzAct=%lu frzHurt=%lu prkHurt=%lu prkDown=%lu",
                   engine::aiSuspendCount(), (unsigned)drivenChars_.size(),
                   (unsigned)targets_.size(),
                   midRestReleases_, relWalkDist_,
                   relWalkMs_ / 1000, snapInCombat_, snapVetoCombat_,
-                  freezeActuated_, freezeSkipHurt_);
+                  freezeActuated_, freezeSkipHurt_, parkSkipHurt_, parkSkipDown_);
         b[sizeof(b) - 1] = '\0'; coop::logLine(b);
     }
     // Interp/drive stat line (~5 s, protocol 36 jumpiness instrumentation).

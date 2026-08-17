@@ -1213,6 +1213,8 @@ private:
     unsigned long proxyUnaddressable_; // minted proxies the engine cannot resolve by hand
     float         timeSlewTarget_;    // slew the per-frame ramp is walking toward (-1 = none)
     unsigned long freezeSkipHurt_;    // census freezes skipped: body is bleeding/critical
+    unsigned long parkSkipHurt_;      // census parks skipped for the same reason - MUST pair with the freeze exemption
+    unsigned long parkSkipDown_;      // census parks skipped: body is down/dead (a corpse cannot walk away)
 
     // ---- Authority assertion overlay (auth steps 2-7, docs/AUTHORITY-DESIGN.md)
     // Step 2: the SHADOW map. Host-side policy output only - nothing reads it
