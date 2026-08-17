@@ -138,7 +138,11 @@ else
     if [ -n "$TAG" ]; then
         API="https://api.github.com/repos/$REPO_SLUG/releases/tags/$TAG"
     else
-        API="https://api.github.com/repos/$REPO_SLUG/releases/latest"
+        # NOT /releases/latest: that endpoint excludes pre-releases, and since
+        # the v1.0.0-beta.N line every release IS one - "latest" would pin
+        # every player to v0.73 forever. The list endpoint returns newest
+        # first, pre-releases included; drafts are filtered below.
+        API="https://api.github.com/repos/$REPO_SLUG/releases?per_page=5"
     fi
     note "checking $API"
     URL="$(curl -fsSL "$API" 2>/dev/null |
@@ -147,9 +151,13 @@ try:
     rel = json.load(sys.stdin)
 except Exception:
     sys.exit(1)
-for a in rel.get("assets", []):
-    if a["name"].startswith("KenshiCoop-kit") and a["name"].endswith(".zip"):
-        print(a["browser_download_url"]); break
+rels = rel if isinstance(rel, list) else [rel]
+for r in rels:
+    if r.get("draft"):
+        continue
+    for a in r.get("assets", []):
+        if a["name"].startswith("KenshiCoop-kit") and a["name"].endswith(".zip"):
+            print(a["browser_download_url"]); sys.exit(0)
 ' || true)"
     [ -n "$URL" ] || die "no KenshiCoop-kit*.zip asset found (no releases yet, or GitHub unreachable)"
     note "downloading $(basename "$URL")"

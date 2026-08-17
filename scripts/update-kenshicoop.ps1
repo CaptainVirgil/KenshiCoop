@@ -188,13 +188,21 @@ try {
         # TLS 1.2 for Windows PowerShell 5.1, whose default is too old for GitHub.
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
+        # NOT /releases/latest: that endpoint excludes pre-releases, and since the
+        # v1.0.0-beta.N line every release IS one - "latest" would pin every
+        # player to v0.73 forever. The list endpoint returns newest first,
+        # pre-releases included; drafts are filtered out.
         $api = if ($Tag) { "https://api.github.com/repos/$Repo/releases/tags/$Tag" }
-               else      { "https://api.github.com/repos/$Repo/releases/latest" }
+               else      { "https://api.github.com/repos/$Repo/releases?per_page=5" }
         Note "checking $api"
         try {
             $rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "kenshicoop-updater" }
         } catch {
             Die "could not reach GitHub: $($_.Exception.Message)"
+        }
+        if ($rel -is [array]) {
+            $rel = $rel | Where-Object { -not $_.draft } | Select-Object -First 1
+            if (-not $rel) { Die "no published releases found" }
         }
         $asset = $rel.assets | Where-Object { $_.name -like "KenshiCoop-kit*.zip" } | Select-Object -First 1
         if (-not $asset) { Die "release '$($rel.tag_name)' has no KenshiCoop-kit*.zip asset" }

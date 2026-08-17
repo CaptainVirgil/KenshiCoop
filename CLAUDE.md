@@ -169,6 +169,17 @@ against the CWD and the archive-staging step leaves a shell inside
 `dist/stage-<tag>/` — that exact slip failed five consecutive releases before
 it was funnelled. Do not hand-run the tail.
 
+**Versioning (adopted 2026-08-17): SemVer with a beta pre-release line.** The
+next release after v0.73 is `v1.0.0-beta.1`, then `-beta.2`, …; `v1.0.0` when
+the players call it stable, `v1.1.0-beta.1` opens the next feature line.
+`publish_release.sh` flags `-alpha./-beta./-rc.` tags as GitHub pre-releases
+automatically. **SemVer labels the release; `PROTOCOL_VERSION` governs
+interop** — a protocol bump is at least a minor bump. Every release gets a
+`CHANGELOG.md` entry (keep-a-changelog; move Unreleased into the version
+section when cutting). The updaters deliberately query the release LIST, not
+`/releases/latest` — that endpoint excludes pre-releases and would pin every
+player to v0.73 forever.
+
 Players then run `scripts/update-kenshicoop.ps1` (Windows) or
 `scripts/linux/update-kenshicoop.sh`, which pull the latest release, verify it against the
 `kit.json` manifest, back up the existing mod folder to `<Kenshi>/KenshiCoop-backups/`,

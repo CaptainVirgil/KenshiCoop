@@ -34,6 +34,15 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 # make_kit.sh already created the local tag (the build stamp names it).
 git push -q origin "$TAG"
 
+# SemVer pre-release tags (v1.0.0-beta.1, -rc.2, -alpha.3) get GitHub's
+# pre-release flag automatically. The updaters deliberately do NOT use
+# /releases/latest (it excludes pre-releases), so flagging costs nothing
+# there and keeps the releases page honest about beta status.
+PRE=()
+case "$TAG" in
+  *-alpha.*|*-beta.*|*-rc.*) PRE=(--prerelease) ;;
+esac
+
 gh release create "$TAG" \
   "$KIT" \
   "dist/KenshiCoop-$TAG-linux.tar.gz" \
@@ -41,6 +50,7 @@ gh release create "$TAG" \
   scripts/update-kenshicoop.ps1 \
   scripts/linux/update-kenshicoop.sh \
   --repo CaptainVirgil/KenshiCoop --target main --verify-tag \
+  "${PRE[@]}" \
   --title "$TITLE" --notes-file "$NOTES"
 
 echo "published: https://github.com/CaptainVirgil/KenshiCoop/releases/tag/$TAG"
