@@ -82,3 +82,7 @@ dist/KenshiCoop-kit-*.zip
 # tracking them put a 1 MB DLL and a 578 KB tarball into git per release.
 dist/release-*/
 dist/*.tar.gz
+
+# local agent config stays local
+.claude/
+.cursor/
