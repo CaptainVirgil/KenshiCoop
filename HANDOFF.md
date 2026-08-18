@@ -1,7 +1,12 @@
 # Handoff — 2026-08-17 (the night ended by a relay flip)
 
-> **v0.73 IS THE RELEASE TO TAKE — installed on this machine already; the
-> brother runs his updater.** Protocol 59 (v0.67+ interoperate); each release
+> **v1.0.0-beta.1 IS THE RELEASE TO TAKE — installed on this machine
+> already. Same code as v0.73; the release IS the SemVer-beta adoption.**
+> The brother's updater copy is from an old kit and CANNOT SEE pre-releases:
+> he re-downloads `update-kenshicoop.ps1` from the release page once (or runs
+> his old copy with `-Tag v1.0.0-beta.1`). From then on, betas auto-update.
+>
+> Previously current: Protocol 59 (v0.67+ interoperate); each release
 > since v0.67 fixed a defect the previous one shipped, so both players run the
 > newest.
 >

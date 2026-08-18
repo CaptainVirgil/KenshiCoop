@@ -22,7 +22,7 @@ every other release was shaped by what two humans hit while actually playing.
 | | |
 |---|---|
 | Protocol | **59** — authority assertions: `PKT_AUTH_ASSIGN` + census author tail (2026-08-16), after 58 (census truncation bit), 57 (mod fingerprint), 55/56 (weather/dialogue). Each bump is a hard cut; both players update together |
-| Public release | `v0.73` (protocol 59) — five assets. **Hard cut**: v0.66 and earlier cannot connect. v0.67–v0.72 CAN connect but are superseded; each shipped a defect the next one fixed |
+| Public release | `v1.0.0-beta.1` (protocol 59, pre-release flag; same code as v0.73) — five assets. **Hard cut**: v0.66 and earlier cannot connect. v0.67–v0.72 CAN connect but are superseded; each shipped a defect the next one fixed |
 | Versioning | **SemVer beta line (adopted 2026-08-17)**: next release is `v1.0.0-beta.1`; GitHub pre-release flag automatic for `-alpha./-beta./-rc.` tags; `CHANGELOG.md` per release. SemVer labels the release, `PROTOCOL_VERSION` governs interop. Updaters query the release LIST (never `/releases/latest`, which excludes pre-releases) |
 | Local build | protocol 59; the banner's build stamp is the LINK's (BuildStamp.cpp, both scripts), so "which build is this?" is answerable from the log |
 | Gate | run it and read the totals it prints — the counts move too fast to record here (that is CLAUDE.md rule material, and this table violated it) |

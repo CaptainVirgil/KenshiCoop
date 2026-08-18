@@ -15,6 +15,23 @@ in the notes. Releases before this file are v0.50–v0.73 on the
 
 ## [Unreleased]
 
+## [1.0.0-beta.1] - 2026-08-17 (protocol 59)
+
+First release of the beta line. Same code as v0.73 — this release IS the
+versioning change, plus the tooling that makes the beta line installable.
+
+### Added
+- SemVer beta versioning: `-alpha./-beta./-rc.` tags publish as GitHub
+  pre-releases automatically; this changelog.
+
+### Fixed
+- Both updaters select the newest published release from the release LIST
+  instead of `/releases/latest`, which excludes pre-releases and would have
+  pinned every player to v0.73 forever. **One-time step for anyone on a
+  v0.73-or-earlier kit:** run the updater once with the explicit tag
+  (`-Tag v1.0.0-beta.1` / `--tag v1.0.0-beta.1`); the kit it installs
+  carries the fixed updater, and every later beta updates automatically.
+
 ## [0.73] - 2026-08-17 (protocol 59)
 
 The 2026-08-16 relay outage, fixed four ways. A Steam session flip left the
