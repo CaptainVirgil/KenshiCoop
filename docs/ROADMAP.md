@@ -8,12 +8,14 @@ the build commands; this file holds the plan.
 
 ## Where the fork is
 
-**`v0.71` is the current public release — protocol 59. The authority redesign
+**`v1.0.0-beta.1` is the current public release — protocol 59, first of the
+SemVer-beta line, same code as v0.73. The authority redesign
 (docs/AUTHORITY-DESIGN.md, all seven steps) shipped as v0.67 and was then
-hardened across four live-iteration releases in one night — v0.68 (single
-arbiter), v0.69 (paired park exemptions), v0.70 (arbiter follows the
-NEGOTIATED role, not the configured one), v0.71 (truncated inventory captures
-are not diffed). The ladder and the live gate are in HANDOFF.md.** The design
+hardened across six live-iteration releases — v0.68 (single arbiter), v0.69
+(paired park exemptions), v0.70 (arbiter follows the NEGOTIATED role), v0.71
+(truncated inventory captures are not diffed), v0.72 (pause votes off the
+congested channel), v0.73 (a half-open connection is not a session). The
+ladder and the live gate are in HANDOFF.md; the history is CHANGELOG.md.** The design
 is validated by measurement: a ~10-minute true-arbiter window on v0.69 took the
 join's render delay from 741 ms to 50, squad snaps from 11,483 to 0, parks
 from 456 to 5. v0.62 remains the only cut made with no player at the keyboard;
